@@ -3,17 +3,31 @@
 This folder is everything needed to run the app. Push these into your GitHub repo
 (replacing the existing files) and redeploy.
 
-## Two ways to deploy — pick the one your repo already uses
+## Your repo: atmoreadmin/atmore-ops
 
-### A) Single bundled file (simplest)
-Use **`Atmore Operations (standalone).html`** on its own. It has every script, style,
-and library inlined — no other files required.
-- If your repo serves one file (e.g. GitHub Pages with `index.html`), rename this to
-  match (`index.html`) and replace the existing one. Done.
+Your live site is served from **`index.html`** (a copy of the bundled standalone). To
+update production you MUST replace that file. The matching, ready-to-upload files are here.
 
-### B) Source files (multi-file)
-Use **`Atmore Operations.html`** as the entry point. It loads the `.jsx`/`.js` files and
-`lib/` and `screens/` from the same folder, so keep the folder structure intact:
+### Minimum to update the live site
+Replace **`index.html`** with the one in this folder. That's it — GitHub Pages redeploys
+automatically within a minute or two.
+
+### Recommended (keep the whole repo consistent)
+Replace these too, so the source matches what's live:
+`Atmore Operations (standalone).html`, `Atmore Operations.html`, `app.jsx`, `store.jsx`,
+`ui.jsx`, `sync.jsx`, `modals.jsx`, `capture-hub.jsx`, `global-search.jsx`,
+`property-editor.jsx`, `stage-picker.jsx`, `tweaks-panel.jsx`, `seed.js`,
+and the `screens/` folder. (`index.html` == the standalone bundle — same file, two names.)
+
+The simplest move: upload the ENTIRE contents of this folder and let GitHub overwrite.
+
+---
+
+## Reference — the two file forms
+- **`index.html` / `Atmore Operations (standalone).html`** — the all-in-one bundle. Every
+  script, style, and library inlined; no other files needed. This is what's served.
+- **`Atmore Operations.html`** — the multi-file source entry point. It loads the
+  `.jsx`/`.js` files plus `lib/` and `screens/` from the same folder; keep the structure: 
 ```
 Atmore Operations.html
 seed.js
