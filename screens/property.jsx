@@ -93,7 +93,7 @@ function PropertyScreen({ propertyId, subtab }) {
 
       {/* header */}
       <Card className="mb-16">
-        <div className="card__body prop-header" style={{display: 'flex', gap: 24, alignItems: 'flex-start'}}>
+        <div className="card__body" style={{display: 'flex', gap: 24, alignItems: 'flex-start'}}>
           <div className="grow" style={{minWidth: 0}}>
             <div style={{margin: 0}}>
               <h1 className="serif" style={{fontSize: 28, fontWeight: 500, margin: 0, lineHeight: 1.2, letterSpacing: '-0.015em', display: 'inline'}}>{p.address}</h1>
@@ -154,7 +154,7 @@ function PropertyScreen({ propertyId, subtab }) {
       </Card>
 
       {/* body: left rail + content */}
-      <div className="row gap-20 items-start prop-body">
+      <div className="row gap-20 items-start">
         <Card className="rail shrink-0">
           <div className="card__body" style={{padding: 8}}>
             {SECTIONS.map(s => (

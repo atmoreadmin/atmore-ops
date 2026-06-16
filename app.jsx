@@ -136,113 +136,14 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showSeedNote": true
 }/*EDITMODE-END*/;
 
-// ─── Mobile navigation (phones only; hidden ≥641px via CSS) ───
-const MNAV_SVG = { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' };
-function NavIcon({ name }) {
-  switch (name) {
-    case 'dashboard': return <svg {...MNAV_SVG}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>;
-    case 'properties': return <svg {...MNAV_SVG}><path d="M4 11l8-6 8 6"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/></svg>;
-    case 'rent': return <svg {...MNAV_SVG}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>;
-    case 'transactions': return <svg {...MNAV_SVG}><path d="M7 4v13M4 7l3-3 3 3"/><path d="M17 20V7M14 17l3 3 3-3"/></svg>;
-    case 'more': return <svg {...MNAV_SVG}><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>;
-    case 'contractors': return <svg {...MNAV_SVG}><path d="M14.6 6.4a3.5 3.5 0 0 0-4.8 4.5l-5.4 5.4 2.6 2.6 5.4-5.4a3.5 3.5 0 0 0 4.5-4.8l-2.2 2.2-1.9-.4-.4-1.9z"/></svg>;
-    case 'tax': return <svg {...MNAV_SVG}><path d="M5 4h10l4 4v12H5z"/><path d="M9 9h4M9 13h6M9 17h4"/></svg>;
-    case 'import': return <svg {...MNAV_SVG}><path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 18h14v2H5z"/></svg>;
-    case 'settings': return <svg {...MNAV_SVG}><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2.3" fill="var(--paper)"/><circle cx="15" cy="16" r="2.3" fill="var(--paper)"/></svg>;
-    default: return null;
-  }
-}
-function MobileTabBar({ top, counts, onMore }) {
-  const items = [
-    { key: 'dashboard', path: '/dashboard', label: 'Dashboard', icon: 'dashboard' },
-    { key: 'properties', path: '/properties', label: 'Properties', icon: 'properties', match: ['properties', 'property', 'pipeline', 'exch1031', 'refi'] },
-    { key: 'rent', path: '/rent', label: 'Rent', icon: 'rent', badge: counts.vacateDue },
-    { key: 'transactions', path: '/transactions', label: 'Ledger', icon: 'transactions', badge: counts.untagged },
-  ];
-  const moreActive = ['contractors', 'tax-binder', 'bank-import', 'settings', 'integration', 'notice'].includes(top);
-  return (
-    <nav className="mobile-tabbar">
-      {items.map(it => {
-        const active = it.match ? it.match.includes(top) : top === it.key;
-        return (
-          <button key={it.key} className={'mobile-tabbar__item' + (active ? ' mobile-tabbar__item--active' : '')} onClick={() => nav(it.path)}>
-            {it.badge > 0 && <span className="mobile-tabbar__badge">{it.badge > 99 ? '99+' : it.badge}</span>}
-            <NavIcon name={it.icon}/>
-            <span>{it.label}</span>
-          </button>
-        );
-      })}
-      <button className={'mobile-tabbar__item' + (moreActive ? ' mobile-tabbar__item--active' : '')} onClick={onMore}>
-        <NavIcon name="more"/>
-        <span>More</span>
-      </button>
-    </nav>
-  );
-}
-function MoreSheet({ counts, onClose }) {
-  const go = (path) => { onClose(); nav(path); };
-  const items = [
-    { path: '/contractors', label: 'Contractors', icon: 'contractors' },
-    { path: '/tax-binder', label: 'Tax Binder', icon: 'tax' },
-    { path: '/bank-import', label: 'Bank Import', icon: 'import' },
-    { path: '/settings', label: 'Settings & Integration', icon: 'settings' },
-  ];
-  return (
-    <>
-      <div className="more-sheet-back" onClick={onClose}/>
-      <div className="more-sheet" role="dialog" aria-label="More">
-        <div className="more-sheet__grab"/>
-        {items.map(it => (
-          <button key={it.path} className="more-sheet__item" onClick={() => go(it.path)}>
-            <NavIcon name={it.icon}/>
-            <span className="grow">{it.label}</span>
-          </button>
-        ))}
-      </div>
-    </>
-  );
-}
-
 function App() {
   const store = useStore();
   const route = useRoute();
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [searchOpen, setSearchOpen] = React.useState(false);
-  const [moreOpen, setMoreOpen] = React.useState(false);
 
   // Boot the sync engine once (auto-pull on open / auto-push on change when configured).
   React.useEffect(() => { SyncEngine.start(); }, []);
-
-  // Mobile table reflow: copy each table's column headers onto its body cells as
-  // data-label, so the CSS card layout (≤640px) can show the column name beside each
-  // value. Re-runs whenever the table DOM changes. Harmless/invisible on desktop.
-  React.useEffect(() => {
-    const stamp = () => {
-      document.querySelectorAll('table.tbl').forEach(tbl => {
-        const heads = [...tbl.querySelectorAll('thead th')].map(th => th.textContent.replace(/[\u25b2\u25bc\u25b4\u25be\u2191\u2193]/g, '').trim());
-        if (!heads.length) return;
-        tbl.querySelectorAll('tbody tr').forEach(tr => {
-          const cells = tr.children;
-          for (let i = 0; i < cells.length; i++) {
-            if (heads[i] != null && cells[i].getAttribute('data-label') !== heads[i]) {
-              cells[i].setAttribute('data-label', heads[i]);
-            }
-          }
-        });
-      });
-    };
-    stamp();
-    const root = document.getElementById('root');
-    let queued = false;
-    const flush = () => { queued = false; stamp(); };
-    const mo = new MutationObserver(() => {
-      if (queued) return;
-      queued = true;
-      queueMicrotask(flush);
-    });
-    mo.observe(root, { childList: true, subtree: true });
-    return () => mo.disconnect();
-  }, []);
 
   // Global Cmd+K / Ctrl+K / '/' listener
   React.useEffect(() => {
@@ -311,10 +212,10 @@ function App() {
         <div className="topbar__row">
           <AtmoreLogo />
           <div className="grow" />
-          <div className="row gap-12 items-center topbar__actions">
-            <span className="small dim topbar-hide-mobile">Today · {fmtDate(TODAY(), {full:true})}</span>
+          <div className="row gap-12 items-center">
+            <span className="small dim">Today · {fmtDate(TODAY(), {full:true})}</span>
             <SyncIndicator />
-            <button className="topbar__search" onClick={() => setSearchOpen(true)}
+            <button onClick={() => setSearchOpen(true)}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 8,
                 padding: '6px 12px', background: 'var(--paper-2)',
@@ -325,8 +226,8 @@ function App() {
               <span>⌕</span><span>Search…</span><span style={{flex: 1}}/>
               <span className="kbd" style={{fontFamily: 'IBM Plex Mono, monospace', fontSize: 10}}>⌘K</span>
             </button>
-            <Btn sz="sm" kind="ghost" className="topbar-hide-mobile" onClick={() => nav('/bank-import')}>⤓ Bank import</Btn>
-            <Btn sz="sm" kind="ghost" className="topbar-hide-mobile" onClick={() => nav('/settings')} title="Settings & integration">⚙</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => nav('/bank-import')}>⤓ Bank import</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => nav('/settings')} title="Settings & integration">⚙</Btn>
           </div>
         </div>
         <nav className="topbar__tabs">
@@ -365,8 +266,6 @@ function App() {
         </p>
       </TweaksPanel>
       {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)}/>}
-      <MobileTabBar top={top} counts={counts} onMore={() => setMoreOpen(true)}/>
-      {moreOpen && <MoreSheet counts={counts} onClose={() => setMoreOpen(false)}/>}
     </div>
   );
 }
