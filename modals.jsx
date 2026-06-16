@@ -109,7 +109,15 @@ function SplitTransactionModal({ tx, onClose }) {
                 <td>
                   <select className="select" value={s.project} onChange={e => patch(i, {project: e.target.value})} style={{width: '100%', minWidth: 200}}>
                     <option value="">— pick property —</option>
-                    {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                    {s.project && !OVERHEAD_PROJECTS.includes(s.project) && !store.properties.some(p => p.address === s.project) && (
+                      <option value={s.project}>{s.project}</option>
+                    )}
+                    <optgroup label="Overhead">
+                      {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </optgroup>
+                    <optgroup label="Properties">
+                      {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                    </optgroup>
                   </select>
                 </td>
                 <td className="num">
@@ -632,27 +640,24 @@ function TransactionEditor({ tx, onClose }) {
           </div>
           <div>
             <div className="up dim mb-4">Property</div>
-            <div className="row gap-6">
-              <select className="select" value={project} style={{flex: 1, minWidth: 0}}
-                onChange={e => {
-                  if (e.target.value === '__add__') { setAddingProp(true); return; }
-                  setProject(e.target.value);
-                }}>
-                <option value="">— unassigned —</option>
-                {project && project !== 'multiple' && !OVERHEAD_PROJECTS.includes(project) && !store.properties.some(p => p.address === project) && (
-                  <option value={project}>{project}</option>
-                )}
-                <option value="multiple">multiple · split</option>
-                <optgroup label="Overhead">
-                  {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
-                </optgroup>
-                <optgroup label="Properties">
-                  {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
-                </optgroup>
-                <option value="__add__">+ Add new property…</option>
-              </select>
-              <Btn kind="ghost" sz="sm" onClick={() => setAddingProp(true)} title="Add a new property">+</Btn>
-            </div>
+            <select className="select" value={project} style={{width: '100%'}}
+              onChange={e => {
+                if (e.target.value === '__add__') { setAddingProp(true); return; }
+                setProject(e.target.value);
+              }}>
+              <option value="">— unassigned —</option>
+              {project && project !== 'multiple' && !OVERHEAD_PROJECTS.includes(project) && !store.properties.some(p => p.address === project) && (
+                <option value={project}>{project}</option>
+              )}
+              <option value="multiple">multiple · split</option>
+              <optgroup label="Overhead">
+                {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
+              </optgroup>
+              <optgroup label="Properties">
+                {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+              </optgroup>
+              <option value="__add__">+ Add new property…</option>
+            </select>
           </div>
         </div>
 
