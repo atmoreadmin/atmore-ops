@@ -116,7 +116,7 @@ function SplitTransactionModal({ tx, onClose }) {
                       {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
                     </optgroup>
                     <optgroup label="Properties">
-                      {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                      {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
                     </optgroup>
                   </select>
                 </td>
@@ -449,7 +449,7 @@ function AddPropertyModal({ onClose, onCreated }) {
               setAssigned(e.target.value);
             }} style={{width: '100%'}}>
               <option value="">— pick —</option>
-              {store.team.map(o => <option key={o} value={o}>{o}</option>)}
+              {[...store.team].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:"base"})).map(o => <option key={o} value={o}>{o}</option>)}
               <option disabled>──────────</option>
               <option value="__add__">+ Add new…</option>
             </select>
@@ -606,7 +606,7 @@ function TransactionEditor({ tx, onClose }) {
           <div>
             <div className="up dim mb-4">Account</div>
             <select className="select" value={acct} onChange={e => setAcct(e.target.value)} style={{width: '100%'}}>
-              {store.accounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              {[...store.accounts].sort((a,b)=>(a.label||"").localeCompare(b.label||"",undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
           </div>
           <div>
@@ -654,7 +654,7 @@ function TransactionEditor({ tx, onClose }) {
                 {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
               </optgroup>
               <optgroup label="Properties">
-                {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
               </optgroup>
               <option value="__add__">+ Add new property…</option>
             </select>

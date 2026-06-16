@@ -64,7 +64,7 @@ function PipelineScreen() {
   const today = TODAY();
 
   const types = ['all', ...new Set(store.properties.map(p => p.type).filter(Boolean))];
-  const owners = ['all', ...store.team];
+  const owners = ['all', ...[...store.team].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}))];
   const archivedCount = store.properties.filter(p => archiveCodes.includes(p.statusCode)).length;
 
   const totalCols = visibleColumns.length + (showK ? 1 : 0) + (showArchive ? archiveCodes.length : 0);

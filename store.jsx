@@ -2163,7 +2163,15 @@ Object.assign(window, {
 // ─── Managed lists (categories, payment sources, loan types) ───
 function getList(listKey, { includeArchived = false } = {}) {
   const list = (Store.state.lists?.[listKey]) || [];
-  return includeArchived ? list : list.filter(x => !x.archived);
+  const filtered = includeArchived ? list : list.filter(x => !x.archived);
+  // Always alphabetical by label (case-insensitive), so every dropdown reads A→Z.
+  return [...filtered].sort((a, b) =>
+    (a.label || '').localeCompare(b.label || '', undefined, { sensitivity: 'base' }));
+}
+// Properties sorted alphabetically by address — use for dropdown option lists.
+function sortedProperties() {
+  return [...(Store.state.properties || [])].sort((a, b) =>
+    (a.address || '').localeCompare(b.address || '', undefined, { sensitivity: 'base', numeric: true }));
 }
 function addListItem(listKey, item) {
   Store.update(s => {

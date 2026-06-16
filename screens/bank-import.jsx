@@ -491,7 +491,7 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
                         {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
                       </optgroup>
                       <optgroup label="Properties">
-                        {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                        {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
                       </optgroup>
                       <option value="__add__">+ Add new property…</option>
                     </select>

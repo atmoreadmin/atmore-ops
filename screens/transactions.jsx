@@ -85,8 +85,19 @@ function TransactionsScreen() {
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
     if (search) {
-      const hay = `${t.desc} ${t.payee} ${t.category} ${t.project}`.toLowerCase();
-      if (!hay.includes(search.toLowerCase())) return false;
+      const q = search.toLowerCase().trim();
+      const amt = t.amount || 0;
+      // Numeric amount match: strip $ , and sign from the query, compare to the
+      // transaction amount (abs + raw) so "511", "511.11", "$511.11", "-511.11" all hit.
+      const qNum = q.replace(/[$,\s]/g, '');
+      let amtMatch = false;
+      if (qNum && /^-?\d*\.?\d+$/.test(qNum)) {
+        const n = Math.abs(parseFloat(qNum));
+        amtMatch = String(Math.abs(amt)).includes(qNum.replace(/^-/, '')) ||
+                   Math.abs(Math.abs(amt) - n) < 0.005;
+      }
+      const hay = `${t.desc} ${t.payee} ${t.category} ${t.project} ${fmtMoney(amt)} ${Math.abs(amt)}`.toLowerCase();
+      if (!amtMatch && !hay.includes(q)) return false;
     }
     return true;
   });
@@ -190,10 +201,10 @@ function TransactionsScreen() {
               </div>
             ) : (
             <div className="card__body row gap-12 items-center wrap">
-              <input className="input" placeholder="Search description, payee, category…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
+              <input className="input" placeholder="Search description, payee, category, amount…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
               <select className="select" value={acctFilter} onChange={e => setAcctFilter(e.target.value)}>
                 <option value="all">All accounts</option>
-                {store.accounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                {[...store.accounts].sort((a,b)=>(a.label||"").localeCompare(b.label||"",undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
               </select>
               <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
                 {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
@@ -475,7 +486,7 @@ function BulkActionBar({ selectedIds, onClear }) {
         <option value="">Set property…</option>
         <option value="multiple">multiple · split</option>
         {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
-        {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+        {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
       </select>
       {proj && <button onClick={() => { bulkTagTransactions(selectedIds, {project: proj}); setProj(''); }}
         style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
@@ -566,7 +577,7 @@ function AutoTagRuleEditor({ rule, onClose }) {
           {projMode === 'specific' && (
             <select className="select mt-8" value={specificProp} onChange={e => setSpecificProp(e.target.value)} style={{width: '100%'}}>
               <option value="">— pick property —</option>
-              {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+              {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
             </select>
           )}
         </div>
