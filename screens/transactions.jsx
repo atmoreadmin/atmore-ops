@@ -204,7 +204,7 @@ function TransactionsScreen() {
               <input className="input" placeholder="Search description, payee, category, amount…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
               <select className="select" value={acctFilter} onChange={e => setAcctFilter(e.target.value)}>
                 <option value="all">All accounts</option>
-                {[...store.accounts].sort((a,b)=>(a.label||"").localeCompare(b.label||"",undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                {[...store.accounts].sort((a,b)=>String(a.label??"").localeCompare(String(b.label??""),undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
               </select>
               <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
                 {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}

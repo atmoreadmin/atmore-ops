@@ -449,7 +449,7 @@ function AddPropertyModal({ onClose, onCreated }) {
               setAssigned(e.target.value);
             }} style={{width: '100%'}}>
               <option value="">— pick —</option>
-              {[...store.team].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:"base"})).map(o => <option key={o} value={o}>{o}</option>)}
+              {[...store.team].sort((a,b)=>String(a??"").localeCompare(String(b??""),undefined,{sensitivity:"base"})).map(o => <option key={o} value={o}>{o}</option>)}
               <option disabled>──────────</option>
               <option value="__add__">+ Add new…</option>
             </select>
@@ -606,7 +606,7 @@ function TransactionEditor({ tx, onClose }) {
           <div>
             <div className="up dim mb-4">Account</div>
             <select className="select" value={acct} onChange={e => setAcct(e.target.value)} style={{width: '100%'}}>
-              {[...store.accounts].sort((a,b)=>(a.label||"").localeCompare(b.label||"",undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              {[...store.accounts].sort((a,b)=>String(a.label??"").localeCompare(String(b.label??""),undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
             </select>
           </div>
           <div>

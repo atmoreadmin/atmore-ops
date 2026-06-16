@@ -2165,13 +2165,14 @@ function getList(listKey, { includeArchived = false } = {}) {
   const list = (Store.state.lists?.[listKey]) || [];
   const filtered = includeArchived ? list : list.filter(x => !x.archived);
   // Always alphabetical by label (case-insensitive), so every dropdown reads A→Z.
+  // Coerce to String — some list items can carry a numeric label.
   return [...filtered].sort((a, b) =>
-    (a.label || '').localeCompare(b.label || '', undefined, { sensitivity: 'base' }));
+    String(a.label ?? '').localeCompare(String(b.label ?? ''), undefined, { sensitivity: 'base', numeric: true }));
 }
 // Properties sorted alphabetically by address — use for dropdown option lists.
 function sortedProperties() {
   return [...(Store.state.properties || [])].sort((a, b) =>
-    (a.address || '').localeCompare(b.address || '', undefined, { sensitivity: 'base', numeric: true }));
+    String(a.address ?? '').localeCompare(String(b.address ?? ''), undefined, { sensitivity: 'base', numeric: true }));
 }
 function addListItem(listKey, item) {
   Store.update(s => {
