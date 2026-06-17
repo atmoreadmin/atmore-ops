@@ -49,6 +49,8 @@ const SHEET_SCHEMA = {
       { key: 'rehabFunds',      label: 'Rehab Budget',       type: 'money' },
       { key: 'interest',        label: 'Interest Accrued',   type: 'money' },
       { key: 'salesDate',       label: 'Sales Date',         type: 'date' },
+      { key: 'saleSigningDate',  label: 'Sale Signing Date',  type: 'date',   notes: 'Closing/signing appointment date (sale side)' },
+      { key: 'saleSigningTime',  label: 'Sale Signing Time',  type: 'string', notes: 'HH:MM 24-hour' },
       { key: 'listPrice',       label: 'List Price',         type: 'money',  notes: 'Asking price while on market' },
       { key: 'salesPrice',      label: 'Sales Price',        type: 'money' },
       { key: 'grossProfit',     label: 'Gross Profit',       type: 'money' },

@@ -151,6 +151,9 @@ function EventCard({ index, title, blurb, status, current, facts, actionLabel, o
 // ───────────────────────── The hub ─────────────────────────
 function CapturePanel({ p }) {
   const [dialog, setDialog] = useCapState(null); // 'acq' | 'list' | 'sold' | 'rental' | null
+  // Close any open capture dialog when switching properties, so one property's
+  // half-filled form can never carry its values onto another property.
+  React.useEffect(() => { setDialog(null); }, [p.id]);
   const offers = (typeof getOffersForProperty === 'function' ? getOffersForProperty(p.id) : []) || [];
   const tenants = (typeof getTenantsForProperty === 'function' ? getTenantsForProperty(p.id) : []) || [];
 
@@ -268,10 +271,10 @@ function CapturePanel({ p }) {
         status={exStatus} current={false} facts={exFacts}
         actionLabel={linked.length ? 'View 1031 link →' : 'Set up 1031 link →'} onAction={() => nav('/property/' + p.id + '/exch')}/>
 
-      {dialog === 'acq'    && <AcquisitionDialog property={p} onClose={() => setDialog(null)}/>}
-      {dialog === 'list'   && <ListingDialog property={p} onClose={() => setDialog(null)}/>}
-      {dialog === 'sold'   && <MarkSoldDialog property={p} editMode initialNote="" onClose={() => setDialog(null)}/>}
-      {dialog === 'rental' && <ConvertRentalDialog property={p} onBack={() => setDialog(null)} onClose={() => setDialog(null)} initialNote=""/>}
+      {dialog === 'acq'    && <AcquisitionDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
+      {dialog === 'list'   && <ListingDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
+      {dialog === 'sold'   && <MarkSoldDialog key={p.id} property={p} editMode={p.statusCode === 'I'} initialNote="" onClose={() => setDialog(null)}/>}
+      {dialog === 'rental' && <ConvertRentalDialog key={p.id} property={p} onBack={() => setDialog(null)} onClose={() => setDialog(null)} initialNote=""/>}
     </>
   );
 }

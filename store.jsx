@@ -1162,7 +1162,7 @@ const FIELD_META = {
 const STAGE_PERSIST_KEYS = [
   'purchaseDate','purchasePrice','purchaseFees','purchaseCredits','purchaseFeeItems','saleFeeItems','rehabFunds','rehab','interest','listPrice',
   'acqEarnest','acqDDFee','acqExchangeFunds',
-  'salesDate','salesPrice','salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest',
+  'salesDate','saleSigningDate','saleSigningTime','salesPrice','salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest',
   'atmoreLoanPrincipal','atmoreLoanPayoff',
   'exchangeFunds','grossProfit','failedReason',
   'attorney','attorneyContact','buyerDDDate','expectedCloseDate','contractDate',
@@ -2397,6 +2397,11 @@ function buildCalendarEvents(fromIso, toIso) {
     if (p.signingDate) {
       const k = 'sign:' + p.id + ':' + p.signingDate;
       push({ key: k, cat: 'deal', date: p.signingDate, title: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''),
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+    if (p.saleSigningDate) {
+      const k = 'salesign:' + p.id + ':' + p.saleSigningDate;
+      push({ key: k, cat: 'deal', date: p.saleSigningDate, title: 'Sale signing' + (p.saleSigningTime ? ' · ' + p.saleSigningTime : ''),
         sub: p.address, propertyId: p.id, done: isEventDone(k) });
     }
     if (p.ddDate) {

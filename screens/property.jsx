@@ -221,9 +221,9 @@ function PropertyScreen({ propertyId, subtab }) {
         </div>
       </div>
 
-      {stagePickerOpen && <StagePicker property={p} onClose={() => setStagePickerOpen(false)}/>}
-      {editorOpen && <PropertyEditor property={p} onClose={() => setEditorOpen(false)}/>}
-      {closeoutOpen && <MarkSoldDialog property={p} editMode initialNote="" onClose={() => setCloseoutOpen(false)}/>}
+      {stagePickerOpen && <StagePicker key={p.id} property={p} onClose={() => setStagePickerOpen(false)}/>}
+      {editorOpen && <PropertyEditor key={p.id} property={p} onClose={() => setEditorOpen(false)}/>}
+      {closeoutOpen && <MarkSoldDialog key={p.id} property={p} editMode initialNote="" onClose={() => setCloseoutOpen(false)}/>}
     </div>
   );
 }
