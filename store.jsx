@@ -424,7 +424,17 @@ const Store = {
       this.save();
     }
 
-    // Heal duplicate rent-ledger rows. Some saved states (and the synced Sheet) carry
+    // Backfill task fields added after reminders shipped (priority + checklist), so
+    // every task carries a consistent shape. Idempotent: only writes if something's missing.
+    if (Array.isArray(this.state.reminders)) {
+      let touched = false;
+      this.state.reminders.forEach(r => {
+        if (r.priority == null) { r.priority = 'normal'; touched = true; }
+        if (!Array.isArray(r.checklist)) { r.checklist = []; touched = true; }
+      });
+      if (touched) this.save();
+    }
+
     // several charges for the same tenant+month, plus a mix of "2026-01" and
     // "2026-01-01" month formats that the dedup logic couldn't see as equal — so the
     // same charge rendered over and over on the property ledger. Normalize months to
@@ -1508,7 +1518,7 @@ function addReminder(rec) {
   Store.update(s => {
     s.reminders = s.reminders || [];
     const id = 'rm' + (s.reminders.reduce((a, r) => Math.max(a, parseInt(r.id.slice(2)) || 0), 100) + 1);
-    s.reminders.push({ id, recurrence: 'none', done: false, lastDone: null, ...rec });
+    s.reminders.push({ id, recurrence: 'none', done: false, lastDone: null, priority: 'normal', checklist: [], ...rec });
   });
 }
 function updateReminder(id, patch) {
@@ -2313,6 +2323,165 @@ function isEventDone(key) {
   return !!(Store.state.completedEvents && Store.state.completedEvents[key]);
 }
 Object.assign(window, { toggleEventDone, isEventDone });
+
+// ─── Tasks: priority + checklist ───
+const TASK_PRIORITY = ['high', 'normal', 'low'];
+const TASK_PRIORITY_LABEL = { high: 'High', normal: 'Normal', low: 'Low' };
+const TASK_PRIORITY_TONE  = { high: 'brick', normal: 'ghost', low: 'ghost' };
+
+function toggleTaskChecklistItem(taskId, itemId) {
+  Store.update(s => {
+    const r = (s.reminders || []).find(x => x.id === taskId);
+    if (!r || !Array.isArray(r.checklist)) return;
+    const it = r.checklist.find(c => c.id === itemId);
+    if (it) it.done = !it.done;
+  });
+}
+
+function addDaysISO(iso, n) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// ─── Unified calendar event aggregation ──────────────────────────────────────
+// One place that turns every dated thing in the app into a normalized event:
+//   { key, cat, date, title, sub, propertyId?, taskId?, priority?, recurrence?, done, days }
+// `cat` drives the legend, filters, and color. Derived (non-task) events use the
+// existing completedEvents set for done-state; tasks use the reminders model.
+const CAL_CATS = {
+  task:      { label: 'Tasks',         color: 'var(--ochre)'     },
+  rent:      { label: 'Rent due',      color: 'var(--sage)'      },
+  lease:     { label: 'Lease ends',    color: 'var(--blue)'      },
+  insurance: { label: 'Insurance',     color: 'var(--tan)'       },
+  tax:       { label: 'Property tax',  color: '#7a5c1e'          },
+  refi:      { label: 'Refi',          color: 'var(--blue-deep)' },
+  exch:      { label: '1031',          color: 'var(--brick)'     },
+  deal:      { label: 'Sale / closing',color: 'var(--blue-deep)' },
+};
+const CAL_CAT_ORDER = ['task', 'rent', 'lease', 'insurance', 'tax', 'refi', 'exch', 'deal'];
+
+function buildCalendarEvents(fromIso, toIso) {
+  const s = Store.state;
+  const today = TODAY();
+  const out = [];
+  const inRange = d => d && d >= fromIso && d <= toIso;
+  const push = e => { if (inRange(e.date)) out.push(e); };
+
+  // Tasks (reminders) — open only; recurring tasks show their next occurrence
+  (s.reminders || []).forEach(r => {
+    if (r.done || !r.dueDate) return;
+    const prop = getProperty(r.propertyId);
+    push({
+      key: 'task:' + r.id, cat: 'task', date: r.dueDate, taskId: r.id,
+      title: r.title, sub: prop ? prop.address : '', propertyId: r.propertyId,
+      priority: r.priority || 'normal', recurrence: r.recurrence || 'none', done: false,
+    });
+  });
+
+  // Per-property dated milestones
+  (s.properties || []).forEach(p => {
+    if (p.insurance && p.insurance.renewalDate) {
+      const k = 'ins:' + p.id + ':' + p.insurance.renewalDate;
+      push({ key: k, cat: 'insurance', date: p.insurance.renewalDate,
+        title: 'Insurance renewal' + (p.insurance.carrier ? ' · ' + p.insurance.carrier : ''),
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+    if (p.taxes && p.taxes.dueDate && !p.taxes.escrowed) {
+      const k = 'tax:' + p.id + ':' + p.taxes.dueDate;
+      push({ key: k, cat: 'tax', date: p.taxes.dueDate,
+        title: 'Property tax due' + (p.taxes.annualAmount ? ' · ' + fmtMoney(p.taxes.annualAmount) : ''),
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+    if (p.signingDate) {
+      const k = 'sign:' + p.id + ':' + p.signingDate;
+      push({ key: k, cat: 'deal', date: p.signingDate, title: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''),
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+    if (p.ddDate) {
+      const k = 'dd:' + p.id + ':' + p.ddDate;
+      push({ key: k, cat: 'deal', date: p.ddDate, title: 'Due-diligence deadline',
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+    if (p.expectedCloseDate) {
+      const k = 'close:' + p.id + ':' + p.expectedCloseDate;
+      push({ key: k, cat: 'deal', date: p.expectedCloseDate, title: 'Expected closing',
+        sub: p.address, propertyId: p.id, done: isEventDone(k) });
+    }
+  });
+
+  // Lease ends
+  (s.tenants || []).forEach(t => {
+    if (t.status !== 'active' || !t.leaseEnd) return;
+    const prop = getProperty(t.propertyId);
+    const k = 'lease:' + t.id + ':' + t.leaseEnd;
+    push({ key: k, cat: 'lease', date: t.leaseEnd, title: 'Lease ends · ' + (t.name || 'Tenant'),
+      sub: prop ? prop.address : '', propertyId: t.propertyId, done: isEventDone(k) });
+  });
+
+  // Refi target closes
+  (s.refis || []).forEach(r => {
+    if (r.status === 'done' || !r.targetClose) return;
+    const prop = getProperty(r.propertyId);
+    const k = 'refi:' + r.id + ':' + r.targetClose;
+    push({ key: k, cat: 'refi', date: r.targetClose,
+      title: 'Refi target close' + (r.lender ? ' · ' + r.lender : ''),
+      sub: prop ? prop.address : '', propertyId: r.propertyId, done: isEventDone(k) });
+  });
+
+  // 1031 exchange deadlines (45-day ID + 180-day close)
+  (s.exchanges || []).forEach(e => {
+    if (e.status !== 'active' || !e.relinquishedSoldDate) return;
+    const k45 = 'x45:' + e.id, k180 = 'x180:' + e.id;
+    push({ key: k45, cat: 'exch', date: addDaysISO(e.relinquishedSoldDate, 45),
+      title: '45-day 1031 ID deadline', sub: e.relinquishedAddress || '', done: isEventDone(k45) });
+    push({ key: k180, cat: 'exch', date: addDaysISO(e.relinquishedSoldDate, 180),
+      title: '180-day 1031 close', sub: e.relinquishedAddress || '', done: isEventDone(k180) });
+  });
+
+  // Rent due — 1st of each month in range (portfolio-wide), if there are renters
+  const renters = (s.tenants || []).filter(t => t.status === 'active' && (t.rent || 0) > 0);
+  if (renters.length) {
+    let m = fromIso.slice(0, 7);
+    const endM = toIso.slice(0, 7);
+    let guard = 0;
+    while (m <= endM && guard < 240) {
+      const d = m + '-01';
+      const k = 'rent:' + m;
+      push({ key: k, cat: 'rent', date: d,
+        title: 'Rent due · ' + renters.length + ' tenant' + (renters.length === 1 ? '' : 's'),
+        sub: '', done: isEventDone(k) });
+      m = addMonthsISO(d, 1).slice(0, 7);
+      guard++;
+    }
+  }
+
+  out.forEach(e => { e.days = daysBetween(today, e.date); });
+  out.sort((a, b) => a.date.localeCompare(b.date) || CAL_CAT_ORDER.indexOf(a.cat) - CAL_CAT_ORDER.indexOf(b.cat));
+  return out;
+}
+
+// Upcoming events for the dashboard peek: a window around today, open items only.
+function getUpcomingCalendarEvents(withinDays = 21, daysPast = 14) {
+  const today = TODAY();
+  return buildCalendarEvents(addDaysISO(today, -daysPast), addDaysISO(today, withinDays))
+    .filter(e => !e.done)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Complete an event regardless of kind (task vs. derived milestone).
+function completeCalendarEvent(e) {
+  if (!e) return;
+  if (e.taskId) completeReminder(e.taskId);
+  else toggleEventDone(e.key);
+}
+
+Object.assign(window, {
+  TASK_PRIORITY, TASK_PRIORITY_LABEL, TASK_PRIORITY_TONE, toggleTaskChecklistItem,
+  addDaysISO, CAL_CATS, CAL_CAT_ORDER,
+  buildCalendarEvents, getUpcomingCalendarEvents, completeCalendarEvent,
+});
 
 // ─── Transaction triage mutation ───
 function commitImportRows(rows) {

@@ -64,6 +64,7 @@ function PropertyScreen({ propertyId, subtab }) {
     { id: 'transactions', label: 'Transactions' },
     { id: 'sale',         label: 'Sale' },
     { id: 'tenancy',      label: 'Tenancy' },
+    { id: 'tasks',        label: 'Tasks' },
     { id: 'maintenance',  label: 'Maintenance' },
     { id: 'file',         label: 'Property file' },
     { id: 'records',      label: '1031 & log' },
@@ -80,6 +81,7 @@ function PropertyScreen({ propertyId, subtab }) {
   const leads = getLeadsForProperty(p.id);
   const offers = getOffersForProperty(p.id);
   const openMaint = getMaintenanceForProperty(p.id).filter(m => m.status !== 'done').length;
+  const openTasks = getRemindersForProperty(p.id).filter(r => !r.done).length;
   const dueReminders = getRemindersForProperty(p.id).filter(r => !r.done && r.dueDate && daysBetween(TODAY(), r.dueDate) <= 7).length;
 
   return (
@@ -163,7 +165,8 @@ function PropertyScreen({ propertyId, subtab }) {
                 className={'rail__item' + (tab.id === s.id ? ' rail__item--active' : '')}>
                 <span>{s.label}</span>
                 {s.id === 'tenancy' && tenants.length > 0 && <span className="tiny dim">{tenants.length}</span>}
-                {s.id === 'maintenance' && (openMaint + dueReminders) > 0 && <span className="tiny" style={{color: dueReminders > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{openMaint + dueReminders}</span>}
+                {s.id === 'tasks' && openTasks > 0 && <span className="tiny" style={{color: dueReminders > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{openTasks}</span>}
+                {s.id === 'maintenance' && openMaint > 0 && <span className="tiny dim">{openMaint}</span>}
                 {s.id === 'sale' && (offers.length + leads.length) > 0 && <span className="tiny dim">{offers.length + leads.length}</span>}
                 {s.id === 'transactions' && tx.length > 0 && <span className="tiny dim">{tx.length}</span>}
                 {s.id === 'file' && hoas.length > 0 && <span className="tiny dim">{hoas.length}</span>}
@@ -198,8 +201,10 @@ function PropertyScreen({ propertyId, subtab }) {
             <TenantsPanel p={p} tenants={tenants}/>
             <RefiPanel p={p}/>
           </>}
-          {tab.id === 'maintenance' && <>
+          {tab.id === 'tasks' && <>
             <RemindersPanel p={p}/>
+          </>}
+          {tab.id === 'maintenance' && <>
             <MaintenancePanel p={p}/>
           </>}
           {tab.id === 'file' && <>

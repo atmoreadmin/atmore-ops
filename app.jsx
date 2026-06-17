@@ -104,6 +104,7 @@ function SyncIndicator() {
 
 const NAV = [
   { path: '/dashboard',    label: 'Dashboard' },
+  { path: '/calendar',     label: 'Calendar' },
   { sep: true },
   { path: '/properties',   label: 'Properties' },
   { path: '/rent',         label: 'Rent Roll' },
@@ -166,7 +167,9 @@ function App() {
     const monthLedger = getLedgerForMonth(month);
     const vacateDue = monthLedger.filter(r => r.status === 'vacate-due').length;
     const untagged = untaggedTransactions().length;
-    return { vacateDue, untagged };
+    const today = TODAY();
+    const tasksDue = (Store.state.reminders || []).filter(r => !r.done && r.dueDate && daysBetween(today, r.dueDate) <= 7).length;
+    return { vacateDue, untagged, tasksDue };
   }, [store]);
 
   // Route resolution
@@ -178,6 +181,8 @@ function App() {
     screen = <PropertyScreen propertyId={segs[1]} subtab={segs[2] || 'capture'} />;
   } else if (top === 'dashboard') {
     screen = <DashboardScreen />;
+  } else if (top === 'calendar') {
+    screen = <CalendarScreen />;
   } else if (top === 'rent') {
     screen = <RentRollScreen />;
   } else if (top === 'pipeline') {
@@ -237,6 +242,7 @@ function App() {
             let count = null, alert = false;
             if (n.path === '/rent' && counts.vacateDue) { count = counts.vacateDue; alert = true; }
             if (n.path === '/transactions' && counts.untagged) { count = counts.untagged; alert = true; }
+            if (n.path === '/calendar' && counts.tasksDue) { count = counts.tasksDue; alert = true; }
             return (
               <div key={n.path}
                 onClick={() => nav(n.path)}
