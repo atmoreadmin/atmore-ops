@@ -390,6 +390,38 @@ function AddressLookup({ onPick }) {
   );
 }
 
+// Local-timezone ISO date (YYYY-MM-DD) for `today + n` days.
+function dateFromTodayDays(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + Number(n));
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+}
+// Whole days between today and an ISO date (negative = in the past).
+function daysFromTodayISO(iso) {
+  if (!iso) return '';
+  const target = new Date(iso + 'T00:00:00');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((target - today) / 86400000);
+}
+// Date field that also accepts a number of days from today; the two stay in sync.
+function DateOrDaysField({ label, value, onChange }) {
+  const days = value ? daysFromTodayISO(value) : '';
+  return (
+    <div>
+      <div className="up dim mb-4">{label}</div>
+      <div className="row gap-6 items-center">
+        <input className="input" type="date" value={value} onChange={e => onChange(e.target.value)} style={{flex: '1 1 auto', minWidth: 0}}/>
+        <input className="input mono" type="number" value={days} placeholder="days" title="Days from today"
+          onChange={e => onChange(e.target.value === '' ? '' : dateFromTodayDays(e.target.value))}
+          style={{flex: '0 0 64px', width: 64, textAlign: 'right'}}/>
+        <span className="tiny dim" style={{flex: '0 0 auto'}}>days</span>
+      </div>
+    </div>
+  );
+}
+
 function AddPropertyModal({ onClose, onCreated }) {
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
@@ -468,8 +500,8 @@ function AddPropertyModal({ onClose, onCreated }) {
           <div><div className="up dim mb-4">Earnest money deposit</div><input className="input mono" type="number" value={earnest} onChange={e => setEarnest(e.target.value)} style={{width: '100%'}}/></div>
         </div>
         <div className="grid g-2">
-          <div><div className="up dim mb-4">DD date</div><input className="input" type="date" value={ddDate} onChange={e => setDdDate(e.target.value)} style={{width: '100%'}}/></div>
-          <div><div className="up dim mb-4">Signing date</div><input className="input" type="date" value={signingDate} onChange={e => setSigningDate(e.target.value)} style={{width: '100%'}}/></div>
+          <DateOrDaysField label="DD date" value={ddDate} onChange={setDdDate}/>
+          <DateOrDaysField label="Signing date" value={signingDate} onChange={setSigningDate}/>
         </div>
 
         <div className="divider" style={{margin: '4px 0'}}/>

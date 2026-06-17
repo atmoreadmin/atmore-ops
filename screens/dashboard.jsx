@@ -440,6 +440,12 @@ function ThisWeekCard({ properties }) {
         events.push({ key: 'sign:' + p.id + ':' + p.signingDate, date: p.signingDate, days, label: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''), addr: p.address, type: 'signing', id: p.id });
       }
     }
+    if (p.saleSigningDate) {
+      const days = daysBetween(today, p.saleSigningDate);
+      if (days >= -2 && days <= 14) {
+        events.push({ key: 'salesign:' + p.id + ':' + p.saleSigningDate, date: p.saleSigningDate, days, label: 'Sale signing' + (p.saleSigningTime ? ' · ' + p.saleSigningTime : ''), addr: p.address, type: 'signing', id: p.id });
+      }
+    }
     if (p.ddDate) {
       const days = daysBetween(today, p.ddDate);
       if (days >= -2 && days <= 14) {

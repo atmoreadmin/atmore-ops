@@ -36,6 +36,7 @@ const SCHEMA = {
     'purchasePrice','acqEarnest','purchaseFees','purchaseCredits','purchaseLoan','acqExchangeFunds','acqDDFee',
     'rehab','rehabFunds','interest','salesDate','listPrice','salesPrice','grossProfit',
     'vestingLLC','driveUrl','failedReason','notes','attorney','attorneyContact','closingTime',
+    'saleSigningDate','saleSigningTime',
     'salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest','exchangeFunds',
     'atmoreLoanPrincipal','atmoreLoanPayoff',
     'contractDate','buyerDDDate','expectedCloseDate','utilityNote',

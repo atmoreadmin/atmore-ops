@@ -13,6 +13,9 @@ function PropertyEditor({ property, onClose }) {
   const [vestingLLC, setVestingLLC] = useState(p.vestingLLC || '');
   const [driveUrl, setDriveUrl] = useState(p.driveUrl || '');
   const [notes, setNotes] = useState(p.notes || '');
+  // Signing schedule — drives the dashboard "Next 14 days" scheduler.
+  const [signingDate, setSigningDate] = useState(p.signingDate || '');
+  const [signingTime, setSigningTime] = useState(p.closingTime || '');
 
   // Insurance
   const ins = p.insurance || {};
@@ -50,6 +53,8 @@ function PropertyEditor({ property, onClose }) {
   function save() {
     const patch = {
       type, assigned, loanType, lockbox, vestingLLC, driveUrl, notes,
+      signingDate: signingDate || null,
+      closingTime: signingTime || null,
       insurance: (iCarrier || iPolicy || iPremium) ? {
         carrier: iCarrier, policyNumber: iPolicy,
         premium: iPremium ? parseFloat(iPremium) : null,
@@ -94,7 +99,7 @@ function PropertyEditor({ property, onClose }) {
               onClick={() => setSection(s.id)}>{s.label}</div>
           ))}
           <div className="tiny dim mt-12" style={{padding: '0 12px', lineHeight: 1.5}}>
-            Purchase price, dates &amp; fees are edited under <strong>Overview → Acquisition</strong>.
+            Purchase price &amp; fees are edited under <strong>Overview → Acquisition</strong>.
           </div>
         </div>
 
@@ -120,6 +125,17 @@ function PropertyEditor({ property, onClose }) {
               <Field label="Lockbox code">
                 <input className="input" value={lockbox} onChange={e => setLockbox(e.target.value)} style={{width: 200, fontFamily: 'IBM Plex Mono, monospace'}}/>
               </Field>
+              <div className="divider" style={{margin: '4px 0'}}/>
+              <div className="up dim">Signing</div>
+              <div className="grid g-2">
+                <Field label="Signing date">
+                  <input className="input" type="date" value={signingDate} onChange={e => setSigningDate(e.target.value)} style={{width: '100%'}}/>
+                </Field>
+                <Field label="Signing time">
+                  <input className="input" type="time" value={signingTime} onChange={e => setSigningTime(e.target.value)} style={{width: '100%'}}/>
+                </Field>
+              </div>
+              <div className="tiny dim" style={{marginTop: -4}}>Shows on the dashboard “Next 14 days” scheduler.</div>
               <Field label="Google Drive folder">
                 <input className="input" type="url" value={driveUrl} onChange={e => setDriveUrl(e.target.value)} style={{width: '100%'}}
                   placeholder="https://drive.google.com/drive/folders/…"/>
