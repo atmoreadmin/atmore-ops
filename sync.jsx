@@ -295,7 +295,12 @@ function deserializeFromSheet(pulledData) {
       ? Store.state.statuses : defaultStatuses();
   }
 
-  state.today    = window.SEED.today;
+  // "Today" is a client-side clock, not Sheet data — never freeze it to the seed date
+  // on a pull (that's what showed May 27). Use the real current date, and never move
+  // backward from a later local value.
+  const realToday = new Date().toISOString().slice(0, 10);
+  state.today = (Store.state && Store.state.today && Store.state.today > realToday)
+    ? Store.state.today : realToday;
 
   return state;
 }
