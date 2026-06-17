@@ -328,6 +328,34 @@ const SHEET_SCHEMA = {
       { key: 'tone',   label: 'Color',  type: 'string', notes: 'Brand tone key, blank = built-in color' },
     ],
   },
+  Tasks: {
+    description: 'Per-property tasks & reminders — deadlines, recurring upkeep and inspections. Powers the Calendar. Checklist is stored as a JSON array in one cell.',
+    pk: 'id',
+    rowSource: (s) => (s.reminders || []).map(r => ({
+      id: r.id,
+      propertyId: r.propertyId || '',
+      title: r.title || '',
+      dueDate: r.dueDate || '',
+      priority: r.priority || 'normal',
+      recurrence: r.recurrence || 'none',
+      done: !!r.done,
+      lastDone: r.lastDone || '',
+      checklist: JSON.stringify(r.checklist || []),
+      notes: r.notes || '',
+    })),
+    columns: [
+      { key: 'id',         label: 'ID',          type: 'string', required: true },
+      { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
+      { key: 'title',      label: 'Task',        type: 'string', required: true },
+      { key: 'dueDate',    label: 'Due Date',    type: 'date' },
+      { key: 'priority',   label: 'Priority',    type: 'enum', notes: 'high / normal / low' },
+      { key: 'recurrence', label: 'Repeat',      type: 'enum', notes: 'none / monthly / quarterly / semiannual / annual' },
+      { key: 'done',       label: 'Done',        type: 'bool' },
+      { key: 'lastDone',   label: 'Last Done',   type: 'date' },
+      { key: 'checklist',  label: 'Checklist',   type: 'string', notes: 'JSON array of {id,text,done}' },
+      { key: 'notes',      label: 'Notes',       type: 'string' },
+    ],
+  },
 };
 
 // Expose schema globally so the sync layer can read it

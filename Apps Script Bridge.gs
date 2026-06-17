@@ -73,6 +73,9 @@ const SCHEMA = {
     'status','identifiedPropIds','closedPropIds','notes',
   ],
   Leads: ['id','propertyId','date','name','phone','source','status','notes'],
+  Tasks: [
+    'id','propertyId','title','dueDate','priority','recurrence','done','lastDone','checklist','notes',
+  ],
   Offers: [
     'id','propertyId','date','buyer','buyerAgent','agentContact',
     'offerPrice','earnestMoney','financing','closeDate','status',
