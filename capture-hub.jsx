@@ -273,7 +273,7 @@ function CapturePanel({ p }) {
 
       {dialog === 'acq'    && <AcquisitionDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
       {dialog === 'list'   && <ListingDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
-      {dialog === 'sold'   && <MarkSoldDialog key={p.id} property={p} editMode={p.statusCode === 'I'} initialNote="" onClose={() => setDialog(null)}/>}
+      {dialog === 'sold'   && <MarkSoldDialog key={p.id} property={p} editMode initialNote="" onClose={() => setDialog(null)}/>}
       {dialog === 'rental' && <ConvertRentalDialog key={p.id} property={p} onBack={() => setDialog(null)} onClose={() => setDialog(null)} initialNote=""/>}
     </>
   );
