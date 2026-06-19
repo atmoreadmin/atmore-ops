@@ -169,10 +169,10 @@ function DashboardScreen() {
           />
           <AlertRow
             tone={remindersDue.some(x => x.days < 0) ? 'brick' : 'ochre'} count={remindersDue.length}
-            title={`${remindersDue.length} task${remindersDue.length===1?'':'s'} due${remindersDue.some(x => x.days < 0) ? ' (some overdue)' : ''}`}
+            title={`${remindersDue.length} maintenance reminder${remindersDue.length===1?'':'s'} due${remindersDue.some(x => x.days < 0) ? ' (some overdue)' : ''}`}
             sub={remindersDue.slice(0,3).map(x => `${x.reminder.title} — ${x.property.address} (${x.days < 0 ? `${-x.days}d overdue` : x.days === 0 ? 'today' : `in ${x.days}d`})`).join(' · ')}
-            actionLabel="Open calendar"
-            onAction={() => nav('/calendar')}
+            actionLabel="Open"
+            onAction={() => nav('/property/' + remindersDue[0].property.id + '/maintenance')}
             hidden={remindersDue.length === 0}
           />
           <AlertRow
@@ -440,12 +440,6 @@ function ThisWeekCard({ properties }) {
         events.push({ key: 'sign:' + p.id + ':' + p.signingDate, date: p.signingDate, days, label: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''), addr: p.address, type: 'signing', id: p.id });
       }
     }
-    if (p.saleSigningDate) {
-      const days = daysBetween(today, p.saleSigningDate);
-      if (days >= -2 && days <= 14) {
-        events.push({ key: 'salesign:' + p.id + ':' + p.saleSigningDate, date: p.saleSigningDate, days, label: 'Sale signing' + (p.saleSigningTime ? ' · ' + p.saleSigningTime : ''), addr: p.address, type: 'signing', id: p.id });
-      }
-    }
     if (p.ddDate) {
       const days = daysBetween(today, p.ddDate);
       if (days >= -2 && days <= 14) {
@@ -491,12 +485,7 @@ function ThisWeekCard({ properties }) {
 
   return (
     <Card>
-      <CardHead title="Next 14 days" right={
-        <div className="row gap-8 items-center">
-          <Tag tone="blue">{outstanding} left</Tag>
-          <Btn sz="sm" kind="ghost" onClick={() => nav('/calendar')}>Calendar →</Btn>
-        </div>
-      }/>
+      <CardHead title="Next 14 days" right={<Tag tone="blue">{outstanding} left</Tag>}/>
       <div className="card__body">
         {events.length === 0 ? <Empty title="Nothing scheduled" sub="No upcoming signings, DD dates, or deadlines."/> :
           <div className="col gap-10">

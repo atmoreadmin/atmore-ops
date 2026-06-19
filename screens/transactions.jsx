@@ -20,19 +20,6 @@ const TX_SORT = {
   project:  t => (t.splits && t.splits.length) ? 'multiple' : (t.project || '\ufffe'),
 };
 
-// Columns available on the main transactions table. `always` columns can't be hidden;
-// mirrors the Properties-list column model so the two tables behave the same way.
-const TX_LIST_COLUMNS = [
-  { key: 'date',     label: 'Date',        always: true },
-  { key: 'acct',     label: 'Acct' },
-  { key: 'desc',     label: 'Description', always: true },
-  { key: 'payee',    label: 'Payee' },
-  { key: 'amount',   label: 'Amount', num: true, always: true },
-  { key: 'category', label: 'Category' },
-  { key: 'project',  label: 'Property' },
-];
-const TX_LIST_COLS_KEY = 'atmore-tx-list-columns-v1';
-
 function TransactionsScreen() {
   const store = useStore();
   const rules = getAutoTagRules();
@@ -52,24 +39,6 @@ function TransactionsScreen() {
   const [addingRule, setAddingRule] = useState(false);
   const [sortKey, setSortKey] = useState('date');
   const [sortDir, setSortDir] = useState('desc');
-  const [columnsOpen, setColumnsOpen] = useState(false);
-  const [visibleCols, setVisibleCols] = useState(() => {
-    try { const saved = localStorage.getItem(TX_LIST_COLS_KEY); if (saved) return JSON.parse(saved); } catch (e) {}
-    return TX_LIST_COLUMNS.map(c => c.key);
-  });
-  const showCol = key => visibleCols.includes(key);
-  function toggleCol(key) {
-    const col = TX_LIST_COLUMNS.find(c => c.key === key);
-    if (col?.always) return;
-    const next = visibleCols.includes(key) ? visibleCols.filter(k => k !== key) : [...visibleCols, key];
-    setVisibleCols(next);
-    localStorage.setItem(TX_LIST_COLS_KEY, JSON.stringify(next));
-  }
-  function resetCols() {
-    const next = TX_LIST_COLUMNS.map(c => c.key);
-    setVisibleCols(next);
-    localStorage.setItem(TX_LIST_COLS_KEY, JSON.stringify(next));
-  }
 
   function clickHeader(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -85,19 +54,8 @@ function TransactionsScreen() {
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
     if (search) {
-      const q = search.toLowerCase().trim();
-      const amt = t.amount || 0;
-      // Numeric amount match: strip $ , and sign from the query, compare to the
-      // transaction amount (abs + raw) so "511", "511.11", "$511.11", "-511.11" all hit.
-      const qNum = q.replace(/[$,\s]/g, '');
-      let amtMatch = false;
-      if (qNum && /^-?\d*\.?\d+$/.test(qNum)) {
-        const n = Math.abs(parseFloat(qNum));
-        amtMatch = String(Math.abs(amt)).includes(qNum.replace(/^-/, '')) ||
-                   Math.abs(Math.abs(amt) - n) < 0.005;
-      }
-      const hay = `${t.desc} ${t.payee} ${t.category} ${t.project} ${fmtMoney(amt)} ${Math.abs(amt)}`.toLowerCase();
-      if (!amtMatch && !hay.includes(q)) return false;
+      const hay = `${t.desc} ${t.payee} ${t.category} ${t.project}`.toLowerCase();
+      if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
   });
@@ -201,10 +159,10 @@ function TransactionsScreen() {
               </div>
             ) : (
             <div className="card__body row gap-12 items-center wrap">
-              <input className="input" placeholder="Search description, payee, category, amount…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
+              <input className="input" placeholder="Search description, payee, category…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
               <select className="select" value={acctFilter} onChange={e => setAcctFilter(e.target.value)}>
                 <option value="all">All accounts</option>
-                {[...store.accounts].sort((a,b)=>String(a.label??"").localeCompare(String(b.label??""),undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                {store.accounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
               </select>
               <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
                 {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
@@ -215,33 +173,6 @@ function TransactionsScreen() {
                 </span>
               </Tag>
               <div className="grow"/>
-              <div style={{position: 'relative'}}>
-                <Btn sz="sm" kind="ghost" onClick={() => setColumnsOpen(v => !v)}>Columns ▾</Btn>
-                {columnsOpen && (
-                  <>
-                    <div onClick={() => setColumnsOpen(false)} style={{position: 'fixed', inset: 0, zIndex: 40}}/>
-                    <div style={{position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 41, background: 'var(--paper)', border: '1px solid var(--rule)', borderRadius: 6, boxShadow: '0 6px 24px rgba(28,26,20,0.15)', minWidth: 200, padding: '6px 0'}}>
-                      <div className="row between items-center" style={{padding: '6px 14px', borderBottom: '1px solid var(--rule)'}}>
-                        <span className="up dim">Columns</span>
-                        <button onClick={resetCols} className="tiny" style={{background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontFamily: 'inherit'}}>Reset</button>
-                      </div>
-                      {TX_LIST_COLUMNS.map(c => {
-                        const isOn = visibleCols.includes(c.key);
-                        return (
-                          <label key={c.key} className="row gap-8 items-center"
-                            style={{padding: '6px 14px', cursor: c.always ? 'default' : 'pointer', opacity: c.always ? 0.6 : 1, fontSize: 13}}
-                            onMouseOver={e => { if (!c.always) e.currentTarget.style.background = 'var(--paper-3)'; }}
-                            onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
-                            <input type="checkbox" checked={isOn} disabled={c.always} onChange={() => toggleCol(c.key)}/>
-                            <span>{c.label}</span>
-                            {c.always && <span className="tiny dim" style={{marginLeft: 'auto'}}>required</span>}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
               <span className="small dim">Showing {rows.length}</span>
             </div>
             )}
@@ -293,12 +224,12 @@ function TransactionsScreen() {
                     <input type="checkbox" checked={allSel} title="Select all shown" ref={el => { if (el) el.indeterminate = someSel; }} onChange={toggleAll}/>
                   </th>
                   <Th k="date" label="Date"/>
-                  {showCol('acct') && <Th k="acct" label="Acct"/>}
+                  <Th k="acct" label="Acct"/>
                   <Th k="desc" label="Description"/>
-                  {showCol('payee') && <Th k="payee" label="Payee"/>}
+                  <Th k="payee" label="Payee"/>
                   <Th k="amount" label="Amount" num/>
-                  {showCol('category') && <Th k="category" label="Category"/>}
-                  {showCol('project') && <Th k="project" label="Property"/>}
+                  <Th k="category" label="Category"/>
+                  <Th k="project" label="Property"/>
                   <th style={{width: 130}}></th>
                 </tr>
               </thead>
@@ -316,16 +247,16 @@ function TransactionsScreen() {
                       onClick={(e) => { if (e.target.type === 'checkbox' || e.target.tagName === 'BUTTON') return; toggleRow(t.id); }}>
                       <td><input type="checkbox" checked={isSel} onChange={() => toggleRow(t.id)}/></td>
                       <td className="mono small">{fmtDate(t.date)}</td>
-                      {showCol('acct') && <td className="mono small dim">{t.acct}</td>}
+                      <td className="mono small dim">{t.acct}</td>
                       <td className="small" style={{maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</td>
-                      {showCol('payee') && <td className="small dim">{t.payee || '—'}</td>}
+                      <td className="small dim">{t.payee || '—'}</td>
                       <td className="num mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</td>
-                      {showCol('category') && <td>
+                      <td>
                         {isSplit ? <Tag tone="blue">{t.splits.length} splits</Tag>
                           : t.category ? <Tag tone="ghost">{t.category}</Tag>
                           : <Tag tone="ochre" title={`Suggestion: ${suggestion.category}`}>{suggestion.category ? `?  ${suggestion.category}` : '?  unknown'}</Tag>}
-                      </td>}
-                      {showCol('project') && <td>
+                      </td>
+                      <td>
                         {isSplit ? (
                           <button onClick={() => { const n = new Set(expanded); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); setExpanded(n); }}
                             style={{background: 'transparent', border: '1px solid var(--blue-soft)', color: 'var(--blue-deep)', borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 500}}>
@@ -334,7 +265,7 @@ function TransactionsScreen() {
                         ) : t.project ? (
                           t.project === 'multiple' ? <Tag tone="blue">multiple</Tag> : <Tag tone="blue">{t.project}</Tag>
                         ) : <Tag tone="ochre">{suggestion.project ? `?  ${suggestion.project}` : '?  unassigned'}</Tag>}
-                      </td>}
+                      </td>
                       <td>
                         <div className="row gap-4">
                           <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); setEditing(t); }}>Edit</Btn>
@@ -344,15 +275,11 @@ function TransactionsScreen() {
                     </tr>
                     {isSplit && isExp && t.splits.map((sp, idx) => (
                       <tr key={t.id + '-s' + idx} style={{background: 'var(--paper-3)'}}>
-                        <td></td>
-                        <td></td>
-                        {showCol('acct') && <td></td>}
-                        <td className="small dim" style={{paddingLeft: 28}}>↳ split</td>
-                        {showCol('payee') && <td></td>}
+                        <td colSpan="4"></td>
+                        <td className="small dim" style={{paddingLeft: 28}}>↳ {sp.project}</td>
                         <td className="num mono small" style={{color: sp.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(sp.amount)}</td>
-                        {showCol('category') && <td><Tag tone="ghost">{sp.category || '—'}</Tag></td>}
-                        {showCol('project') && <td className="small dim">↳ {sp.project}</td>}
-                        <td></td>
+                        <td><Tag tone="ghost">{sp.category || '—'}</Tag></td>
+                        <td colSpan="2"></td>
                       </tr>
                     ))}
                     </React.Fragment>
@@ -395,12 +322,6 @@ function TransactionsScreen() {
                       <span style={{color: 'var(--blue)', fontWeight: 500}}>{r.category}</span>
                       {r.conf != null && <span className="mono tiny dim">· {r.conf}%</span>}
                     </div>
-                    {r.payee && (
-                      <div className="row gap-6 items-center">
-                        <span className="mono tiny dim">→ payee</span>
-                        <span style={{color: 'var(--blue)'}}>{r.payee}</span>
-                      </div>
-                    )}
                     {r.project && (
                       <div className="row gap-6 items-center">
                         <span className="mono tiny dim">→ proj</span>
@@ -486,7 +407,7 @@ function BulkActionBar({ selectedIds, onClear }) {
         <option value="">Set property…</option>
         <option value="multiple">multiple · split</option>
         {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
-        {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+        {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
       </select>
       {proj && <button onClick={() => { bulkTagTransactions(selectedIds, {project: proj}); setProj(''); }}
         style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
@@ -528,7 +449,6 @@ function AutoTagRuleEditor({ rule, onClose }) {
   const store = useStore();
   const [pattern, setPattern] = useState(rule?.pattern || '');
   const [category, setCategory] = useState(rule?.category || '');
-  const [payee, setPayee] = useState(rule?.payee || '');
   const [conf, setConf] = useState(rule?.conf != null ? rule.conf : 80);
   const isTokenProj = !rule || rule.project === '' || PROJECT_TOKENS.some(t => t.value === rule.project);
   const [projMode, setProjMode] = useState(isTokenProj ? (rule?.project || '') : 'specific');
@@ -543,7 +463,7 @@ function AutoTagRuleEditor({ rule, onClose }) {
 
   function save() {
     const project = projMode === 'specific' ? specificProp : projMode;
-    const payload = { pattern: pattern.trim(), category, payee: payee.trim(), project, conf: Number(conf) };
+    const payload = { pattern: pattern.trim(), category, project, conf: Number(conf) };
     if (editing) updateAutoTagRule(rule.id, payload);
     else addAutoTagRule(payload);
     onClose();
@@ -564,11 +484,6 @@ function AutoTagRuleEditor({ rule, onClose }) {
           <ManagedSelect listKey="categories" value={category} onChange={setCategory} style={{width: '100%'}}/>
         </div>
         <div>
-          <div className="up dim mb-4">Payee <span className="dim" style={{textTransform: 'none', letterSpacing: 0}}>(optional — the merchant/person this maps to)</span></div>
-          <input className="input" value={payee} onChange={e => setPayee(e.target.value)} placeholder="e.g. Lowe's, Duke Energy" style={{width: '100%'}}/>
-          <div className="tiny dim mt-4">Leave blank to auto-derive the payee from the description on import.</div>
-        </div>
-        <div>
           <div className="up dim mb-4">Property / project</div>
           <select className="select" value={projMode} onChange={e => setProjMode(e.target.value)} style={{width: '100%'}}>
             {PROJECT_TOKENS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -577,7 +492,7 @@ function AutoTagRuleEditor({ rule, onClose }) {
           {projMode === 'specific' && (
             <select className="select mt-8" value={specificProp} onChange={e => setSpecificProp(e.target.value)} style={{width: '100%'}}>
               <option value="">— pick property —</option>
-              {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+              {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
             </select>
           )}
         </div>

@@ -411,10 +411,54 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   );
 }
 
+function PrevTenantSummary({ tenant }) {
+  const d = tenant.depositReturn;
+  return (
+    <div style={{marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--rule-soft)'}}>
+      <div className="row between items-baseline mb-8">
+        <div className="up dim">Previous tenant</div>
+        <Tag tone="ghost">Moved out {tenant.moveOut ? fmtDate(tenant.moveOut, {full: true}) : '—'}</Tag>
+      </div>
+      <div className="row gap-16 items-baseline wrap">
+        <div className="serif" style={{fontSize: 16, fontWeight: 500}}>{tenant.name || '—'}</div>
+        {(tenant.moveIn || tenant.leaseEnd) && (
+          <div className="small dim">{fmtDate(tenant.moveIn, {full: true})} → {fmtDate(tenant.moveOut || tenant.leaseEnd, {full: true})}</div>
+        )}
+      </div>
+      {d ? (
+        <div style={{marginTop: 10, padding: '10px 12px', background: 'var(--paper-3)', borderRadius: 6}}>
+          <div className="row gap-16 items-baseline wrap">
+            <div>
+              <div className="up dim">Deposit held</div>
+              <div className="mono mt-2">{fmtMoney(d.depositOnFile || 0)}</div>
+            </div>
+            <div className="divider-v"/>
+            <div>
+              <div className="up dim">Refunded</div>
+              <div className="mono mt-2" style={{color: 'var(--sage)'}}>{fmtMoney(d.refunded || 0)}</div>
+            </div>
+            <div className="divider-v"/>
+            <div>
+              <div className="up dim">Withheld</div>
+              <div className="mono mt-2" style={{color: (d.withheld || 0) > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{fmtMoney(d.withheld || 0)}</div>
+            </div>
+          </div>
+          {(d.withheld || 0) > 0 && d.reason && <div className="small dim mt-8" style={{fontStyle: 'italic'}}>Withheld for: {d.reason}</div>}
+        </div>
+      ) : (
+        <div className="small dim mt-8">No deposit settlement on record.</div>
+      )}
+    </div>
+  );
+}
+
 function TenantsPanel({ p, tenants, compact }) {
   const [adding, setAdding] = useState(false);
   const [rentChanging, setRentChanging] = useState(null);
   const [editingTenant, setEditingTenant] = useState(null);
+  const [movingOut, setMovingOut] = useState(null);
+  const lastPast = tenants.filter(t => t.status === 'past')
+    .sort((a, b) => String(b.moveOut || b.leaseEnd || '').localeCompare(String(a.moveOut || a.leaseEnd || '')))[0];
   if (tenants.length === 0 || tenants.every(t => t.status !== 'active')) return (
     <Card>
       <CardHead title="Tenants & lease" right={p.statusCode === 'K' || p.statusCode === 'D' ? <Btn sz="sm" kind="primary" onClick={() => setAdding(true)}>+ Start lease</Btn> : null}/>
@@ -422,6 +466,7 @@ function TenantsPanel({ p, tenants, compact }) {
         <Empty icon="🏠" title="No active tenant"
           sub={p.statusCode === 'K' || p.statusCode === 'D' ? 'Property is ready to rent — add the tenant who moved in.' : `Property is in ${STATUS_LABEL[p.statusCode]} — no tenant expected yet.`}
           action={(p.statusCode === 'K' || p.statusCode === 'D') ? <Btn kind="primary" sz="sm" onClick={() => setAdding(true)}>+ Start a lease</Btn> : null}/>
+        {lastPast && <PrevTenantSummary tenant={lastPast}/>}
       </div>
       {adding && <AddTenantModal propertyId={p.id} onClose={() => setAdding(false)}/>}
     </Card>
@@ -432,7 +477,7 @@ function TenantsPanel({ p, tenants, compact }) {
         <Card key={t.id}>
           <CardHead title={t.name || 'Vacant unit'}
             right={t.status === 'active'
-              ? <div className="row gap-6"><Btn sz="sm" kind="ghost" onClick={() => setEditingTenant(t.id)}>Edit</Btn><Btn sz="sm" kind="ghost" onClick={() => setRentChanging(t.id)}>Change rent</Btn><Tag tone="sage">Active</Tag></div>
+              ? <div className="row gap-6"><Btn sz="sm" kind="ghost" onClick={() => setEditingTenant(t.id)}>Edit</Btn><Btn sz="sm" kind="ghost" onClick={() => setRentChanging(t.id)}>Change rent</Btn><Btn sz="sm" kind="ghost" onClick={() => setMovingOut(t.id)}>Move out</Btn><Tag tone="sage">Active</Tag></div>
               : <div className="row gap-6"><Btn sz="sm" kind="ghost" onClick={() => setEditingTenant(t.id)}>Edit</Btn><Tag tone="ghost">{t.status}</Tag></div>}/>
           {t.status === 'active' ? (
             <div className="card__body">
@@ -477,6 +522,7 @@ function TenantsPanel({ p, tenants, compact }) {
       {adding && <AddTenantModal propertyId={p.id} onClose={() => setAdding(false)}/>}
       {editingTenant && <AddTenantModal tenant={tenants.find(t => t.id === editingTenant)} onClose={() => setEditingTenant(null)}/>}
       {rentChanging && <RentChangeModal tenant={tenants.find(t => t.id === rentChanging)} onClose={() => setRentChanging(null)}/>}
+      {movingOut && <MoveOutModal tenant={tenants.find(t => t.id === movingOut)} onClose={() => setMovingOut(null)}/>}
     </>
   );
 }

@@ -36,7 +36,6 @@ const SCHEMA = {
     'purchasePrice','acqEarnest','purchaseFees','purchaseCredits','purchaseLoan','acqExchangeFunds','acqDDFee',
     'rehab','rehabFunds','interest','salesDate','listPrice','salesPrice','grossProfit',
     'vestingLLC','driveUrl','failedReason','notes','attorney','attorneyContact','closingTime',
-    'saleSigningDate','saleSigningTime',
     'salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest','exchangeFunds',
     'atmoreLoanPrincipal','atmoreLoanPayoff',
     'contractDate','buyerDDDate','expectedCloseDate','utilityNote',
@@ -73,9 +72,6 @@ const SCHEMA = {
     'status','identifiedPropIds','closedPropIds','notes',
   ],
   Leads: ['id','propertyId','date','name','phone','source','status','notes'],
-  Tasks: [
-    'id','propertyId','title','dueDate','priority','recurrence','done','lastDone','checklist','notes',
-  ],
   Offers: [
     'id','propertyId','date','buyer','buyerAgent','agentContact',
     'offerPrice','earnestMoney','financing','closeDate','status',

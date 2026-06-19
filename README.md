@@ -18,6 +18,11 @@ this folder → **Commit changes**. GitHub overwrites the matching files.
 - **`Apps Script Bridge.gs`** — UNCHANGED. No need to re-deploy the Apps Script.
 
 ## What's in this build (vs. your current production)
+- Tenant turnover: **Move out** button on the active lease — retires the tenant to
+  "past" (history kept) and records the **security-deposit settlement** (refunded vs.
+  withheld + reason). The vacated unit then shows a **Previous tenant** summary and a
+  **+ Start a lease** CTA for the new renter. Starting a lease also retires any prior tenant.
+- Payee on a transaction can now be picked from your **contractors** (or free-typed).
 - Mobile layout **removed** — desktop layout only, as before.
 - Save button shows a visible disabled state + reason hint (no more silent dead clicks).
 - `$0` accepted as a valid transaction amount.

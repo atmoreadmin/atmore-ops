@@ -1656,9 +1656,41 @@ function addTenant(tenantData, startLedger = true) {
         m = d.toISOString().slice(0,7);
       }
     }
-    // If property has a placeholder vacant/prep tenant, remove or update it
-    const vacant = s.tenants.find(x => x.propertyId === tenantData.propertyId && (x.status === 'vacant' || x.status === 'prep') && x.id !== id);
-    if (vacant) vacant.status = 'past';
+    // Retire any prior tenant still on this property — a new lease means the old
+    // occupant (placeholder vacant/prep, or a still-active tenant) has moved on.
+    s.tenants.forEach(x => {
+      if (x.propertyId === tenantData.propertyId && x.id !== id && x.status !== 'past') {
+        x.status = 'past';
+        if (!x.moveOut) x.moveOut = tenantData.moveIn || s.today;
+      }
+    });
+  });
+}
+
+// ─── Move out a tenant — retire the lease and record the deposit disposition ───
+function moveOutTenant(tenantId, opts = {}) {
+  Store.update(s => {
+    const t = s.tenants.find(x => x.id === tenantId);
+    if (!t) return;
+    const date = opts.moveOut || s.today;
+    t.status = 'past';
+    t.moveOut = date;
+    if (!t.leaseEnd || date < t.leaseEnd) t.leaseEnd = date;
+    t.depositReturn = {
+      depositOnFile: opts.depositOnFile != null ? opts.depositOnFile : (t.deposit || 0),
+      refunded: opts.refunded || 0,
+      withheld: opts.withheld || 0,
+      reason: opts.reason || '',
+      settledOn: date,
+    };
+    if (opts.note != null && opts.note !== '') t.notes = opts.note;
+    // Drop unpaid future rent charges past the move-out month so the rent roll
+    // doesn't keep billing a unit nobody lives in. Paid history is untouched.
+    if (opts.dropFutureCharges !== false) {
+      const moMonth = date.slice(0, 7);
+      s.rentLedger = (s.rentLedger || []).filter(r =>
+        !(r.tenantId === tenantId && r.month > moMonth && (r.paid || 0) === 0));
+    }
   });
 }
 
@@ -1752,7 +1784,7 @@ Object.assign(window, {
   splitTransaction, clearSplit, txSplitsForProperty,
   linkLedgerToTransaction, findMatchingTxForLedger,
   isDuplicateTransaction,
-  addTenant, updateTenant, addProperty, addHOA, updateHOA, deleteHOA,
+  addTenant, updateTenant, moveOutTenant, addProperty, addHOA, updateHOA, deleteHOA,
 });
 
 // ─── Bulk transaction tag mutation ───
@@ -1922,6 +1954,8 @@ function goUnderContract(propId, { offerId = null, terms = {}, closing = {}, not
         d.setDate(d.getDate() + Number(offer.dueDiligenceDays));
         p.buyerDDDate = d.toISOString().slice(0, 10);
       }
+      if (c.saleSigningDate) p.saleSigningDate = c.saleSigningDate;
+      if (c.saleSigningTime) p.saleSigningTime = c.saleSigningTime;
       if (offer.dueDiligenceFee != null) p.saleDDCollected = Math.abs(offer.dueDiligenceFee);
       if (offer.closeDate) p.expectedCloseDate = offer.closeDate;
       p.contractDate = s.today;

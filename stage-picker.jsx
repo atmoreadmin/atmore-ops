@@ -248,8 +248,6 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const offerPriceStr = chosenOffer && chosenOffer.offerPrice != null ? String(chosenOffer.offerPrice) : '';
   const offerConcStr = chosenOffer && typeof offerTotalConcessions === 'function' && offerTotalConcessions(chosenOffer) ? String(offerTotalConcessions(chosenOffer)) : '';
   const [salesDate, setSalesDate]   = usePS(p.salesDate || TODAY());
-  const [saleSigningDate, setSaleSigningDate] = usePS(p.saleSigningDate || '');
-  const [saleSigningTime, setSaleSigningTime] = usePS(p.saleSigningTime || '');
   const [salesPrice, setSalesPrice] = usePS(p.salesPrice != null ? String(p.salesPrice) : offerPriceStr);
   const [listPrice, setListPrice]   = usePS(p.listPrice != null ? String(p.listPrice) : '');
   const [salesFees, setSalesFees] = usePS(p.salesFees != null ? String(Math.abs(p.salesFees)) : (feeItemsTotal(p.saleFeeItems) ? String(feeItemsTotal(p.saleFeeItems)) : ''));
@@ -307,11 +305,6 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         <div><div className="up dim mb-4">Sale date</div><input className="input" type="date" value={salesDate} onChange={e => setSalesDate(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Sale price</div><CloseoutMoney value={salesPrice} onChange={setSalesPrice} autoFocus/>{chosenOffer && p.salesPrice == null && <div className="tiny dim mt-4">From {chosenOffer.status === 'accepted' ? 'accepted' : 'top'} offer{chosenOffer.buyer ? ' · ' + chosenOffer.buyer : ''}</div>}</div>
         <div><div className="up dim mb-4">List price</div><CloseoutMoney value={listPrice} onChange={setListPrice}/></div>
-      </div>
-      <div className="grid g-3 mb-16">
-        <div><div className="up dim mb-4">Signing date</div><input className="input" type="date" value={saleSigningDate} onChange={e => setSaleSigningDate(e.target.value)} style={{width: '100%'}}/></div>
-        <div><div className="up dim mb-4">Signing time</div><input className="input" type="time" value={saleSigningTime} onChange={e => setSaleSigningTime(e.target.value)} style={{width: '100%'}}/></div>
-        <div className="col justify-end"><div className="tiny dim">Shows on the dashboard “Next 14 days” scheduler.</div></div>
       </div>
 
       {/* CLOSING ADJUSTMENTS */}
@@ -398,8 +391,6 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
           onClick={() => {
             const payload = {
               salesDate,
-              saleSigningDate: saleSigningDate || null,
-              saleSigningTime: saleSigningTime || null,
               salesPrice: toStore(salesPrice),
               listPrice: toStore(listPrice),
               salesFees: toStore(salesFees),
