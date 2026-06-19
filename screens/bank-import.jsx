@@ -1,5 +1,43 @@
 // screens/bank-import.jsx — 4-step CSV import wizard
 
+// Known merchants → clean payee names. Checked before the generic cleaner so the
+// common cases come out tidy. A value can be a string or a fn(match) for captures.
+function titleCasePayee(s) {
+  return (s || '').toLowerCase().replace(/\b([a-z])/g, (m, c) => c.toUpperCase());
+}
+const KNOWN_MERCHANTS = [
+  [/lowe'?s/i,                'Lowe’s'],
+  [/home\s*depot/i,           'Home Depot'],
+  [/amazon|amzn/i,            'Amazon'],
+  [/wal-?mart/i,              'Walmart'],
+  [/turbotenant/i,            'TurboTenant'],
+  [/duke[-\s]?energy/i,       'Duke Energy'],
+  [/lendinghome|kiavi/i,      'LendingHome'],
+  [/microsoft|msft/i,         'Microsoft'],
+  [/cash\s*app/i,             'Cash App'],
+  [/sba\s*loan/i,             'SBA'],
+  [/csi community/i,          'CSI Community Mgmt'],
+  [/zelle payment from\s+([a-z\s]+?)\s+(for|conf)/i, m => 'Zelle: ' + titleCasePayee(m[1].trim())],
+  [/zelle/i,                  'Zelle'],
+  [/\bhcv\b|housing/i,        'Housing Authority'],
+];
+// Best-effort payee from a raw bank description.
+function derivePayee(desc) {
+  if (!desc) return '';
+  for (const [re, val] of KNOWN_MERCHANTS) {
+    const m = desc.match(re);
+    if (m) return typeof val === 'function' ? val(m) : val;
+  }
+  let s = desc.split('#')[0];
+  s = s.replace(/\b(des|id|indn|conf|ppd|ccd)\s*[:#]\s*\S*/gi, ' '); // strip ACH noise tokens
+  s = s.replace(/\b\d{3,}\b/g, ' ');                                  // long account/conf numbers
+  s = s.replace(/[*]+/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  const words = s.split(' ').filter(Boolean).slice(0, 3);
+  s = words.join(' ');
+  return s ? titleCasePayee(s).slice(0, 40) : '';
+}
+
 // Project-resolution tokens are kept out of the stored rule and applied here.
 function biAutoSuggest(t, properties) {
   const rules = (typeof getAutoTagRules === 'function' ? getAutoTagRules() : []);
@@ -17,10 +55,10 @@ function biAutoSuggest(t, properties) {
         if (m) project = 'tenant: ' + m[1].trim();
         else project = '';
       }
-      return { category: r.category, project, conf: r.conf != null ? r.conf : 80 };
+      return { category: r.category, project, payee: r.payee || derivePayee(t.desc), conf: r.conf != null ? r.conf : 80 };
     }
   }
-  return { category: '', project: '', conf: 0 };
+  return { category: '', project: '', payee: derivePayee(t.desc), conf: 0 };
 }
 
 function parseCSV(text, opts = {}) {
@@ -31,7 +69,7 @@ function parseCSV(text, opts = {}) {
   const headerCells = parseCSVLine(lines[0]).map(c => c.trim().toLowerCase());
   const isHeader = headerCells.some(c => /date|amount|acct|description|desc|posted|debit|credit/i.test(c));
 
-  let dateIdx, acctIdx, descIdx, amountIdx, debitIdx, creditIdx;
+  let dateIdx, acctIdx, descIdx, amountIdx, debitIdx, creditIdx, payeeIdx;
   let startIdx = 0;
 
   if (isHeader) {
@@ -39,6 +77,7 @@ function parseCSV(text, opts = {}) {
     headerCells.forEach((h, i) => {
       if (dateIdx == null && /^(date|posted date|transaction date|post date|trans date)$/i.test(h)) dateIdx = i;
       if (acctIdx == null && /^(acct|account|account ?number)$/i.test(h)) acctIdx = i;
+      if (payeeIdx == null && /^(payee|merchant|name)$/i.test(h)) payeeIdx = i;
       if (descIdx == null && /^(description|desc|memo|payee|details|name)$/i.test(h)) descIdx = i;
       if (amountIdx == null && /^amount$/i.test(h)) amountIdx = i;
       if (debitIdx == null && /^debit$/i.test(h)) debitIdx = i;
@@ -69,7 +108,8 @@ function parseCSV(text, opts = {}) {
       amount = c - d;
     }
     if (opts.invertSign) amount = -amount;
-    rows.push({ date, acct, desc, amount });
+    const payee = ((payeeIdx != null && payeeIdx !== descIdx) ? cells[payeeIdx] : '') || '';
+    rows.push({ date, acct, desc, amount, payee: payee.trim() });
   }
   return rows;
 }
@@ -152,10 +192,11 @@ function BankImportScreen() {
         ...r,
         category: autoTagOnLoad ? s.category : '',
         project:  autoTagOnLoad ? s.project  : '',
-        payee: '',
+        payee: r.payee || s.payee || '',
         conf: s.conf,
         suggCategory: s.category,
         suggProject:  s.project,
+        suggPayee:    r.payee || s.payee || '',
         accept: s.conf >= 80,
         duplicate: dup, skip: dup,
       };
@@ -299,6 +340,7 @@ function StepUpload({ onFile, csvText, setCsvText, onProcess, onSample, invertSi
             <p style={{margin: '12px 0 6px 0'}}>Dates can be <code className="mono">M/D/YYYY</code> or <code className="mono">YYYY-MM-DD</code>.</p>
             <p style={{margin: '6px 0'}}>Amount is signed — negative for charges, positive for deposits.</p>
             <p style={{margin: '6px 0'}}>Header row is optional — auto-detected.</p>
+            <p style={{margin: '6px 0'}}>Payee is auto-derived from the description (and from auto-tag rules). Add a <code className="mono">Payee</code> column to set it explicitly.</p>
           </div>
         </div>
       </Card>
@@ -351,6 +393,7 @@ function StepAccounts({ rows, onBack, onNext }) {
 // ────── Step 3: Preview ──────
 function StepPreview({ rows, setRows, onBack, onNext }) {
   const store = useStore();
+  const [addingPropRow, setAddingPropRow] = useState(null);
   const auto = rows.filter(r => r.conf >= 80 && !r.duplicate);
   const review = rows.filter(r => r.conf > 0 && r.conf < 80 && !r.duplicate);
   const unknown = rows.filter(r => r.conf === 0 && !r.duplicate);
@@ -361,6 +404,7 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
       ...r,
       category: r.category || r.suggCategory || '',
       project:  r.project  || r.suggProject  || '',
+      payee:    r.payee    || r.suggPayee    || '',
     })));
   }
   function applyHighConfidenceOnly() {
@@ -368,6 +412,7 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
       ...r,
       category: r.category || r.suggCategory || '',
       project:  r.project  || r.suggProject  || '',
+      payee:    r.payee    || r.suggPayee    || '',
     }) : r));
   }
   function clearAllTags() {
@@ -384,6 +429,7 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
   }
 
   return (
+    <React.Fragment>
     <Card>
       <CardHead title="Auto-tag preview" right={
         <div className="row gap-8 items-center">
@@ -400,6 +446,7 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
               <th>Date</th>
               <th>Acct</th>
               <th>Description</th>
+              <th>Payee</th>
               <th className="num">Amount</th>
               <th>Category</th>
               <th>Property</th>
@@ -422,18 +469,31 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
                     {r.duplicate && <Tag tone="brick" style={{marginRight: 6}}>dup</Tag>}
                     {r.desc}
                   </td>
+                  <td>
+                    <input className="input" value={r.payee || ''} onChange={e => patchRow(i, {payee: e.target.value})} placeholder="—" style={{minWidth: 120, fontSize: 12}}/>
+                  </td>
                   <td className="num mono" style={{color: r.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(r.amount)}</td>
                   <td>
-                    <select className="select" value={r.category} onChange={e => patchRow(i, {category: e.target.value})} style={{minWidth: 140, fontSize: 12}}>
-                      <option value="">— pick —</option>
-                      {getList('categories').map(c => <option key={c.id} value={c.label}>{c.label}</option>)}
-                    </select>
+                    <ManagedSelect listKey="categories" value={r.category} onChange={v => patchRow(i, {category: v})} style={{minWidth: 140, fontSize: 12}}/>
                   </td>
                   <td>
-                    <select className="select" value={r.project} onChange={e => patchRow(i, {project: e.target.value})} style={{minWidth: 140, fontSize: 12}}>
+                    <select className="select" value={r.project} style={{minWidth: 140, fontSize: 12}}
+                      onChange={e => {
+                        if (e.target.value === '__add__') { setAddingPropRow(i); return; }
+                        patchRow(i, {project: e.target.value});
+                      }}>
                       <option value="">— unassigned —</option>
+                      {r.project && r.project !== 'multiple' && !OVERHEAD_PROJECTS.includes(r.project) && !store.properties.some(p => p.address === r.project) && (
+                        <option value={r.project}>{r.project}</option>
+                      )}
                       <option value="multiple">multiple · split</option>
-                      {store.properties.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                      <optgroup label="Overhead">
+                        {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
+                      </optgroup>
+                      <optgroup label="Properties">
+                        {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+                      </optgroup>
+                      <option value="__add__">+ Add new property…</option>
                     </select>
                   </td>
                   <td>
@@ -454,6 +514,10 @@ function StepPreview({ rows, setRows, onBack, onNext }) {
         <Btn kind="primary" onClick={onNext}>Continue to commit →</Btn>
       </div>
     </Card>
+    {addingPropRow != null && <AddPropertyModal
+      onClose={() => setAddingPropRow(null)}
+      onCreated={addr => patchRow(addingPropRow, {project: addr})}/>}
+    </React.Fragment>
   );
 }
 

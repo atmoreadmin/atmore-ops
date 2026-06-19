@@ -1264,9 +1264,14 @@ function stageBackwardCount(p) {
 
 function tagTransaction(txId, fields) {
   Store.update(s => {
-    const t = s.transactions.find(x => x.id === txId);
-    if (!t) return;
-    Object.assign(t, fields);
+    const i = s.transactions.findIndex(x => x.id === txId);
+    if (i === -1) return;
+    // Replace the row object AND the array with fresh references so every
+    // consumer (including any memoized list) re-renders immediately — an
+    // in-place Object.assign keeps the same refs and can leave the view stale
+    // until a full reload.
+    s.transactions[i] = { ...s.transactions[i], ...fields };
+    s.transactions = s.transactions.slice();
   });
 }
 
@@ -1656,62 +1661,9 @@ function addTenant(tenantData, startLedger = true) {
         m = d.toISOString().slice(0,7);
       }
     }
-    // Retire any prior tenant still on this property — a new lease means the old
-    // occupant (placeholder vacant/prep, or a still-active tenant) has moved on.
-    s.tenants.forEach(x => {
-      if (x.propertyId === tenantData.propertyId && x.id !== id && x.status !== 'past') {
-        x.status = 'past';
-        if (!x.moveOut) x.moveOut = tenantData.moveIn || s.today;
-      }
-    });
-  });
-}
-
-// ─── Move out a tenant — retire the lease and record the deposit disposition ───
-function moveOutTenant(tenantId, opts = {}) {
-  Store.update(s => {
-    const t = s.tenants.find(x => x.id === tenantId);
-    if (!t) return;
-    const date = opts.moveOut || s.today;
-    t.status = 'past';
-    t.moveOut = date;
-    if (!t.leaseEnd || date < t.leaseEnd) t.leaseEnd = date;
-    t.depositReturn = {
-      depositOnFile: opts.depositOnFile != null ? opts.depositOnFile : (t.deposit || 0),
-      refunded: opts.refunded || 0,
-      withheld: opts.withheld || 0,
-      reason: opts.reason || '',
-      settledOn: date,
-    };
-    if (opts.note != null && opts.note !== '') t.notes = opts.note;
-    // Drop unpaid future rent charges past the move-out month so the rent roll
-    // doesn't keep billing a unit nobody lives in. Paid history is untouched.
-    if (opts.dropFutureCharges !== false) {
-      const moMonth = date.slice(0, 7);
-      s.rentLedger = (s.rentLedger || []).filter(r =>
-        !(r.tenantId === tenantId && r.month > moMonth && (r.paid || 0) === 0));
-    }
-  });
-}
-
-// ─── Edit a past tenant's move-out date / deposit settlement (no ledger changes) ───
-function updateDepositSettlement(tenantId, opts = {}) {
-  Store.update(s => {
-    const t = s.tenants.find(x => x.id === tenantId);
-    if (!t) return;
-    if (opts.moveOut) {
-      t.moveOut = opts.moveOut;
-      if (!t.leaseEnd || opts.moveOut < t.leaseEnd) t.leaseEnd = opts.moveOut;
-    }
-    t.depositReturn = {
-      ...(t.depositReturn || {}),
-      depositOnFile: opts.depositOnFile != null ? opts.depositOnFile : (t.depositReturn?.depositOnFile || t.deposit || 0),
-      refunded: opts.refunded != null ? opts.refunded : (t.depositReturn?.refunded || 0),
-      withheld: opts.withheld != null ? opts.withheld : (t.depositReturn?.withheld || 0),
-      reason: opts.reason != null ? opts.reason : (t.depositReturn?.reason || ''),
-      settledOn: opts.moveOut || t.moveOut || t.depositReturn?.settledOn,
-    };
-    if (opts.note != null && opts.note !== '') t.notes = opts.note;
+    // If property has a placeholder vacant/prep tenant, remove or update it
+    const vacant = s.tenants.find(x => x.propertyId === tenantData.propertyId && (x.status === 'vacant' || x.status === 'prep') && x.id !== id);
+    if (vacant) vacant.status = 'past';
   });
 }
 
@@ -1805,16 +1757,14 @@ Object.assign(window, {
   splitTransaction, clearSplit, txSplitsForProperty,
   linkLedgerToTransaction, findMatchingTxForLedger,
   isDuplicateTransaction,
-  addTenant, updateTenant, moveOutTenant, updateDepositSettlement, addProperty, addHOA, updateHOA, deleteHOA,
+  addTenant, updateTenant, addProperty, addHOA, updateHOA, deleteHOA,
 });
 
 // ─── Bulk transaction tag mutation ───
 function bulkTagTransactions(ids, fields) {
   Store.update(s => {
     const idSet = new Set(ids);
-    s.transactions.forEach(t => {
-      if (idSet.has(t.id)) Object.assign(t, fields);
-    });
+    s.transactions = s.transactions.map(t => idSet.has(t.id) ? { ...t, ...fields } : t);
   });
 }
 function bulkDeleteTransactions(ids) {

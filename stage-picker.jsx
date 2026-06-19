@@ -247,7 +247,11 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const chosenOffer = propOffers.find(o => o.status === 'accepted') || propOffers.filter(isOfferActive)[0] || null;
   const offerPriceStr = chosenOffer && chosenOffer.offerPrice != null ? String(chosenOffer.offerPrice) : '';
   const offerConcStr = chosenOffer && typeof offerTotalConcessions === 'function' && offerTotalConcessions(chosenOffer) ? String(offerTotalConcessions(chosenOffer)) : '';
-  const [salesDate, setSalesDate]   = usePS(p.salesDate || TODAY());
+  // Don't auto-stamp a sale date when merely editing the close-out (e.g. to record an
+  // upcoming signing appointment). Only the actual sale confirmation defaults to today.
+  const [salesDate, setSalesDate]   = usePS(p.salesDate || (editMode ? '' : TODAY()));
+  const [saleSigningDate, setSaleSigningDate] = usePS(p.saleSigningDate || '');
+  const [saleSigningTime, setSaleSigningTime] = usePS(p.saleSigningTime || '');
   const [salesPrice, setSalesPrice] = usePS(p.salesPrice != null ? String(p.salesPrice) : offerPriceStr);
   const [listPrice, setListPrice]   = usePS(p.listPrice != null ? String(p.listPrice) : '');
   const [salesFees, setSalesFees] = usePS(p.salesFees != null ? String(Math.abs(p.salesFees)) : (feeItemsTotal(p.saleFeeItems) ? String(feeItemsTotal(p.saleFeeItems)) : ''));
@@ -305,6 +309,11 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         <div><div className="up dim mb-4">Sale date</div><input className="input" type="date" value={salesDate} onChange={e => setSalesDate(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Sale price</div><CloseoutMoney value={salesPrice} onChange={setSalesPrice} autoFocus/>{chosenOffer && p.salesPrice == null && <div className="tiny dim mt-4">From {chosenOffer.status === 'accepted' ? 'accepted' : 'top'} offer{chosenOffer.buyer ? ' · ' + chosenOffer.buyer : ''}</div>}</div>
         <div><div className="up dim mb-4">List price</div><CloseoutMoney value={listPrice} onChange={setListPrice}/></div>
+      </div>
+      <div className="grid g-3 mb-16">
+        <div><div className="up dim mb-4">Signing date</div><input className="input" type="date" value={saleSigningDate} onChange={e => setSaleSigningDate(e.target.value)} style={{width: '100%'}}/></div>
+        <div><div className="up dim mb-4">Signing time</div><input className="input" type="time" value={saleSigningTime} onChange={e => setSaleSigningTime(e.target.value)} style={{width: '100%'}}/></div>
+        <div className="col justify-end"><div className="tiny dim">Shows on the dashboard “Next 14 days” scheduler.</div></div>
       </div>
 
       {/* CLOSING ADJUSTMENTS */}
@@ -391,6 +400,8 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
           onClick={() => {
             const payload = {
               salesDate,
+              saleSigningDate: saleSigningDate || null,
+              saleSigningTime: saleSigningTime || null,
               salesPrice: toStore(salesPrice),
               listPrice: toStore(listPrice),
               salesFees: toStore(salesFees),
@@ -524,6 +535,8 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
   const [attorney, setAttorney]       = usePS(p.attorney || '');
   const [attorneyContact, setAttorneyContact] = usePS(p.attorneyContact || '');
   const [buyerDD, setBuyerDD]         = usePS(p.buyerDDDate || (init && init.ddDeadline) || '');
+  const [saleSigningDate, setSaleSigningDate] = usePS(p.saleSigningDate || '');
+  const [saleSigningTime, setSaleSigningTime] = usePS(p.saleSigningTime || '');
   const [note, setNote] = usePS(initialNote);
 
   function applyOffer(o) {
@@ -637,6 +650,11 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
         <div><div className="up dim mb-4">Expected close date</div><input className="input" type="date" value={closeDate} onChange={e => setCloseDate(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Buyer's DD deadline</div><input className="input" type="date" value={buyerDD} onChange={e => setBuyerDD(e.target.value)} style={{width: '100%'}}/></div>
       </div>
+      <div className="grid g-3 mb-16">
+        <div><div className="up dim mb-4">Signing date</div><input className="input" type="date" value={saleSigningDate} onChange={e => setSaleSigningDate(e.target.value)} style={{width: '100%'}}/></div>
+        <div><div className="up dim mb-4">Signing time</div><input className="input" type="time" value={saleSigningTime} onChange={e => setSaleSigningTime(e.target.value)} style={{width: '100%'}}/></div>
+        <div className="col justify-end"><div className="tiny dim">Scheduling the closing — does not mark the property sold.</div></div>
+      </div>
 
       <div className="row between items-center mb-16" style={{padding: '12px 14px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
         <div>
@@ -662,7 +680,7 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
           goUnderContract(p.id, {
             offerId: sel === 'manual' ? null : sel,
             terms: { buyer, offerPrice, earnestMoney: earnest, financing, concessionsTotal: concessions, closeDate, contingencies },
-            closing: { attorney, attorneyContact, buyerDDDate: buyerDD },
+            closing: { attorney, attorneyContact, buyerDDDate: buyerDD, saleSigningDate, saleSigningTime },
             note,
           });
           onClose();
