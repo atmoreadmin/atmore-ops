@@ -412,12 +412,16 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
 }
 
 function PrevTenantSummary({ tenant }) {
+  const [editing, setEditing] = useState(false);
   const d = tenant.depositReturn;
   return (
     <div style={{marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--rule-soft)'}}>
       <div className="row between items-baseline mb-8">
         <div className="up dim">Previous tenant</div>
-        <Tag tone="ghost">Moved out {tenant.moveOut ? fmtDate(tenant.moveOut, {full: true}) : '—'}</Tag>
+        <div className="row gap-6 items-center">
+          <Tag tone="ghost">Moved out {tenant.moveOut ? fmtDate(tenant.moveOut, {full: true}) : '—'}</Tag>
+          <Btn sz="sm" kind="ghost" onClick={() => setEditing(true)}>Edit</Btn>
+        </div>
       </div>
       <div className="row gap-16 items-baseline wrap">
         <div className="serif" style={{fontSize: 16, fontWeight: 500}}>{tenant.name || '—'}</div>
@@ -448,6 +452,7 @@ function PrevTenantSummary({ tenant }) {
       ) : (
         <div className="small dim mt-8">No deposit settlement on record.</div>
       )}
+      {editing && <MoveOutModal tenant={tenant} editing onClose={() => setEditing(false)}/>}
     </div>
   );
 }

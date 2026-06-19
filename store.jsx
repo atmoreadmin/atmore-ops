@@ -1694,6 +1694,27 @@ function moveOutTenant(tenantId, opts = {}) {
   });
 }
 
+// ─── Edit a past tenant's move-out date / deposit settlement (no ledger changes) ───
+function updateDepositSettlement(tenantId, opts = {}) {
+  Store.update(s => {
+    const t = s.tenants.find(x => x.id === tenantId);
+    if (!t) return;
+    if (opts.moveOut) {
+      t.moveOut = opts.moveOut;
+      if (!t.leaseEnd || opts.moveOut < t.leaseEnd) t.leaseEnd = opts.moveOut;
+    }
+    t.depositReturn = {
+      ...(t.depositReturn || {}),
+      depositOnFile: opts.depositOnFile != null ? opts.depositOnFile : (t.depositReturn?.depositOnFile || t.deposit || 0),
+      refunded: opts.refunded != null ? opts.refunded : (t.depositReturn?.refunded || 0),
+      withheld: opts.withheld != null ? opts.withheld : (t.depositReturn?.withheld || 0),
+      reason: opts.reason != null ? opts.reason : (t.depositReturn?.reason || ''),
+      settledOn: opts.moveOut || t.moveOut || t.depositReturn?.settledOn,
+    };
+    if (opts.note != null && opts.note !== '') t.notes = opts.note;
+  });
+}
+
 // ─── Update tenant (edit lease / contact / Section 8 details) ───
 function updateTenant(tenantId, patch) {
   Store.update(s => {
@@ -1784,7 +1805,7 @@ Object.assign(window, {
   splitTransaction, clearSplit, txSplitsForProperty,
   linkLedgerToTransaction, findMatchingTxForLedger,
   isDuplicateTransaction,
-  addTenant, updateTenant, moveOutTenant, addProperty, addHOA, updateHOA, deleteHOA,
+  addTenant, updateTenant, moveOutTenant, updateDepositSettlement, addProperty, addHOA, updateHOA, deleteHOA,
 });
 
 // ─── Bulk transaction tag mutation ───

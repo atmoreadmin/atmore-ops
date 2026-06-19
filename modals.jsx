@@ -289,14 +289,15 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
 // MoveOutModal — retire a lease and settle the security deposit
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function MoveOutModal({ tenant, onClose }) {
+function MoveOutModal({ tenant, editing, onClose }) {
   const p = getProperty(tenant.propertyId);
-  const onFile = tenant.deposit || 0;
-  const [moveOut, setMoveOut] = useState(TODAY());
+  const d = tenant.depositReturn || {};
+  const onFile = editing ? (d.depositOnFile != null ? d.depositOnFile : (tenant.deposit || 0)) : (tenant.deposit || 0);
+  const [moveOut, setMoveOut] = useState(editing ? (tenant.moveOut || TODAY()) : TODAY());
   const [depositOnFile, setDepositOnFile] = useState(String(onFile));
-  const [refunded, setRefunded] = useState(String(onFile));
-  const [withheld, setWithheld] = useState('0');
-  const [reason, setReason] = useState('');
+  const [refunded, setRefunded] = useState(editing ? String(d.refunded || 0) : String(onFile));
+  const [withheld, setWithheld] = useState(editing ? String(d.withheld || 0) : '0');
+  const [reason, setReason] = useState(editing ? (d.reason || '') : '');
   const [note, setNote] = useState('');
 
   const dep = parseFloat(depositOnFile) || 0;
@@ -305,12 +306,14 @@ function MoveOutModal({ tenant, onClose }) {
   const diff = dep - (ref + wh);
 
   return (
-    <Modal title={`Move out · ${tenant.name || p?.address}`} onClose={onClose}>
+    <Modal title={`${editing ? 'Edit move-out' : 'Move out'} · ${tenant.name || p?.address}`} onClose={onClose}>
       <div className="col gap-14">
-        <div className="small dim">
-          Retiring this lease moves <b style={{color: 'var(--ink-2)'}}>{tenant.name || 'the tenant'}</b> to a past tenant and frees up
-          <span className="mid"> {p?.address}</span> for a new lease. Payment history is kept.
-        </div>
+        {!editing && (
+          <div className="small dim">
+            Retiring this lease moves <b style={{color: 'var(--ink-2)'}}>{tenant.name || 'the tenant'}</b> to a past tenant and frees up
+            <span className="mid"> {p?.address}</span> for a new lease. Payment history is kept.
+          </div>
+        )}
 
         <div className="grid g-2">
           <div>
@@ -365,16 +368,18 @@ function MoveOutModal({ tenant, onClose }) {
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn kind="primary" onClick={() => {
-            moveOutTenant(tenant.id, {
+            const payload = {
               moveOut,
               depositOnFile: dep,
               refunded: ref,
               withheld: wh,
               reason: wh > 0 ? reason : '',
               note,
-            });
+            };
+            if (editing) updateDepositSettlement(tenant.id, payload);
+            else moveOutTenant(tenant.id, payload);
             onClose();
-          }}>Move out & settle deposit</Btn>
+          }}>{editing ? 'Save settlement' : 'Move out & settle deposit'}</Btn>
         </div>
       </div>
     </Modal>
