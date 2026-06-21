@@ -80,7 +80,7 @@ function TransactionsScreen() {
   let rows = store.transactions.slice();
   rows = rows.filter(t => {
     if (txFocusSet) return txFocusSet.has(t.id);
-    if (acctFilter !== 'all' && t.acct !== acctFilter) return false;
+    if (acctFilter !== 'all' && String(t.acct) !== String(acctFilter)) return false;
     if (catFilter !== 'all' && t.category !== catFilter) return false;
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
