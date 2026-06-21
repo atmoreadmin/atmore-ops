@@ -1,260 +1,613 @@
-/*
- * Atmore Operations · Apps Script Bridge
- * ============================================
- * Paste this entire file into your Google Sheet's Apps Script editor
- * (Extensions → Apps Script), then Deploy → New deployment → Web app.
- *
- *   Execute as:    Me (your email)
- *   Who has access: Anyone with the link
- *
- * Copy the resulting Web App URL into the Atmore Operations app
- * under Integration → Sync.
- *
- * What this script does
- * ----------------------
- *   GET  ?action=ping         → health check
- *   GET  ?action=read         → returns the entire workbook as JSON
- *   GET  ?action=meta         → returns last-modified timestamp + row counts
- *   POST { action: "write", payload: <full state> } → replaces every tab
- *
- * The app pushes the whole state on every "Push to Sheet" — simpler than
- * row-level diffs and safer for low-volume editing (a few users, a few
- * dozen writes a day).  For high-volume work upgrade to row-level sync.
- *
- * Run setup() once from the editor to initialize the tabs if the workbook
- * is empty. To UPGRADE an existing workbook that already has data (e.g. after
- * new tabs/columns are added to the app), run migrate() instead — it adds the
- * missing tabs and column headers without clearing any existing rows. Never run
- * setup() on a populated Sheet; it clears every tab.
- */
+// screens/transactions.jsx — table+filters PLUS editable auto-tag rules sidebar
 
-// ─── Schema mirror (must match the app's SHEET_SCHEMA) ──────────────────────
-const SCHEMA = {
-  Properties: [
-    'id','address','type','status','statusCode','city','county','state','zip',
-    'assigned','loanType','lockbox','ddDate','signingDate','purchaseDate',
-    'purchasePrice','acqEarnest','purchaseFees','purchaseCredits','purchaseLoan','acqExchangeFunds','acqDDFee',
-    'rehab','rehabFunds','interest','salesDate','listPrice','salesPrice','grossProfit',
-    'vestingLLC','driveUrl','failedReason','notes','attorney','attorneyContact','closingTime',
-    'saleSigningDate','saleSigningTime',
-    'salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest','exchangeFunds',
-    'atmoreLoanPrincipal','atmoreLoanPayoff',
-    'contractDate','buyerDDDate','expectedCloseDate','utilityNote',
-    'insCarrier','insPolicy','insPremium','insRenewal','insAgent','insAgentPhone',
-    'loanLender','loanNumber','loanPayment','loanBalance','loanRate','loanMaturity','loanEscrowTaxes','loanEscrowIns','loanContact',
-    'taxAnnual','taxDueDate','taxEscrowed','taxParcel',
-    'hoa1Name','hoa1Url','hoa1User','hoa1Pass','hoa1Monthly',
-    'hoa2Name','hoa2Url','hoa2User','hoa2Pass','hoa2Monthly',
-  ],
-  Tenants: [
-    'id','propertyId','name','phone','email','moveIn','leaseEnd','rent',
-    'deposit','source','voucher','phaPortion','tenantPortion','occupants','status','notes',
-  ],
-  RentLedger: [
-    'id','tenantId','propertyId','month','charge','paid','paidOn','source',
-    'status','lateFeeWaived','linkedTxId',
-  ],
-  Transactions: [
-    'id','date','acct','desc','amount','payee','category','project','importBatch',
-  ],
-  Contractors: [
-    'id','name','phone','email','specialty','entityType','w9OnFile','w9Date',
-    'tin','mailingAddress','isAttorney','paidByCardOnly','notes',
-  ],
-  Refis: [
-    'id','propertyId','status','lender','applicationDate','appraisalDate',
-    'appraisedValue','newLoanAmount','interestRate','cashOut','targetClose',
-    'actualClose','notes',
-  ],
-  Exchanges: [
-    'id','relinquishedAddress','relinquishedCity','relinquishedPropId','relinquishedSoldDate',
-    'relinquishedSalePrice','relinquishedClosingCosts','sellerCredits','sellerCreditsReceived','qiFee',
-    'ddReceived','exchangeFunds','fundsDeployed','qi','qiContact',
-    'status','identifiedPropIds','closedPropIds','notes',
-  ],
-  Leads: ['id','propertyId','date','name','phone','source','status','notes'],
-  Offers: [
-    'id','propertyId','date','buyer','buyerAgent','agentContact',
-    'offerPrice','earnestMoney','financing','closeDate','status',
-    'concClosingCost','concRepairCredit','concHomeWarranty','concRateBuydown','concOther',
-    'closingCosts','netToSeller','contingencies','driveUrl','notes',
-  ],
-  Statuses: ['code','label','lane','system','tone'],
-  Lists: ['list','id','label','kind','archived','isDefault'],
-  WebAccounts: ['id','org','username','password','email','notes'],
+// Special project-resolution tokens shown in the rule editor.
+const PROJECT_TOKENS = [
+  { value: '',              label: 'Leave blank' },
+  { value: 'extract',       label: 'Auto-detect property from description' },
+  { value: 'extract-zelle', label: 'Extract Zelle sender as tenant' },
+  { value: 'multiple',      label: 'Multiple (split across properties)' },
+];
+const PROJECT_TOKEN_LABEL = PROJECT_TOKENS.reduce((m, t) => { if (t.value) m[t.value] = t.label; return m; }, {});
+
+// Column sort accessors. Splits sort to the end of category/property groupings.
+const TX_SORT = {
+  date:     t => t.date || '',
+  acct:     t => t.acct || '',
+  desc:     t => (t.desc || '').toLowerCase(),
+  payee:    t => (t.payee || '').toLowerCase(),
+  amount:   t => t.amount || 0,
+  category: t => (t.splits && t.splits.length) ? '\uffff' : (t.category || '\ufffe'),
+  project:  t => (t.splits && t.splits.length) ? 'multiple' : (t.project || '\ufffe'),
 };
 
-// Foreign keys are stored as comma-joined arrays
-const ARRAY_COLS = new Set(['identifiedPropIds', 'closedPropIds', 'contingencies']);
+// Columns available on the main transactions table. `always` columns can't be hidden;
+// mirrors the Properties-list column model so the two tables behave the same way.
+const TX_LIST_COLUMNS = [
+  { key: 'date',     label: 'Date',        always: true },
+  { key: 'acct',     label: 'Acct' },
+  { key: 'desc',     label: 'Description', always: true },
+  { key: 'payee',    label: 'Payee' },
+  { key: 'amount',   label: 'Amount', num: true, always: true },
+  { key: 'category', label: 'Category' },
+  { key: 'project',  label: 'Property' },
+];
+const TX_LIST_COLS_KEY = 'atmore-tx-list-columns-v1';
 
-// ─── Entry points ───────────────────────────────────────────────────────────
-
-function doGet(e) {
-  const action = (e.parameter && e.parameter.action) || 'ping';
-  try {
-    if (action === 'ping') return json({ ok: true, version: 1 });
-    if (action === 'meta') return json(meta_());
-    if (action === 'read') return json(read_());
-    return json({ ok: false, error: 'Unknown action: ' + action }, 400);
-  } catch (err) {
-    return json({ ok: false, error: String(err) }, 500);
-  }
-}
-
-function doPost(e) {
-  try {
-    const body = JSON.parse(e.postData.contents);
-    const action = body.action;
-    if (action === 'write') {
-      write_(body.payload);
-      return json({ ok: true, wroteAt: new Date().toISOString() });
-    }
-    if (action === 'ping') return json({ ok: true });
-    return json({ ok: false, error: 'Unknown action: ' + action }, 400);
-  } catch (err) {
-    return json({ ok: false, error: String(err) }, 500);
-  }
-}
-
-// ─── Setup (run once) ───────────────────────────────────────────────────────
-
-function setup() {
-  const ss = SpreadsheetApp.getActive();
-  Object.keys(SCHEMA).forEach(tabName => {
-    let sheet = ss.getSheetByName(tabName);
-    if (!sheet) sheet = ss.insertSheet(tabName);
-    const headers = SCHEMA[tabName];
-    sheet.clear();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+function TransactionsScreen() {
+  const store = useStore();
+  const rules = getAutoTagRules();
+  const [search, setSearch] = useState('');
+  const [acctFilter, setAcctFilter] = useState('all');
+  const [catFilter, setCatFilter] = useState('all');
+  const [onlyUntagged, setOnlyUntagged] = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const [txFocus, setTxFocus] = useState(() => takeFocus('transactions'));
+  const txFocusSet = txFocus ? new Set(liveFocusIds(txFocus)) : null;
+  const [splitting, setSplitting] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState(new Set());
+  const [editingRule, setEditingRule] = useState(null);
+  const [addingRule, setAddingRule] = useState(false);
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [visibleCols, setVisibleCols] = useState(() => {
+    try { const saved = localStorage.getItem(TX_LIST_COLS_KEY); if (saved) return JSON.parse(saved); } catch (e) {}
+    return TX_LIST_COLUMNS.map(c => c.key);
   });
-  // Remove default Sheet1 if it's empty
-  const defaultSheet = ss.getSheetByName('Sheet1');
-  if (defaultSheet && defaultSheet.getLastRow() === 0 && ss.getSheets().length > 1) {
-    ss.deleteSheet(defaultSheet);
+  const showCol = key => visibleCols.includes(key);
+  function toggleCol(key) {
+    const col = TX_LIST_COLUMNS.find(c => c.key === key);
+    if (col?.always) return;
+    const next = visibleCols.includes(key) ? visibleCols.filter(k => k !== key) : [...visibleCols, key];
+    setVisibleCols(next);
+    localStorage.setItem(TX_LIST_COLS_KEY, JSON.stringify(next));
   }
-}
+  function resetCols() {
+    const next = TX_LIST_COLUMNS.map(c => c.key);
+    setVisibleCols(next);
+    localStorage.setItem(TX_LIST_COLS_KEY, JSON.stringify(next));
+  }
 
-// ─── Migrate (run when UPGRADING an existing, populated workbook) ────────────
-// Non-destructive: creates any missing tabs and appends any missing column
-// headers, but NEVER clears existing rows. Use this instead of setup() when you
-// already have live data in the Sheet. Safe to run repeatedly.
-function migrate() {
-  const ss = SpreadsheetApp.getActive();
-  const report = [];
-  Object.keys(SCHEMA).forEach(tabName => {
-    const wanted = SCHEMA[tabName];
-    let sheet = ss.getSheetByName(tabName);
-    if (!sheet) {
-      // New tab — create it with full header row.
-      sheet = ss.insertSheet(tabName);
-      sheet.getRange(1, 1, 1, wanted.length).setValues([wanted]);
-      sheet.setFrozenRows(1);
-      sheet.getRange(1, 1, 1, wanted.length).setFontWeight('bold');
-      report.push('Created tab: ' + tabName);
-      return;
-    }
-    // Existing tab — append only the headers it doesn't already have.
-    const lastCol = sheet.getLastColumn();
-    const existing = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(String) : [];
-    const missing = wanted.filter(h => existing.indexOf(h) === -1);
-    if (missing.length) {
-      sheet.getRange(1, existing.length + 1, 1, missing.length).setValues([missing]);
-      sheet.getRange(1, existing.length + 1, 1, missing.length).setFontWeight('bold');
-      sheet.setFrozenRows(1);
-      report.push(tabName + ': added ' + missing.join(', '));
-    }
-  });
-  const msg = report.length ? report.join('\n') : 'Already up to date — nothing to migrate.';
-  Logger.log(msg);
-  return msg;
-}
+  function clickHeader(key) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir(key === 'date' || key === 'amount' ? 'desc' : 'asc'); }
+  }
 
-// ─── Read ───────────────────────────────────────────────────────────────────
-
-function read_() {
-  const ss = SpreadsheetApp.getActive();
-  const data = { _v: 1, readAt: new Date().toISOString(), tabs: {} };
-  Object.keys(SCHEMA).forEach(tabName => {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet) { data.tabs[tabName] = []; return; }
-    const values = sheet.getDataRange().getValues();
-    if (values.length < 2) { data.tabs[tabName] = []; return; }
-    const headers = values[0];
-    const rows = [];
-    for (let i = 1; i < values.length; i++) {
-      const row = {};
-      let hasValue = false;
-      for (let j = 0; j < headers.length; j++) {
-        const key = headers[j];
-        let v = values[i][j];
-        if (v === '' || v == null) { row[key] = null; continue; }
-        if (v instanceof Date) v = v.toISOString().slice(0, 10);
-        if (ARRAY_COLS.has(key) && typeof v === 'string') v = v.split(',').filter(Boolean);
-        if (typeof v === 'string' && (v === 'TRUE' || v === 'FALSE')) v = v === 'TRUE';
-        row[key] = v;
-        hasValue = true;
+  // Filter
+  let rows = store.transactions.slice();
+  rows = rows.filter(t => {
+    if (txFocusSet) return txFocusSet.has(t.id);
+    if (acctFilter !== 'all' && String(t.acct) !== String(acctFilter)) return false;
+    if (catFilter !== 'all' && t.category !== catFilter) return false;
+    if (onlyUntagged && t.category && t.project) return false;
+    if (showSelectedOnly && !selected.has(t.id)) return false;
+    if (search) {
+      const q = search.toLowerCase().trim();
+      const amt = t.amount || 0;
+      // Numeric amount match: strip $ , and sign from the query, compare to the
+      // transaction amount (abs + raw) so "511", "511.11", "$511.11", "-511.11" all hit.
+      const qNum = q.replace(/[$,\s]/g, '');
+      let amtMatch = false;
+      if (qNum && /^-?\d*\.?\d+$/.test(qNum)) {
+        const n = Math.abs(parseFloat(qNum));
+        amtMatch = String(Math.abs(amt)).includes(qNum.replace(/^-/, '')) ||
+                   Math.abs(Math.abs(amt) - n) < 0.005;
       }
-      if (hasValue) rows.push(row);
+      const hay = `${t.desc} ${t.payee} ${t.category} ${t.project} ${fmtMoney(amt)} ${Math.abs(amt)}`.toLowerCase();
+      if (!amtMatch && !hay.includes(q)) return false;
     }
-    data.tabs[tabName] = rows;
+    return true;
   });
-  return data;
-}
-
-// ─── Write ──────────────────────────────────────────────────────────────────
-
-function write_(payload) {
-  const ss = SpreadsheetApp.getActive();
-  Object.entries(SCHEMA).forEach(([tabName, headers]) => {
-    let sheet = ss.getSheetByName(tabName);
-    if (!sheet) sheet = ss.insertSheet(tabName);
-
-    const sourceRows = (payload.tabs && payload.tabs[tabName]) || [];
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-
-    if (sourceRows.length === 0) return;
-
-    const grid = sourceRows.map(row => headers.map(h => {
-      let v = row[h];
-      if (v == null) return '';
-      if (Array.isArray(v)) return v.join(',');
-      if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-      return v;
-    }));
-    sheet.getRange(2, 1, grid.length, headers.length).setValues(grid);
+  const sv = TX_SORT[sortKey] || TX_SORT.date;
+  rows.sort((a,b) => {
+    const av = sv(a), bv = sv(b);
+    let cmp;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av).localeCompare(String(bv));
+    if (cmp === 0 && sortKey !== 'date') cmp = (a.date || '').localeCompare(b.date || '');
+    return sortDir === 'asc' ? cmp : -cmp;
   });
-  // Stamp last-modified
-  const props = PropertiesService.getDocumentProperties();
-  props.setProperty('lastWriteAt', new Date().toISOString());
+  const filteredIds = rows.map(r => r.id);   // every match (before the display cap)
+  const filteredCount = filteredIds.length;
+  rows = rows.slice(0, 100); // cap for performance
+
+  const Th = ({ k, label, num }) => (
+    <th className={num ? 'num' : ''} style={{cursor: 'pointer', userSelect: 'none'}} onClick={() => clickHeader(k)}>
+      {label}{sortKey === k && <span style={{marginLeft: 4, color: 'var(--blue)'}}>{sortDir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
+  );
+
+  function toggleRow(id) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    if (rows.every(r => selected.has(r.id))) setSelected(new Set());
+    else setSelected(new Set(rows.map(r => r.id)));
+  }
+  function selectAllMatching() { setSelected(new Set(filteredIds)); }
+  function clearSelection() { setSelected(new Set()); setShowSelectedOnly(false); }
+  function viewSelected() {
+    // Clear other filters so every selected row is guaranteed to show.
+    setSearch(''); setAcctFilter('all'); setCatFilter('all'); setOnlyUntagged(false);
+    setShowSelectedOnly(true);
+  }
+  const selectedVisible = rows.filter(r => selected.has(r.id)).length;
+  const selectedHidden = selected.size - selectedVisible;
+  const allSel = rows.length > 0 && rows.every(r => selected.has(r.id));
+  const someSel = rows.some(r => selected.has(r.id)) && !allSel;
+  const allMatchingSel = filteredCount > 0 && filteredIds.every(id => selected.has(id));
+  const moreBeyondShown = filteredCount > rows.length;
+
+  const categories = ['all', ...new Set(store.transactions.map(t => t.category).filter(Boolean))];
+  const untaggedTotal = untaggedTransactions().length;
+
+  return (
+    <div>
+      <div className="section-h">
+        <div>
+          <div className="crumbs">Transactions</div>
+          <h1>Unified ledger · {store.transactions.length} entries</h1>
+        </div>
+        <div className="row gap-8">
+          <Btn kind="ghost" sz="sm" onClick={() => {
+            // Flatten splits inline
+            const flat = [];
+            store.transactions.forEach(t => {
+              if (t.splits && t.splits.length) {
+                t.splits.forEach((s, i) => {
+                  flat.push({ ...t, amount: s.amount, category: s.category, project: s.project, splitOf: t.id + ' (' + (i+1) + '/' + t.splits.length + ')' });
+                });
+              } else {
+                flat.push({ ...t, splitOf: '' });
+              }
+            });
+            downloadCSV('transactions.csv', flat, [
+              { key: 'date', label: 'Date' },
+              { key: 'acct', label: 'Account' },
+              { key: 'desc', label: 'Description' },
+              { key: 'payee', label: 'Payee' },
+              { key: 'amount', label: 'Amount' },
+              { key: 'category', label: 'Category' },
+              { key: 'project', label: 'Property' },
+              { key: 'splitOf', label: 'Split of' },
+            ]);
+          }}>⤓ Export CSV</Btn>
+          <Btn kind="ghost" sz="sm" onClick={() => setAdding(true)}>+ Add manual</Btn>
+          <Btn kind="primary" sz="sm" onClick={() => nav('/bank-import')}>⤓ Bank import</Btn>
+        </div>
+      </div>
+
+      <div className="row gap-16 items-start">
+        {/* main */}
+        <div className="grow col gap-16" style={{minWidth: 0}}>
+          <Card>
+            {txFocus ? (
+              <div className="card__body row gap-12 items-center wrap" style={{background: txFocusSet && txFocusSet.size === 0 ? 'rgba(74,122,86,0.08)' : 'rgba(154,102,24,0.06)', borderLeft: '3px solid ' + (txFocusSet && txFocusSet.size === 0 ? 'var(--sage-deep, var(--sage))' : 'var(--ochre)')}}>
+                {txFocusSet && txFocusSet.size === 0 ? (
+                  <span style={{fontWeight: 500}}>✓ All flagged transactions resolved</span>
+                ) : (
+                  <span style={{fontWeight: 500}}>Showing {txFocusSet.size} flagged transaction{txFocusSet.size === 1 ? '' : 's'}{txFocusSet.size > rows.length ? ` · first ${rows.length} below` : ''}</span>
+                )}
+                <span className="small dim" style={{textWrap: 'pretty'}}>— {txFocus.label}</span>
+                <div className="grow"/>
+                <Btn sz="sm" kind="ghost" onClick={() => setTxFocus(null)}>Show all transactions</Btn>
+              </div>
+            ) : (
+            <div className="card__body row gap-12 items-center wrap">
+              <input className="input" placeholder="Search description, payee, category, amount…" value={search} onChange={e => setSearch(e.target.value)} style={{flex: '1 1 240px'}}/>
+              <select className="select" value={acctFilter} onChange={e => setAcctFilter(e.target.value)}>
+                <option value="all">All accounts</option>
+                {[...store.accounts].sort((a,b)=>String(a.label??"").localeCompare(String(b.label??""),undefined,{sensitivity:"base"})).map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+              <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+                {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
+              </select>
+              <Tag tone={onlyUntagged ? 'solid-brick' : 'ghost'} style={{cursor: 'pointer'}}>
+                <span onClick={() => setOnlyUntagged(v => !v)}>
+                  {onlyUntagged ? '✓ ' : ''}Untagged only ({untaggedTotal})
+                </span>
+              </Tag>
+              <div className="grow"/>
+              <div style={{position: 'relative'}}>
+                <Btn sz="sm" kind="ghost" onClick={() => setColumnsOpen(v => !v)}>Columns ▾</Btn>
+                {columnsOpen && (
+                  <>
+                    <div onClick={() => setColumnsOpen(false)} style={{position: 'fixed', inset: 0, zIndex: 40}}/>
+                    <div style={{position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 41, background: 'var(--paper)', border: '1px solid var(--rule)', borderRadius: 6, boxShadow: '0 6px 24px rgba(28,26,20,0.15)', minWidth: 200, padding: '6px 0'}}>
+                      <div className="row between items-center" style={{padding: '6px 14px', borderBottom: '1px solid var(--rule)'}}>
+                        <span className="up dim">Columns</span>
+                        <button onClick={resetCols} className="tiny" style={{background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontFamily: 'inherit'}}>Reset</button>
+                      </div>
+                      {TX_LIST_COLUMNS.map(c => {
+                        const isOn = visibleCols.includes(c.key);
+                        return (
+                          <label key={c.key} className="row gap-8 items-center"
+                            style={{padding: '6px 14px', cursor: c.always ? 'default' : 'pointer', opacity: c.always ? 0.6 : 1, fontSize: 13}}
+                            onMouseOver={e => { if (!c.always) e.currentTarget.style.background = 'var(--paper-3)'; }}
+                            onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
+                            <input type="checkbox" checked={isOn} disabled={c.always} onChange={() => toggleCol(c.key)}/>
+                            <span>{c.label}</span>
+                            {c.always && <span className="tiny dim" style={{marginLeft: 'auto'}}>required</span>}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+              <span className="small dim">Showing {rows.length}</span>
+            </div>
+            )}
+          </Card>
+
+          <Card className="pad-0">
+            {selected.size > 0 && (
+              <div className="row items-center gap-10" style={{padding: '8px 14px', background: 'var(--blue-tint)', borderBottom: '1px solid var(--rule-soft)', fontSize: 12.5}}>
+                <span style={{fontWeight: 600, color: 'var(--blue-deep)'}}>{selected.size} selected</span>
+                {!showSelectedOnly && selectedHidden > 0 && (
+                  <React.Fragment>
+                    <span className="dim">— {selectedVisible > 0 ? `${selectedVisible} shown, ` : ''}{selectedHidden} not on this screen.</span>
+                    <button onClick={viewSelected}
+                      style={{background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600, textDecoration: 'underline', padding: 0}}>
+                      View selected
+                    </button>
+                  </React.Fragment>
+                )}
+                {showSelectedOnly && (
+                  <React.Fragment>
+                    <span className="dim">— showing only selected.</span>
+                    <button onClick={() => setShowSelectedOnly(false)}
+                      style={{background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600, textDecoration: 'underline', padding: 0}}>
+                      Show all
+                    </button>
+                  </React.Fragment>
+                )}
+                {!showSelectedOnly && allSel && moreBeyondShown && !allMatchingSel && (
+                  <React.Fragment>
+                    <span className="dim">— only the {rows.length} shown.</span>
+                    <button onClick={selectAllMatching}
+                      style={{background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600, textDecoration: 'underline', padding: 0}}>
+                      Select all {filteredCount} matching
+                    </button>
+                  </React.Fragment>
+                )}
+                {!showSelectedOnly && allMatchingSel && moreBeyondShown && (
+                  <span className="dim">— all {filteredCount} matching transactions selected.</span>
+                )}
+                <div className="grow"/>
+                <button onClick={clearSelection}
+                  style={{background: 'transparent', border: 'none', color: 'var(--blue-deep)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5}}>Clear</button>
+              </div>
+            )}
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{width: 30}}>
+                    <input type="checkbox" checked={allSel} title="Select all shown" ref={el => { if (el) el.indeterminate = someSel; }} onChange={toggleAll}/>
+                  </th>
+                  <Th k="date" label="Date"/>
+                  {showCol('acct') && <Th k="acct" label="Acct"/>}
+                  <Th k="desc" label="Description"/>
+                  {showCol('payee') && <Th k="payee" label="Payee"/>}
+                  <Th k="amount" label="Amount" num/>
+                  {showCol('category') && <Th k="category" label="Category"/>}
+                  {showCol('project') && <Th k="project" label="Property"/>}
+                  <th style={{width: 130}}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(t => {
+                  const untagged = !t.category || !t.project;
+                  const suggestion = autoSuggest(t);
+                  const isSel = selected.has(t.id);
+                  const isSplit = t.splits && t.splits.length > 0;
+                  const isExp = expanded.has(t.id);
+                  return (
+                    <React.Fragment key={t.id}>
+                    <tr
+                      style={isSel ? {background: 'var(--blue-tint)'} : isSplit ? {background: 'rgba(52,99,127,0.05)'} : untagged ? {background: 'rgba(154,102,24,0.04)'} : null}
+                      onClick={(e) => { if (e.target.type === 'checkbox' || e.target.tagName === 'BUTTON') return; toggleRow(t.id); }}>
+                      <td><input type="checkbox" checked={isSel} onChange={() => toggleRow(t.id)}/></td>
+                      <td className="mono small">{fmtDate(t.date)}</td>
+                      {showCol('acct') && <td className="mono small dim">{t.acct}</td>}
+                      <td className="small" style={{maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</td>
+                      {showCol('payee') && <td className="small dim">{t.payee || '—'}</td>}
+                      <td className="num mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</td>
+                      {showCol('category') && <td>
+                        {isSplit ? <Tag tone="blue">{t.splits.length} splits</Tag>
+                          : t.category ? <Tag tone="ghost">{t.category}</Tag>
+                          : <Tag tone="ochre" title={`Suggestion: ${suggestion.category}`}>{suggestion.category ? `?  ${suggestion.category}` : '?  unknown'}</Tag>}
+                      </td>}
+                      {showCol('project') && <td>
+                        {isSplit ? (
+                          <button onClick={() => { const n = new Set(expanded); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); setExpanded(n); }}
+                            style={{background: 'transparent', border: '1px solid var(--blue-soft)', color: 'var(--blue-deep)', borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 500}}>
+                            multiple · {isExp ? '▴' : '▾'}
+                          </button>
+                        ) : t.project ? (
+                          t.project === 'multiple' ? <Tag tone="blue">multiple</Tag> : <Tag tone="blue">{t.project}</Tag>
+                        ) : <Tag tone="ochre">{suggestion.project ? `?  ${suggestion.project}` : '?  unassigned'}</Tag>}
+                      </td>}
+                      <td>
+                        <div className="row gap-4">
+                          <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); setEditing(t); }}>Edit</Btn>
+                          <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); setSplitting(t); }}>{isSplit ? 'Split…' : 'Split'}</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                    {isSplit && isExp && t.splits.map((sp, idx) => (
+                      <tr key={t.id + '-s' + idx} style={{background: 'var(--paper-3)'}}>
+                        <td></td>
+                        <td></td>
+                        {showCol('acct') && <td></td>}
+                        <td className="small dim" style={{paddingLeft: 28}}>↳ split</td>
+                        {showCol('payee') && <td></td>}
+                        <td className="num mono small" style={{color: sp.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(sp.amount)}</td>
+                        {showCol('category') && <td><Tag tone="ghost">{sp.category || '—'}</Tag></td>}
+                        {showCol('project') && <td className="small dim">↳ {sp.project}</td>}
+                        <td></td>
+                      </tr>
+                    ))}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            {rows.length === 0 && (txFocus
+              ? <div className="card__body"><Empty icon="✓" title="Nothing left to review" sub="Every flagged transaction has been corrected. Use “Show all transactions” to return to the full ledger."/></div>
+              : <div className="card__body"><Empty title="No transactions match" sub="Try clearing filters."/></div>)}
+          </Card>
+        </div>
+
+        {/* sidebar — auto-tag rules + recently tagged */}
+        <div className="col gap-16" style={{width: 320, flexShrink: 0}}>
+          <Card accent>
+            <CardHead title="Auto-tag rules" right={
+              <div className="row gap-6 items-center">
+                <Tag tone="ghost">{rules.length}</Tag>
+                <Btn sz="sm" kind="ghost" onClick={() => setAddingRule(true)}>+ Add</Btn>
+              </div>}/>
+            <div className="card__body">
+              <div className="small dim mb-12">Applied to new imports top-to-bottom — the first match wins, and you confirm the rest. Drag priority with the arrows.</div>
+              <div className="col gap-8">
+                {rules.length === 0 && <div className="small dim">No rules yet. Add one to auto-suggest categories on import.</div>}
+                {rules.map((r, i) => (
+                  <div key={r.id} className="col" style={{padding: '8px 10px', background: 'var(--paper-3)', borderRadius: 4, fontSize: 12}}>
+                    <div className="row gap-6 items-center between">
+                      <div className="row gap-6 items-center" style={{minWidth: 0}}>
+                        <span className="mono tiny dim">match</span>
+                        <span className="mono" style={{fontSize: 11, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{r.pattern}</span>
+                      </div>
+                      <div className="row gap-2 items-center shrink-0">
+                        <button title="Move up" disabled={i === 0} onClick={() => moveAutoTagRule(r.id, -1)} style={{background: 'none', border: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? 'var(--ink-3)' : 'var(--ink-2)', padding: '0 2px', fontSize: 11}}>▲</button>
+                        <button title="Move down" disabled={i === rules.length - 1} onClick={() => moveAutoTagRule(r.id, 1)} style={{background: 'none', border: 'none', cursor: i === rules.length - 1 ? 'default' : 'pointer', color: i === rules.length - 1 ? 'var(--ink-3)' : 'var(--ink-2)', padding: '0 2px', fontSize: 11}}>▼</button>
+                      </div>
+                    </div>
+                    <div className="row gap-6 items-center mt-4">
+                      <span className="mono tiny dim">→ cat</span>
+                      <span style={{color: 'var(--blue)', fontWeight: 500}}>{r.category}</span>
+                      {r.conf != null && <span className="mono tiny dim">· {r.conf}%</span>}
+                    </div>
+                    {r.payee && (
+                      <div className="row gap-6 items-center">
+                        <span className="mono tiny dim">→ payee</span>
+                        <span style={{color: 'var(--blue)'}}>{r.payee}</span>
+                      </div>
+                    )}
+                    {r.project && (
+                      <div className="row gap-6 items-center">
+                        <span className="mono tiny dim">→ proj</span>
+                        <span style={{color: 'var(--blue)'}}>{PROJECT_TOKEN_LABEL[r.project] || r.project}</span>
+                      </div>
+                    )}
+                    <div className="row gap-10 items-center mt-6">
+                      <button onClick={() => setEditingRule(r.id)} style={{background: 'none', border: 'none', padding: 0, color: 'var(--blue)', cursor: 'pointer', font: 'inherit', fontSize: 11}}>Edit</button>
+                      <button onClick={() => { if (confirm('Delete this rule?')) deleteAutoTagRule(r.id); }} style={{background: 'none', border: 'none', padding: 0, color: 'var(--brick)', cursor: 'pointer', font: 'inherit', fontSize: 11}}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="row mt-12">
+                <button onClick={() => { if (confirm('Reset auto-tag rules to the built-in defaults? Your custom rules will be lost.')) resetAutoTagRules(); }} style={{background: 'none', border: 'none', padding: 0, color: 'var(--ink-3)', cursor: 'pointer', font: 'inherit', fontSize: 11, textDecoration: 'underline'}}>Reset to defaults</button>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHead title="Recently tagged"/>
+            <div className="card__body col gap-6">
+              {store.transactions.filter(t => t.category && t.project).slice(0, 8).map(t => (
+                <div key={t.id} className="col" style={{paddingBottom: 6, borderBottom: '1px solid var(--rule-soft)'}}>
+                  <div className="row gap-6 items-baseline">
+                    <span className="mono tiny dim">{fmtDate(t.date)}</span>
+                    <span className="small grow" style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc.slice(0, 36)}</span>
+                  </div>
+                  <div className="row gap-6 items-center mt-2">
+                    <Tag tone="ghost">{t.category}</Tag>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>
+      {selected.size > 0 && <BulkActionBar selectedIds={[...selected]} onClear={clearSelection}/>}
+      {splitting && <SplitTransactionModal tx={splitting} onClose={() => setSplitting(null)}/>}
+      {editing && <TransactionEditor tx={editing} onClose={() => setEditing(null)}/>}
+      {adding && <TransactionEditor onClose={() => setAdding(false)}/>}
+      {addingRule && <AutoTagRuleEditor onClose={() => setAddingRule(false)}/>}
+      {editingRule && <AutoTagRuleEditor rule={getAutoTagRules().find(r => r.id === editingRule)} onClose={() => setEditingRule(null)}/>}
+    </div>
+  );
 }
 
-// ─── Meta ───────────────────────────────────────────────────────────────────
+function BulkActionBar({ selectedIds, onClear }) {
+  const store = useStore();
+  const [showCat, setShowCat] = useState(false);
+  const [showProj, setShowProj] = useState(false);
+  const [cat, setCat] = useState('');
+  const [proj, setProj] = useState('');
 
-function meta_() {
-  const ss = SpreadsheetApp.getActive();
-  const counts = {};
-  Object.keys(SCHEMA).forEach(tabName => {
-    const sheet = ss.getSheetByName(tabName);
-    counts[tabName] = sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
-  });
-  return {
-    ok: true,
-    workbookId: ss.getId(),
-    workbookName: ss.getName(),
-    lastWriteAt: PropertiesService.getDocumentProperties().getProperty('lastWriteAt'),
-    counts: counts,
-  };
+  const total = store.transactions
+    .filter(t => selectedIds.includes(t.id))
+    .reduce((a,t) => a + t.amount, 0);
+
+  return (
+    <div style={{
+      position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+      background: 'var(--ink)', color: 'white',
+      padding: '10px 16px', borderRadius: 8,
+      boxShadow: '0 8px 24px rgba(28,26,20,0.3)',
+      display: 'flex', alignItems: 'center', gap: 16,
+      zIndex: 50, fontSize: 13,
+    }}>
+      <span style={{fontWeight: 600}}>{selectedIds.length} selected</span>
+      <span style={{color: 'var(--ink-4)'}}>·</span>
+      <span className="mono" style={{color: total < 0 ? '#e9a59a' : '#a9c098'}}>Net {fmtMoney(total, {sign: true})}</span>
+      <span style={{color: 'var(--ink-4)'}}>·</span>
+
+      <select className="select" style={{background: 'var(--ink-2)', color: 'white', borderColor: 'var(--ink-3)'}}
+        value={cat} onChange={e => setCat(e.target.value)}>
+        <option value="">Set category…</option>
+        {getList('categories').map(c => <option key={c.id} value={c.label}>{c.label}</option>)}
+      </select>
+      {cat && <button onClick={() => { bulkTagTransactions(selectedIds, {category: cat}); setCat(''); }}
+        style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
+
+      <select className="select" style={{background: 'var(--ink-2)', color: 'white', borderColor: 'var(--ink-3)'}}
+        value={proj} onChange={e => setProj(e.target.value)}>
+        <option value="">Set property…</option>
+        <option value="multiple">multiple · split</option>
+        {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
+        {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+      </select>
+      {proj && <button onClick={() => { bulkTagTransactions(selectedIds, {project: proj}); setProj(''); }}
+        style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
+
+      <span style={{color: 'var(--ink-4)'}}>·</span>
+      <button onClick={() => { if (confirm(`Delete ${selectedIds.length} transactions?`)) { bulkDeleteTransactions(selectedIds); onClear(); } }}
+        style={{background: 'transparent', color: '#e9a59a', border: '1px solid #e9a59a', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Delete</button>
+      <button onClick={onClear}
+        style={{background: 'transparent', color: 'var(--ink-4)', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, marginLeft: 4}}>Clear</button>
+    </div>
+  );
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function json(obj, status) {
-  return ContentService
-    .createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+function autoSuggest(t) {
+  for (const r of getAutoTagRules()) {
+    const re = compileAutoTagRule(r);
+    if (re && re.test(t.desc)) {
+      let project = r.project;
+      if (project === 'extract') {
+        // Try find a property keyword in the description
+        const prop = Store.state.properties.find(p =>
+          t.desc.toLowerCase().includes(p.address.split(/\s+/)[0].toLowerCase() + ' ' + (p.address.split(/\s+/)[1] || '').toLowerCase().slice(0,3))
+        );
+        project = prop ? prop.address : '';
+      } else if (project === 'extract-zelle') {
+        const m = t.desc.match(/zelle payment from\s+([A-Z\s]+?)\s+(for|conf)/i);
+        if (m) project = 'tenant: ' + m[1].trim();
+        else project = '';
+      }
+      return { category: r.category, project };
+    }
+  }
+  return { category: '', project: '' };
 }
+
+// ────── Auto-tag rule editor ──────
+function AutoTagRuleEditor({ rule, onClose }) {
+  const editing = !!rule;
+  const store = useStore();
+  const [pattern, setPattern] = useState(rule?.pattern || '');
+  const [category, setCategory] = useState(rule?.category || '');
+  const [payee, setPayee] = useState(rule?.payee || '');
+  const [conf, setConf] = useState(rule?.conf != null ? rule.conf : 80);
+  const isTokenProj = !rule || rule.project === '' || PROJECT_TOKENS.some(t => t.value === rule.project);
+  const [projMode, setProjMode] = useState(isTokenProj ? (rule?.project || '') : 'specific');
+  const [specificProp, setSpecificProp] = useState(isTokenProj ? '' : (rule?.project || ''));
+
+  // Validate the regex live.
+  let regexError = '';
+  try { new RegExp(pattern, 'i'); } catch (e) { regexError = e.message; }
+  const sampleHits = pattern && !regexError
+    ? store.transactions.filter(t => { try { return new RegExp(pattern, 'i').test(t.desc); } catch (e) { return false; } }).slice(0, 3)
+    : [];
+
+  function save() {
+    const project = projMode === 'specific' ? specificProp : projMode;
+    const payload = { pattern: pattern.trim(), category, payee: payee.trim(), project, conf: Number(conf) };
+    if (editing) updateAutoTagRule(rule.id, payload);
+    else addAutoTagRule(payload);
+    onClose();
+  }
+
+  return (
+    <Modal title={editing ? 'Edit auto-tag rule' : 'New auto-tag rule'} onClose={onClose}>
+      <div className="col gap-12">
+        <div>
+          <div className="up dim mb-4">Match pattern <span className="dim" style={{textTransform: 'none', letterSpacing: 0}}>(matched against the transaction description, case-insensitive)</span></div>
+          <input className="input mono" value={pattern} onChange={e => setPattern(e.target.value)} autoFocus placeholder="e.g. lowes|home depot" style={{width: '100%'}}/>
+          {regexError
+            ? <div className="tiny mt-4" style={{color: 'var(--brick)'}}>Invalid pattern: {regexError}</div>
+            : <div className="tiny dim mt-4">Use <span className="mono">|</span> for “or” (e.g. <span className="mono">amazon|amzn</span>). Plain text works too.</div>}
+        </div>
+        <div>
+          <div className="up dim mb-4">Category</div>
+          <ManagedSelect listKey="categories" value={category} onChange={setCategory} style={{width: '100%'}}/>
+        </div>
+        <div>
+          <div className="up dim mb-4">Payee <span className="dim" style={{textTransform: 'none', letterSpacing: 0}}>(optional — the merchant/person this maps to)</span></div>
+          <input className="input" value={payee} onChange={e => setPayee(e.target.value)} placeholder="e.g. Lowe's, Duke Energy" style={{width: '100%'}}/>
+          <div className="tiny dim mt-4">Leave blank to auto-derive the payee from the description on import.</div>
+        </div>
+        <div>
+          <div className="up dim mb-4">Property / project</div>
+          <select className="select" value={projMode} onChange={e => setProjMode(e.target.value)} style={{width: '100%'}}>
+            {PROJECT_TOKENS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            <option value="specific">A specific property…</option>
+          </select>
+          {projMode === 'specific' && (
+            <select className="select mt-8" value={specificProp} onChange={e => setSpecificProp(e.target.value)} style={{width: '100%'}}>
+              <option value="">— pick property —</option>
+              {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+            </select>
+          )}
+        </div>
+        <div>
+          <div className="row between items-baseline mb-4">
+            <div className="up dim">Confidence</div>
+            <div className="mono small">{conf}%</div>
+          </div>
+          <input type="range" min="0" max="99" value={conf} onChange={e => setConf(e.target.value)} style={{width: '100%'}}/>
+          <div className="tiny dim mt-4">Higher = stronger suggestion on import. It never auto-commits — you still confirm every row.</div>
+        </div>
+        {pattern && !regexError && (
+          <div style={{padding: '10px 12px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
+            <div className="up dim mb-4">Preview · {sampleHits.length ? 'matches in your data' : 'no current matches'}</div>
+            {sampleHits.map(t => (
+              <div key={t.id} className="small mono" style={{color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc.slice(0, 48)}</div>
+            ))}
+          </div>
+        )}
+        <div className="row gap-8 mt-8">
+          {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this rule?')) { deleteAutoTagRule(rule.id); onClose(); } }}>Delete</Btn>}
+          <div className="grow"/>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" disabled={!pattern.trim() || !category || !!regexError} onClick={save}>{editing ? 'Save rule' : 'Add rule'}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+Object.assign(window, { AutoTagRuleEditor });
+
+window.TransactionsScreen = TransactionsScreen;
