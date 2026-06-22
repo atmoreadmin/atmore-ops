@@ -630,13 +630,40 @@ function PaymentHistory({ tenantId }) {
     byMonth[m].txns.push(t);
   });
   const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
+
+  // Recurring monthly carrying costs (mortgage + tax/12 + insurance/12) blended
+  // into each month so the per-month net reflects true cash flow, not just logged
+  // transactions. Escrowed tax/insurance ride inside the mortgage payment, so
+  // they're skipped as separate lines to avoid double-counting.
+  const ld = prop.loanDetail || {}, ptx = prop.taxes || {}, pins = prop.insurance || {};
+  const mortgage = ld.monthlyPayment || 0;
+  const taxMo = ptx.annualAmount ? ptx.annualAmount / 12 : 0;
+  const insMo = pins.premium ? pins.premium / 12 : 0;
+  const taxEsc = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  const insEsc = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
+  const carrying = [
+    mortgage > 0 && { tag: '_mtg', desc: 'Mortgage payment', category: 'Mortgage', amount: -mortgage },
+    taxMo > 0 && !taxEsc && { tag: '_tax', desc: 'Property tax (1/12)', category: 'Property tax', amount: -taxMo },
+    insMo > 0 && !insEsc && { tag: '_ins', desc: 'Insurance (1/12)', category: 'Insurance', amount: -insMo },
+  ].filter(Boolean);
+  if (carrying.length) {
+    months.forEach(m => {
+      carrying.forEach(c => {
+        m.out += Math.abs(c.amount);
+        m.txns.push({ ...c, id: m.month + c.tag, date: m.month + '-01', recurring: true });
+      });
+    });
+  }
   const totalIn = months.reduce((a, m) => a + m.in, 0);
   const totalOut = months.reduce((a, m) => a + m.out, 0);
 
   return (
     <div>
       <div className="row between items-center mb-8">
-        <div className="up dim">Monthly cash flow · {months.length} months</div>
+        <div className="col" style={{gap: 2}}>
+          <div className="up dim">Monthly cash flow · {months.length} months</div>
+          {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates</div>}
+        </div>
         <div className="row gap-12 small">
           <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
           <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
@@ -671,8 +698,9 @@ function PaymentHistory({ tenantId }) {
                       <div style={{padding: '4px 12px 8px 26px'}}>
                         {rows.map(t => (
                           <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
-                            <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{fmtDate(t.date)}</span>
-                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</span>
+                            <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{t.recurring ? '—' : fmtDate(t.date)}</span>
+                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit'}}>{t.desc}</span>
+                            {t.recurring && <Tag tone="ochre">recurring</Tag>}
                             {t.category && <Tag tone="ghost">{t.category}</Tag>}
                             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
                           </div>
