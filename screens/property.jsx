@@ -510,6 +510,7 @@ function TenantsPanel({ p, tenants, compact }) {
               </div>
               {!compact && (
                 <>
+                  <MonthlyCarryingCosts p={p} rent={t.rent}/>
                   <div className="divider"/>
                   <PaymentHistory tenantId={t.id}/>
                 </>
@@ -529,6 +530,71 @@ function TenantsPanel({ p, tenants, compact }) {
       {rentChanging && <RentChangeModal tenant={tenants.find(t => t.id === rentChanging)} onClose={() => setRentChanging(null)}/>}
       {movingOut && <MoveOutModal tenant={tenants.find(t => t.id === movingOut)} onClose={() => setMovingOut(null)}/>}
     </>
+  );
+}
+
+// ────── Monthly carrying costs ──────
+// Derives the recurring monthly charges for a property from its stored
+// financials: mortgage payment, property tax (annual ÷ 12), insurance
+// (annual ÷ 12). Escrowed tax/insurance are collected inside the mortgage
+// payment, so they're shown but excluded from the total to avoid double-counting.
+function MonthlyCarryingCosts({ p, rent }) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const ld = p.loanDetail || {};
+  const tx = p.taxes || {};
+  const ins = p.insurance || {};
+  const mortgage = ld.monthlyPayment || 0;
+  const taxMo = tx.annualAmount ? tx.annualAmount / 12 : 0;
+  const insMo = ins.premium ? ins.premium / 12 : 0;
+  // Nothing entered at all → don't show the block.
+  if (!mortgage && !taxMo && !insMo) return null;
+  const taxEscrowed = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  const insEscrowed = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
+  // Always show all three categories so a missing one is visible, not silently dropped.
+  const rows = [
+    { label: 'Mortgage', sub: 'monthly payment', amount: mortgage },
+    { label: 'Property tax', sub: tx.annualAmount ? fmtMoney(tx.annualAmount) + '/yr ÷ 12' : '', amount: taxMo, escrowed: taxEscrowed },
+    { label: 'Insurance', sub: ins.premium ? fmtMoney(ins.premium) + '/yr ÷ 12' : '', amount: insMo, escrowed: insEscrowed },
+  ];
+  const total = rows.reduce((a, r) => a + (r.escrowed ? 0 : r.amount), 0);
+  const net = rent != null ? rent - total : null;
+  return (
+    <div>
+      <div className="divider"/>
+      <div className="up dim mb-8">Monthly carrying costs</div>
+      <table className="tbl">
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.label}>
+              <td className="small">
+                {r.label} {r.sub && <span className="dim">· {r.sub}</span>}
+                {r.escrowed && <Tag tone="blue" style={{marginLeft: 6}}>in escrow</Tag>}
+              </td>
+              {r.amount > 0 ? (
+                <td className="num mono small" style={{color: r.escrowed ? 'var(--ink-3)' : 'var(--brick)'}}>
+                  {r.escrowed ? 'incl.' : fmtMoney(-r.amount)}
+                </td>
+              ) : (
+                <td className="num small dim">
+                  not on file · <a onClick={() => setEditorOpen(true)} style={{cursor: 'pointer', color: 'var(--blue)'}}>Add</a>
+                </td>
+              )}
+            </tr>
+          ))}
+          <tr style={{borderTop: '2px solid var(--rule)'}}>
+            <td className="small" style={{fontWeight: 600}}>Total carrying cost</td>
+            <td className="num mono small" style={{fontWeight: 600, color: 'var(--brick)'}}>{fmtMoney(-total)}/mo</td>
+          </tr>
+          {net != null && (
+            <tr>
+              <td className="small" style={{fontWeight: 600}}>Net after rent ({fmtMoney(rent)}/mo)</td>
+              <td className="num mono small" style={{fontWeight: 600, color: net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(net)}/mo</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {editorOpen && <PropertyEditor key={p.id} property={p} onClose={() => setEditorOpen(false)}/>}
+    </div>
   );
 }
 

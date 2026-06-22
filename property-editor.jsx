@@ -55,13 +55,13 @@ function PropertyEditor({ property, onClose }) {
       type, assigned, loanType, lockbox, vestingLLC, driveUrl, notes,
       signingDate: signingDate || null,
       closingTime: signingTime || null,
-      insurance: (iCarrier || iPolicy || iPremium) ? {
+      insurance: (iCarrier || iPolicy || iPremium || iRenewal || iAgentName || iAgentPhone) ? {
         carrier: iCarrier, policyNumber: iPolicy,
         premium: iPremium ? parseFloat(iPremium) : null,
         renewalDate: iRenewal || null,
         agentName: iAgentName, agentPhone: iAgentPhone,
       } : null,
-      loanDetail: (lLender || lNumber || lBalance) ? {
+      loanDetail: (lLender || lNumber || lBalance || lMonthly || lRate || lMaturity || lContact || lEscrowT || lEscrowI) ? {
         lender: lLender, loanNumber: lNumber,
         monthlyPayment: lMonthly ? parseFloat(lMonthly) : null,
         currentBalance: lBalance ? parseFloat(lBalance) : null,
@@ -71,7 +71,7 @@ function PropertyEditor({ property, onClose }) {
         escrowedInsurance: lEscrowI,
         lenderContact: lContact,
       } : null,
-      taxes: (tAnnual || tDue) ? {
+      taxes: (tAnnual || tDue || tParcel || tEscrowed) ? {
         annualAmount: tAnnual ? parseFloat(tAnnual) : null,
         dueDate: tDue || null,
         escrowed: tEscrowed,
@@ -84,9 +84,10 @@ function PropertyEditor({ property, onClose }) {
   }
 
   const SECTIONS = [
-    {id:'basics',  label:'Basics'},
-    {id:'finance', label:'Financing & insurance'},
-    {id:'taxutil', label:'Taxes & utilities'},
+    {id:'basics',    label:'Basics'},
+    {id:'mortgage',  label:'Mortgage'},
+    {id:'insurance', label:'Insurance'},
+    {id:'taxutil',   label:'Taxes & utilities'},
   ];
 
   return (
@@ -148,9 +149,9 @@ function PropertyEditor({ property, onClose }) {
             </div>
           )}
 
-          {section === 'finance' && (
+          {section === 'mortgage' && (
             <div className="col gap-12">
-              <div className="up dim">Loan</div>
+              <div className="up dim">Mortgage</div>
               <div className="grid g-2">
                 <Field label="Lender"><input className="input" value={lLender} onChange={e => setLLender(e.target.value)} style={{width: '100%'}}/></Field>
                 <Field label="Loan #"><input className="input mono" value={lNumber} onChange={e => setLNumber(e.target.value)} style={{width: '100%'}}/></Field>
@@ -170,8 +171,11 @@ function PropertyEditor({ property, onClose }) {
                   <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowI} onChange={e => setLEscrowI(e.target.checked)}/> Insurance escrowed by lender</label>
                 </div>
               </Field>
+            </div>
+          )}
 
-              <div className="divider" style={{margin: '4px 0'}}/>
+          {section === 'insurance' && (
+            <div className="col gap-12">
               <div className="up dim">Insurance</div>
               <div className="grid g-2">
                 <Field label="Carrier"><input className="input" value={iCarrier} onChange={e => setICarrier(e.target.value)} style={{width: '100%'}}/></Field>
