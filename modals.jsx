@@ -286,6 +286,107 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MoveOutModal — retire a lease and settle the security deposit
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function MoveOutModal({ tenant, editing, onClose }) {
+  const p = getProperty(tenant.propertyId);
+  const d = tenant.depositReturn || {};
+  const onFile = editing ? (d.depositOnFile != null ? d.depositOnFile : (tenant.deposit || 0)) : (tenant.deposit || 0);
+  const [moveOut, setMoveOut] = useState(editing ? (tenant.moveOut || TODAY()) : TODAY());
+  const [depositOnFile, setDepositOnFile] = useState(String(onFile));
+  const [refunded, setRefunded] = useState(editing ? String(d.refunded || 0) : String(onFile));
+  const [withheld, setWithheld] = useState(editing ? String(d.withheld || 0) : '0');
+  const [reason, setReason] = useState(editing ? (d.reason || '') : '');
+  const [note, setNote] = useState('');
+
+  const dep = parseFloat(depositOnFile) || 0;
+  const ref = parseFloat(refunded) || 0;
+  const wh = parseFloat(withheld) || 0;
+  const diff = dep - (ref + wh);
+
+  return (
+    <Modal title={`${editing ? 'Edit move-out' : 'Move out'} · ${tenant.name || p?.address}`} onClose={onClose}>
+      <div className="col gap-14">
+        {!editing && (
+          <div className="small dim">
+            Retiring this lease moves <b style={{color: 'var(--ink-2)'}}>{tenant.name || 'the tenant'}</b> to a past tenant and frees up
+            <span className="mid"> {p?.address}</span> for a new lease. Payment history is kept.
+          </div>
+        )}
+
+        <div className="grid g-2">
+          <div>
+            <div className="up dim mb-4">Move-out date</div>
+            <input className="input" type="date" value={moveOut} onChange={e => setMoveOut(e.target.value)} style={{width: '100%'}} autoFocus/>
+          </div>
+          <div>
+            <div className="up dim mb-4">Deposit on file</div>
+            <input className="input mono" type="number" step="0.01" value={depositOnFile}
+              onChange={e => setDepositOnFile(e.target.value)} style={{width: '100%'}}/>
+          </div>
+        </div>
+
+        <div style={{padding: '12px 14px', background: 'var(--blue-tint)', borderRadius: 6, border: '1px solid var(--blue-soft)'}}>
+          <div className="up dim mb-8">Security deposit settlement</div>
+          <div className="grid g-2 mb-8">
+            <div>
+              <div className="up dim mb-4">Refunded to tenant</div>
+              <input className="input mono" type="number" step="0.01" value={refunded}
+                onChange={e => { const v = e.target.value; setRefunded(v); const r = parseFloat(v) || 0; setWithheld(String(Math.max(0, Math.round((dep - r) * 100) / 100))); }}
+                style={{width: '100%'}}/>
+            </div>
+            <div>
+              <div className="up dim mb-4">Withheld</div>
+              <input className="input mono" type="number" step="0.01" value={withheld}
+                onChange={e => { const v = e.target.value; setWithheld(v); const w = parseFloat(v) || 0; setRefunded(String(Math.max(0, Math.round((dep - w) * 100) / 100))); }}
+                style={{width: '100%'}}/>
+            </div>
+          </div>
+          <div className="row between items-center tiny">
+            <span className="dim">Refund {fmtMoney(ref)} + withheld {fmtMoney(wh)} = <b style={{color: 'var(--ink-2)'}}>{fmtMoney(ref + wh)}</b></span>
+            {Math.abs(diff) > 1
+              ? <span style={{color: 'var(--ochre)'}}>{diff > 0 ? fmtMoney(diff) + ' unallocated' : fmtMoney(-diff) + ' over deposit'}</span>
+              : <span style={{color: 'var(--sage)'}}>balances ✓</span>}
+          </div>
+          {wh > 0 && (
+            <div className="mt-8">
+              <div className="up dim mb-4">Reason for withholding</div>
+              <input className="input" value={reason} onChange={e => setReason(e.target.value)}
+                placeholder="e.g. carpet damage, unpaid utilities" style={{width: '100%'}}/>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="up dim mb-4">Move-out note (optional)</div>
+          <textarea className="input" value={note} onChange={e => setNote(e.target.value)} rows="2" style={{width: '100%'}}
+            placeholder="Condition at move-out, forwarding address, keys returned…"/>
+        </div>
+
+        <div className="row gap-8 mt-4 items-center">
+          <div className="grow"/>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" onClick={() => {
+            const payload = {
+              moveOut,
+              depositOnFile: dep,
+              refunded: ref,
+              withheld: wh,
+              reason: wh > 0 ? reason : '',
+              note,
+            };
+            if (editing) updateDepositSettlement(tenant.id, payload);
+            else moveOutTenant(tenant.id, payload);
+            onClose();
+          }}>{editing ? 'Save settlement' : 'Move out & settle deposit'}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // AddHOAModal
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -585,13 +686,89 @@ function ReconcilePicker({ ledger, onPick, onSkip }) {
 }
 
 Object.assign(window, {
-  SplitTransactionModal, AddTenantModal, AddHOAModal, AddPropertyModal, ReconcilePicker,
+  SplitTransactionModal, AddTenantModal, MoveOutModal, AddHOAModal, AddPropertyModal, ReconcilePicker,
   RentChangeModal, TransactionEditor,
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TransactionEditor — add or edit a single transaction
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// PayeeCombobox — free-type a payee OR pick one of the contractors in the
+// address book. Typing filters the list; the field still accepts any value.
+function PayeeCombobox({ value, onChange }) {
+  const store = useStore();
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const wrapRef = React.useRef(null);
+
+  const contractors = [...(store.contractors || [])]
+    .sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''), undefined, { sensitivity: 'base' }));
+  const q = (value || '').trim().toLowerCase();
+  const matches = q
+    ? contractors.filter(c => (c.name || '').toLowerCase().includes(q) || (c.specialty || '').toLowerCase().includes(q))
+    : contractors;
+  const exact = contractors.some(c => (c.name || '').toLowerCase() === q);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onDoc(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  function pick(c) { onChange(c.name); setOpen(false); }
+
+  function onKeyDown(e) {
+    if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { setOpen(true); return; }
+    if (!open) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(a => Math.min(a + 1, matches.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(a => Math.max(a - 1, 0)); }
+    else if (e.key === 'Enter' && matches[active]) { e.preventDefault(); pick(matches[active]); }
+    else if (e.key === 'Escape') { setOpen(false); }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <div style={{ position: 'relative' }}>
+        <input className="input" value={value} placeholder="Type a name, or pick a contractor ▾"
+          onChange={e => { onChange(e.target.value); setOpen(true); setActive(0); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          style={{ width: '100%', paddingRight: 30 }}/>
+        <button type="button" aria-label="Show contractors" tabIndex={-1}
+          onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
+          style={{ position: 'absolute', right: 1, top: 1, bottom: 1, width: 28, border: 'none', background: 'transparent',
+            color: 'var(--ink-3)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>▾</button>
+      </div>
+      {open && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 10,
+          background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 7,
+          boxShadow: '0 8px 24px rgba(28,26,20,0.16)', maxHeight: 220, overflowY: 'auto', padding: 4 }}>
+          {contractors.length === 0 ? (
+            <div className="small dim" style={{ padding: '8px 10px' }}>No contractors yet — add them in the address book.</div>
+          ) : matches.length === 0 ? (
+            <div className="small dim" style={{ padding: '8px 10px' }}>No contractor matches “{value}”. Press anywhere to keep it as typed.</div>
+          ) : (
+            <React.Fragment>
+              <div className="up dim" style={{ padding: '6px 10px 4px' }}>Contractors</div>
+              {matches.map((c, i) => (
+                <div key={c.id} onMouseDown={e => { e.preventDefault(); pick(c); }}
+                  onMouseEnter={() => setActive(i)}
+                  style={{ padding: '6px 10px', borderRadius: 5, cursor: 'pointer',
+                    display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10,
+                    background: i === active ? 'var(--paper-3)' : 'transparent' }}>
+                  <span style={{ fontWeight: 500 }}>{c.name}</span>
+                  {c.specialty && <span className="small dim" style={{ whiteSpace: 'nowrap' }}>{c.specialty}</span>}
+                </div>
+              ))}
+            </React.Fragment>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TransactionEditor({ tx, onClose }) {
   const editing = !!tx;
@@ -662,7 +839,7 @@ function TransactionEditor({ tx, onClose }) {
                 onChange={e => setAmount(e.target.value)} style={{flex: 1, fontSize: 16}}/>
             </div>
           </div>
-          <div><div className="up dim mb-4">Payee (optional)</div><input className="input" value={payee} onChange={e => setPayee(e.target.value)} style={{width: '100%'}}/></div>
+          <div><div className="up dim mb-4">Payee (optional)</div><PayeeCombobox value={payee} onChange={setPayee}/></div>
         </div>
         <div className="grid g-2">
           <div>

@@ -90,9 +90,24 @@ function deserializeFromSheet(pulledData) {
   const tabs = pulledData.tabs;
   const state = JSON.parse(JSON.stringify(window.SEED));  // start from seed shape
   state.uiState = Store.state.uiState || { selectedPropertyId: null, propertyTab: 'summary' };
-  // Local-only collections not represented in the Sheet — carry them across a pull
-  // so a remote refresh never wipes maintenance logs or reminders/inspections.
-  state.reminders = Store.state.reminders || [];
+  // The maintenance log stays local-only (not a Sheet tab); carry it across a pull
+  // so a remote refresh never wipes it. Tasks DO sync — see the Tasks tab below.
+  // Tasks/reminders now sync via the Tasks tab. Fail-safe: if the tab is absent
+  // (older bridge not yet migrated), keep this device's tasks so nothing is lost.
+  state.reminders = Array.isArray(tabs.Tasks)
+    ? tabs.Tasks.map(r => ({
+        id: r.id,
+        propertyId: r.propertyId || '',
+        title: r.title || '',
+        dueDate: r.dueDate || '',
+        priority: r.priority || 'normal',
+        recurrence: r.recurrence || 'none',
+        done: r.done === true || r.done === 'TRUE' || r.done === 'true',
+        lastDone: r.lastDone || null,
+        notes: r.notes || '',
+        checklist: (() => { try { const a = JSON.parse(r.checklist || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
+      }))
+    : (Store.state.reminders || []);
   state.maintenance = Store.state.maintenance || [];
 
   const localProps = {};
@@ -280,7 +295,12 @@ function deserializeFromSheet(pulledData) {
       ? Store.state.statuses : defaultStatuses();
   }
 
-  state.today    = window.SEED.today;
+  // "Today" is a client-side clock, not Sheet data — never freeze it to the seed date
+  // on a pull (that's what showed May 27). Use the real current date, and never move
+  // backward from a later local value.
+  const realToday = new Date().toISOString().slice(0, 10);
+  state.today = (Store.state && Store.state.today && Store.state.today > realToday)
+    ? Store.state.today : realToday;
 
   return state;
 }

@@ -533,58 +533,89 @@ function TenantsPanel({ p, tenants, compact }) {
 }
 
 function PaymentHistory({ tenantId }) {
-  const ledger = getLedgerForTenant(tenantId);
-  if (ledger.length === 0) return null;
-  const totalCharged = ledger.reduce((a,r) => a + r.charge, 0);
-  const totalPaid = ledger.reduce((a,r) => a + r.paid, 0);
-  const totalLateFees = ledger.reduce((a,r) => a + lateFeeFor(r), 0);
-  const currentOwed = ledger.reduce((a,r) => a + Math.max(0, r.charge - r.paid + lateFeeFor(r)), 0);
+  const [open, setOpen] = useState(null);
+  const tenant = getTenant(tenantId);
+  const prop = tenant ? getProperty(tenant.propertyId) : null;
+  // Direct-tagged transactions PLUS this property's slice of any split transaction
+  // (a split parent is tagged project:'multiple', so its slices are otherwise missed).
+  const directTx = prop ? getTxForProperty(prop.id) : [];
+  const addrLower = ((prop && prop.address) || '').toLowerCase().trim();
+  const splitTx = prop ? (Store.state.transactions || []).flatMap(t => {
+    if (!t.splits || !t.splits.length) return [];
+    return t.splits
+      .filter(sp => (sp.project || '').toLowerCase().trim() === addrLower)
+      .map((sp, i) => ({ id: t.id + '-s' + i, date: t.date, desc: t.desc, category: sp.category || t.category, amount: sp.amount }));
+  }) : [];
+  const tx = [...directTx, ...splitTx];
+  if (tx.length === 0) return null;
+
+  // Month label: "2026-06" → "Jun 2026"
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtM = ym => { const [y, m] = ym.split('-'); return (MON[parseInt(m, 10) - 1] || ym) + ' ' + y; };
+
+  // Group the property's transactions by month into money in (income) vs money out (charges).
+  const byMonth = {};
+  tx.forEach(t => {
+    if (!t.date) return;
+    const m = t.date.slice(0, 7);
+    if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, txns: [] };
+    if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
+    else byMonth[m].out += Math.abs(t.amount);
+    byMonth[m].txns.push(t);
+  });
+  const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
+  const totalIn = months.reduce((a, m) => a + m.in, 0);
+  const totalOut = months.reduce((a, m) => a + m.out, 0);
 
   return (
     <div>
       <div className="row between items-center mb-8">
-        <div className="up dim">Payment ledger · {ledger.length} months</div>
+        <div className="up dim">Monthly cash flow · {months.length} months</div>
         <div className="row gap-12 small">
-          <span><span className="dim">Paid:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalPaid)}</span></span>
-          {totalLateFees > 0 && <span><span className="dim">Late fees:</span> <span className="mono" style={{color: 'var(--ochre)'}}>{fmtMoney(totalLateFees)}</span></span>}
-          {currentOwed > 0 && <span><span className="dim">Owed:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(currentOwed)}</span></span>}
+          <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
+          <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
+          <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
         </div>
       </div>
       <table className="tbl">
         <thead>
           <tr>
             <th>Month</th>
-            <th className="num">Charge</th>
-            <th className="num">Paid</th>
-            <th className="num">Late fee</th>
-            <th className="num">Balance</th>
-            <th>Paid on</th>
-            <th>Status</th>
-            <th>Linked</th>
+            <th className="num">Income in</th>
+            <th className="num">Charges out</th>
+            <th className="num">Net</th>
           </tr>
         </thead>
         <tbody>
-          {ledger.map(r => {
-            const lf = lateFeeFor(r);
-            const balance = r.charge - r.paid + lf;
-            const linkedTx = r.linkedTxId ? Store.state.transactions.find(t => t.id === r.linkedTxId) : null;
+          {months.map(m => {
+            const net = m.in - m.out;
+            const isOpen = open === m.month;
+            const rows = [...m.txns].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
             return (
-              <tr key={r.id}>
-                <td className="mono small">{r.month}</td>
-                <td className="num mono small">{fmtMoney(r.charge)}</td>
-                <td className="num mono small" style={{color: r.paid ? 'var(--sage)' : 'var(--ink-3)'}}>{r.paid ? fmtMoney(r.paid) : '—'}</td>
-                <td className="num mono small">
-                  {lf > 0
-                    ? <span style={{color: 'var(--ochre)'}}>{fmtMoney(lf)}</span>
-                    : r.lateFeeWaived
-                      ? <span className="dim" style={{textDecoration: 'line-through'}}>{fmtMoney(Math.round(r.charge * 0.05))}</span>
-                      : <span className="dim">—</span>}
-                </td>
-                <td className="num mono small" style={{color: balance > 0 ? 'var(--brick)' : 'var(--ink-3)', fontWeight: balance > 0 ? 500 : null}}>{balance > 0 ? fmtMoney(balance) : '—'}</td>
-                <td className="mono small dim">{r.paidOn ? fmtDate(r.paidOn) : '—'}</td>
-                <td><Tag tone={rentStatusTone(r.status)}>{rentStatusLabel(r.status)}</Tag></td>
-                <td className="small dim">{linkedTx ? <span className="row gap-4 items-center"><span style={{color: 'var(--blue)'}}>⛁</span><span className="mono">{fmtDate(linkedTx.date)}</span></span> : '—'}</td>
-              </tr>
+              <React.Fragment key={m.month}>
+                <tr onClick={() => setOpen(isOpen ? null : m.month)} style={{cursor: 'pointer'}}>
+                  <td className="mono small"><span style={{display: 'inline-block', width: 14, color: 'var(--ink-3)'}}>{isOpen ? '▾' : '▸'}</span>{fmtM(m.month)}</td>
+                  <td className="num mono small" style={{color: m.in > 0 ? 'var(--sage)' : 'var(--ink-3)'}}>{m.in > 0 ? fmtMoney(m.in) : '—'}</td>
+                  <td className="num mono small" style={{color: m.out > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{m.out > 0 ? fmtMoney(-m.out) : '—'}</td>
+                  <td className="num mono small" style={{color: net >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 500}}>{fmtMoney(net)}</td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={4} style={{padding: 0, background: 'var(--paper-3)'}}>
+                      <div style={{padding: '4px 12px 8px 26px'}}>
+                        {rows.map(t => (
+                          <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
+                            <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{fmtDate(t.date)}</span>
+                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</span>
+                            {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                            <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             );
           })}
         </tbody>

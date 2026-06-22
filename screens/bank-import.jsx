@@ -208,6 +208,16 @@ function BankImportScreen() {
     setCsvText(SAMPLE_CSV);
     processCSV(SAMPLE_CSV);
   }
+  // Apply the Step-2 account assignment to every row (parsed + tagged), then advance.
+  function applyAccounts(map) {
+    const remap = r => {
+      const k = r.acct || '';
+      return (map[k] != null && map[k] !== '') ? { ...r, acct: map[k] } : r;
+    };
+    setParsedRows(parsedRows.map(remap));
+    setTaggedRows(taggedRows.map(remap));
+    setStep(3);
+  }
   function commit() {
     const toAdd = taggedRows.filter(r => !r.skip).map(r => ({
       date: r.date, acct: r.acct, desc: r.desc, amount: r.amount,
@@ -236,7 +246,7 @@ function BankImportScreen() {
             <div className="row gap-12 items-center">
               {[
                 {n: 1, label: 'Upload CSV'},
-                {n: 2, label: 'Match accounts'},
+                {n: 2, label: 'Assign accounts'},
                 {n: 3, label: 'Auto-tag preview'},
                 {n: 4, label: 'Confirm & commit'},
               ].map((s, i, arr) => (
@@ -261,7 +271,7 @@ function BankImportScreen() {
       )}
 
       {step === 1 && <StepUpload onFile={loadFile} csvText={csvText} setCsvText={setCsvText} onProcess={() => processCSV(csvText)} onSample={loadSample} invertSign={invertSign} setInvertSign={setInvertSign} autoTagOnLoad={autoTagOnLoad} setAutoTagOnLoad={setAutoTagOnLoad}/>}
-      {step === 2 && <StepAccounts rows={parsedRows} onBack={() => setStep(1)} onNext={() => setStep(3)}/>}
+      {step === 2 && <StepAccounts rows={parsedRows} onBack={() => setStep(1)} onApply={applyAccounts}/>}
       {step === 3 && <StepPreview rows={taggedRows} setRows={setTaggedRows} onBack={() => setStep(2)} onNext={() => setStep(4)}/>}
       {step === 4 && <StepCommit rows={taggedRows} onBack={() => setStep(3)} onCommit={commit}/>}
       {step === 5 && <StepDone count={committed} onAnother={() => { setStep(1); setCsvText(''); setParsedRows([]); setTaggedRows([]); setCommitted(0); }}/>}
@@ -348,42 +358,65 @@ function StepUpload({ onFile, csvText, setCsvText, onProcess, onSample, invertSi
   );
 }
 
-// ────── Step 2: Match accounts ──────
-function StepAccounts({ rows, onBack, onNext }) {
+// ────── Step 2: Assign accounts ──────
+function StepAccounts({ rows, onBack, onApply }) {
   const store = useStore();
-  const accts = {};
-  rows.forEach(r => { accts[r.acct] = (accts[r.acct] || 0) + 1; });
-  const accountIds = new Set(store.accounts.map(a => a.id));
-  const unmatched = Object.keys(accts).filter(a => !accountIds.has(a));
+  const groups = {};
+  rows.forEach(r => { const k = r.acct || ''; groups[k] = (groups[k] || 0) + 1; });
+  const keys = Object.keys(groups);
+
+  // For each set of rows (grouped by the file's account column, plus a blank
+  // "no account in file" group), choose which real account it belongs to.
+  // Defaults: exact id match → itself; an unrecognized number → keep & add on
+  // commit; blank → first account so single-account statements just work.
+  const [map, setMap] = useState(() => {
+    const m = {};
+    keys.forEach(k => {
+      const known = store.accounts.find(a => a.id === k);
+      m[k] = known ? k : (k === '' ? (store.accounts[0]?.id || '') : k);
+    });
+    return m;
+  });
+
+  const sortedAccts = [...store.accounts].sort((a,b)=>String(a.label??"").localeCompare(String(b.label??""),undefined,{sensitivity:"base"}));
+  const blankUnassigned = keys.includes('') && !map[''];
 
   return (
     <Card>
-      <CardHead title={`Account matching · ${rows.length} rows across ${Object.keys(accts).length} accounts`}/>
+      <CardHead title={`Assign accounts · ${rows.length} rows across ${keys.length} ${keys.length === 1 ? 'set' : 'sets'}`}/>
       <div className="card__body">
+        <div className="small dim mb-12" style={{lineHeight: 1.5}}>Pick which account each set of transactions belongs to — same as a manual entry. The file’s account column is only a hint; if your statement has no account column, choose it here.</div>
         <div className="col gap-8 mb-16">
-          {Object.entries(accts).map(([acct, n]) => {
-            const known = store.accounts.find(a => a.id === acct);
+          {keys.map(k => {
+            const n = groups[k];
+            const isNew = k !== '' && !store.accounts.some(a => a.id === k);
             return (
-              <div key={acct} className="row gap-12 items-center" style={{padding: '10px 12px', background: 'var(--paper-3)', borderRadius: 4}}>
-                <span className="mono">{acct}</span>
-                <span className="small dim">{n} rows</span>
+              <div key={k} className="row gap-12 items-center" style={{padding: '10px 12px', background: 'var(--paper-3)', borderRadius: 4}}>
+                <div style={{minWidth: 170}}>
+                  {k === ''
+                    ? <span className="small dim" style={{fontStyle: 'italic'}}>No account in file</span>
+                    : <span className="mono">{k}</span>}
+                  <span className="small dim" style={{marginLeft: 8}}>{n} {n === 1 ? 'row' : 'rows'}</span>
+                </div>
                 <div className="grow"/>
-                {known
-                  ? <span className="row gap-8 items-center"><Tag tone="sage">✓ matched</Tag><span className="small">{known.label}</span></span>
-                  : <Tag tone="ochre">⚠ unmatched — will be added</Tag>}
+                <span className="small dim">→</span>
+                <select className="select" value={map[k] || ''} style={{minWidth: 220}}
+                  onChange={e => setMap({ ...map, [k]: e.target.value })}>
+                  {k === '' && <option value="">— choose an account —</option>}
+                  {sortedAccts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                  {isNew && <option value={k}>Add “{k}” as a new account</option>}
+                </select>
               </div>
             );
           })}
+          {store.accounts.length === 0 && (
+            <div className="small dim">No accounts set up yet — add them in Settings → Accounts, or the file’s account numbers will be added on commit.</div>
+          )}
         </div>
-        {unmatched.length > 0 && (
-          <div className="small dim mb-16">
-            {unmatched.length} unrecognized account{unmatched.length===1?'':'s'} will be added to your account list on commit.
-          </div>
-        )}
         <div className="row gap-8">
           <Btn kind="ghost" onClick={onBack}>← Back</Btn>
           <div className="grow"/>
-          <Btn kind="primary" onClick={onNext}>Continue to auto-tag →</Btn>
+          <Btn kind="primary" disabled={blankUnassigned} onClick={() => onApply(map)}>Continue to auto-tag →</Btn>
         </div>
       </div>
     </Card>

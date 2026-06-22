@@ -13,11 +13,74 @@ function reminderDue(dueDate) {
   return { text: `in ${d}d`, tone: 'ghost', fg: 'var(--ink-3)' };
 }
 
-// ────── Reminders & inspections ──────
+// ────── Tasks (deadlines, recurring upkeep & inspections) ──────
+// Priority pill — only shown for high/low; "normal" is the unmarked default.
+function PriorityPip({ priority }) {
+  if (!priority || priority === 'normal') return null;
+  const high = priority === 'high';
+  return (
+    <span className="up" style={{
+      fontSize: 9, letterSpacing: '0.06em', padding: '1px 5px', borderRadius: 4,
+      color: high ? 'var(--brick)' : 'var(--ink-3)',
+      border: '1px solid ' + (high ? 'var(--brick)' : 'var(--rule)'),
+      background: high ? 'var(--brick-soft)' : 'transparent',
+    }}>{high ? '↑ High' : '↓ Low'}</span>
+  );
+}
+
+function TaskRow({ r, onEdit }) {
+  const due = reminderDue(r.dueDate);
+  const list = Array.isArray(r.checklist) ? r.checklist : [];
+  const doneCount = list.filter(c => c.done).length;
+  return (
+    <div className="row gap-12 items-start" style={{padding: '12px 16px', borderBottom: '1px solid var(--rule-soft)'}}>
+      <button onClick={() => completeReminder(r.id)}
+        title={r.recurrence === 'none' ? 'Mark done' : 'Log as done — rolls to next ' + RECURRENCE_LABEL[r.recurrence].toLowerCase()}
+        style={{
+          flexShrink: 0, marginTop: 1, width: 22, height: 22, borderRadius: 999, cursor: 'pointer',
+          border: '1.5px solid var(--rule)', background: 'transparent',
+          color: 'var(--sage)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, lineHeight: 1, padding: 0,
+        }}>✓</button>
+      <div className="col items-center shrink-0" style={{width: 64}}>
+        <div className="mono small" style={{color: due.fg, fontWeight: 500, whiteSpace: 'nowrap'}}>{fmtDate(r.dueDate)}</div>
+      </div>
+      <div className="grow clickable" style={{minWidth: 0}} onClick={() => onEdit(r.id)}>
+        <div className="row gap-8 items-center wrap">
+          <span style={{fontWeight: 500, fontSize: 13}}>{r.title}</span>
+          <PriorityPip priority={r.priority}/>
+          {r.recurrence && r.recurrence !== 'none' && <Tag tone="ghost">↻ {RECURRENCE_LABEL[r.recurrence]}</Tag>}
+          {list.length > 0 && <Tag tone={doneCount === list.length ? 'sage' : 'ghost'}>☑ {doneCount}/{list.length}</Tag>}
+        </div>
+        {r.notes && <div className="small dim" style={{textWrap: 'pretty'}}>{r.notes}</div>}
+        {list.length > 0 && (
+          <div className="col gap-2" style={{marginTop: 6}}>
+            {list.map(c => (
+              <label key={c.id} className="row gap-6 items-center" style={{cursor: 'pointer'}}
+                onClick={e => { e.stopPropagation(); toggleTaskChecklistItem(r.id, c.id); }}>
+                <span style={{
+                  width: 14, height: 14, borderRadius: 3, flexShrink: 0, fontSize: 10, lineHeight: '13px', textAlign: 'center',
+                  border: '1.5px solid ' + (c.done ? 'var(--sage)' : 'var(--rule)'),
+                  background: c.done ? 'var(--sage)' : 'transparent', color: '#fff',
+                }}>{c.done ? '✓' : ''}</span>
+                <span className="small" style={{color: c.done ? 'var(--ink-3)' : 'var(--ink-2)', textDecoration: c.done ? 'line-through' : 'none'}}>{c.text}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {r.lastDone && <div className="tiny dim" style={{marginTop: 2}}>Last done {fmtDate(r.lastDone)}</div>}
+      </div>
+      <Tag tone={due.tone}>{due.text}</Tag>
+    </div>
+  );
+}
+
 function RemindersPanel({ p }) {
   useStore();
   const reminders = getRemindersForProperty(p.id);
-  const active = reminders.filter(r => !r.done);
+  const PRIO = { high: 0, normal: 1, low: 2 };
+  const active = reminders.filter(r => !r.done)
+    .sort((a, b) => (PRIO[a.priority || 'normal'] - PRIO[b.priority || 'normal']) || (a.dueDate || '').localeCompare(b.dueDate || ''));
   const done = reminders.filter(r => r.done);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -35,45 +98,18 @@ function RemindersPanel({ p }) {
   return (
     <>
       <Card>
-        <CardHead title={`Reminders & inspections · ${active.length}`} right={
+        <CardHead title={`Tasks · ${active.length}`} right={
           <div className="row gap-8 items-center shrink-0">
             <Btn sz="sm" kind="ghost" onClick={quickQuarterly}>+ Quarterly inspection</Btn>
-            <Btn sz="sm" onClick={() => setAdding(true)}>+ Reminder</Btn>
+            <Btn sz="sm" onClick={() => setAdding(true)}>+ Task</Btn>
           </div>
         }/>
         {active.length === 0 ? (
-          <div className="card__body"><Empty icon="🗓" title="No reminders set"
-            sub="Schedule recurring upkeep — quarterly inspections, filter changes, gutter cleaning, smoke-detector checks."/></div>
+          <div className="card__body"><Empty icon="🗓" title="No tasks yet"
+            sub="Add anything with a deadline — closing to-dos, inspections, filter changes, follow-ups. Tasks show up on the Calendar."/></div>
         ) : (
           <div className="col">
-            {active.map(r => {
-              const due = reminderDue(r.dueDate);
-              return (
-                <div key={r.id} className="row gap-12 items-start"
-                  style={{padding: '12px 16px', borderBottom: '1px solid var(--rule-soft)'}}>
-                  <button onClick={() => completeReminder(r.id)}
-                    title={r.recurrence === 'none' ? 'Mark done' : 'Log as done — rolls to next ' + RECURRENCE_LABEL[r.recurrence].toLowerCase()}
-                    style={{
-                      flexShrink: 0, marginTop: 1, width: 22, height: 22, borderRadius: 999, cursor: 'pointer',
-                      border: '1.5px solid var(--rule)', background: 'transparent',
-                      color: 'var(--sage)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 13, lineHeight: 1, padding: 0,
-                    }}>✓</button>
-                  <div className="col items-center shrink-0" style={{width: 64}}>
-                    <div className="mono small" style={{color: due.fg, fontWeight: 500, whiteSpace: 'nowrap'}}>{fmtDate(r.dueDate)}</div>
-                  </div>
-                  <div className="grow clickable" style={{minWidth: 0}} onClick={() => setEditing(r.id)}>
-                    <div className="row gap-8 items-center">
-                      <span style={{fontWeight: 500, fontSize: 13}}>{r.title}</span>
-                      {r.recurrence !== 'none' && <Tag tone="ghost">↻ {RECURRENCE_LABEL[r.recurrence]}</Tag>}
-                    </div>
-                    {r.notes && <div className="small dim" style={{textWrap: 'pretty'}}>{r.notes}</div>}
-                    {r.lastDone && <div className="tiny dim" style={{marginTop: 2}}>Last done {fmtDate(r.lastDone)}</div>}
-                  </div>
-                  <Tag tone={due.tone}>{due.text}</Tag>
-                </div>
-              );
-            })}
+            {active.map(r => <TaskRow key={r.id} r={r} onEdit={setEditing}/>)}
           </div>
         )}
       </Card>
@@ -82,7 +118,7 @@ function RemindersPanel({ p }) {
         <Card>
           <CardHead title={`Completed · ${done.length}`}/>
           <table className="tbl">
-            <thead><tr><th>Reminder</th><th>Completed</th><th></th></tr></thead>
+            <thead><tr><th>Task</th><th>Completed</th><th></th></tr></thead>
             <tbody>
               {done.map(r => (
                 <tr key={r.id} onClick={() => setEditing(r.id)}>
@@ -102,22 +138,49 @@ function RemindersPanel({ p }) {
   );
 }
 
-function ReminderForm({ reminder, propertyId, onClose }) {
-  const editing = !!reminder;
-  const [title, setTitle] = useState(reminder?.title || '');
-  const [dueDate, setDueDate] = useState(reminder?.dueDate || addMonthsISO(TODAY(), 3));
-  const [recurrence, setRecurrence] = useState(reminder?.recurrence || 'quarterly');
-  const [notes, setNotes] = useState(reminder?.notes || '');
+let _taskChkSeq = 0;
+function newChkId() { return 'ck' + Date.now().toString(36) + (_taskChkSeq++); }
 
+function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
+  const editing = !!reminder;
+  // When opened without a property (e.g. from the Calendar), let the user pick one.
+  const needsProperty = !propertyId;
+  const [propId, setPropId] = useState(reminder?.propertyId || propertyId || '');
+  const [title, setTitle] = useState(reminder?.title || '');
+  const [dueDate, setDueDate] = useState(reminder?.dueDate || defaultDate || TODAY());
+  const [recurrence, setRecurrence] = useState(reminder?.recurrence || 'none');
+  const [priority, setPriority] = useState(reminder?.priority || 'normal');
+  const [notes, setNotes] = useState(reminder?.notes || '');
+  const [checklist, setChecklist] = useState(() =>
+    (reminder?.checklist || []).map(c => ({ ...c })));
+  const [newItem, setNewItem] = useState('');
+
+  const props = (typeof sortedProperties === 'function') ? sortedProperties() : (Store.state.properties || []);
   const PRESETS = ['Quarterly inspection', 'Annual inspection', 'HVAC filter change', 'Gutter cleaning', 'Smoke / CO detector check', 'Pest control', 'Lawn / landscaping', 'Winterize'];
 
+  function addItem() {
+    const t = newItem.trim();
+    if (!t) return;
+    setChecklist(cl => [...cl, { id: newChkId(), text: t, done: false }]);
+    setNewItem('');
+  }
+
   return (
-    <Modal title={editing ? 'Edit reminder' : 'New reminder'} onClose={onClose}>
+    <Modal title={editing ? 'Edit task' : 'New task'} onClose={onClose}>
       <div className="col gap-12">
+        {needsProperty && (
+          <div>
+            <div className="up dim mb-4">Property</div>
+            <select className="select" value={propId} onChange={e => setPropId(e.target.value)} style={{width: '100%'}}>
+              <option value="">Select a property…</option>
+              {props.map(pp => <option key={pp.id} value={pp.id}>{pp.address}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <div className="up dim mb-4">What needs doing</div>
           <input className="input" value={title} onChange={e => setTitle(e.target.value)} style={{width: '100%'}} autoFocus
-            placeholder="e.g. Quarterly inspection"/>
+            placeholder="e.g. Send signed contract to attorney"/>
           <div className="row gap-6 wrap mt-8">
             {PRESETS.map(pre => (
               <button key={pre} onClick={() => setTitle(pre)}
@@ -125,8 +188,14 @@ function ReminderForm({ reminder, propertyId, onClose }) {
             ))}
           </div>
         </div>
-        <div className="grid g-2">
-          <div><div className="up dim mb-4">Next due</div><input className="input" type="date" value={dueDate || ''} onChange={e => setDueDate(e.target.value)} style={{width: '100%'}}/></div>
+        <div className="grid g-3">
+          <div><div className="up dim mb-4">Due</div><input className="input" type="date" value={dueDate || ''} onChange={e => setDueDate(e.target.value)} style={{width: '100%'}}/></div>
+          <div>
+            <div className="up dim mb-4">Priority</div>
+            <select className="select" value={priority} onChange={e => setPriority(e.target.value)} style={{width: '100%'}}>
+              {TASK_PRIORITY.map(pr => <option key={pr} value={pr}>{TASK_PRIORITY_LABEL[pr]}</option>)}
+            </select>
+          </div>
           <div>
             <div className="up dim mb-4">Repeat</div>
             <select className="select" value={recurrence} onChange={e => setRecurrence(e.target.value)} style={{width: '100%'}}>
@@ -135,22 +204,52 @@ function ReminderForm({ reminder, propertyId, onClose }) {
           </div>
         </div>
         <div>
-          <div className="up dim mb-4">Notes (optional)</div>
-          <textarea className="input" rows="3" value={notes} onChange={e => setNotes(e.target.value)} style={{width: '100%'}}
-            placeholder="Checklist, who to call, access notes…"/>
+          <div className="up dim mb-4">Checklist (optional)</div>
+          {checklist.length > 0 && (
+            <div className="col gap-4 mb-8">
+              {checklist.map(c => (
+                <div key={c.id} className="row gap-8 items-center">
+                  <button onClick={() => setChecklist(cl => cl.map(x => x.id === c.id ? { ...x, done: !x.done } : x))}
+                    title="Toggle done"
+                    style={{
+                      width: 16, height: 16, borderRadius: 3, flexShrink: 0, cursor: 'pointer', fontSize: 10, lineHeight: '14px',
+                      border: '1.5px solid ' + (c.done ? 'var(--sage)' : 'var(--rule)'),
+                      background: c.done ? 'var(--sage)' : 'transparent', color: '#fff', padding: 0,
+                    }}>{c.done ? '✓' : ''}</button>
+                  <input className="input" value={c.text}
+                    onChange={e => setChecklist(cl => cl.map(x => x.id === c.id ? { ...x, text: e.target.value } : x))}
+                    style={{flex: 1}}/>
+                  <button onClick={() => setChecklist(cl => cl.filter(x => x.id !== c.id))}
+                    title="Remove" style={{background: 'none', border: 'none', color: 'var(--ink-3)', cursor: 'pointer', fontSize: 15, padding: '0 4px'}}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="row gap-8 items-center">
+            <input className="input" value={newItem} onChange={e => setNewItem(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addItem(); } }}
+              placeholder="Add a checklist item…" style={{flex: 1}}/>
+            <Btn sz="sm" kind="ghost" onClick={addItem} disabled={!newItem.trim()}>+ Add</Btn>
+          </div>
         </div>
-        {editing && reminder.recurrence !== 'none' && (
+        <div>
+          <div className="up dim mb-4">Notes (optional)</div>
+          <textarea className="input" rows="2" value={notes} onChange={e => setNotes(e.target.value)} style={{width: '100%'}}
+            placeholder="Who to call, access notes, context…"/>
+        </div>
+        {editing && reminder.recurrence && reminder.recurrence !== 'none' && (
           <div className="small dim">Marking this done logs the date and rolls the next one forward by its repeat interval.</div>
         )}
         <div className="row gap-8 mt-8">
-          {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this reminder?')) { deleteReminder(reminder.id); onClose(); } }}>Delete</Btn>}
+          {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this task?')) { deleteReminder(reminder.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!title || !dueDate} onClick={() => {
-            const patch = { title, dueDate, recurrence, notes, propertyId };
+          <Btn kind="primary" disabled={!title || !dueDate || (needsProperty && !propId)} onClick={() => {
+            const clean = checklist.map(c => ({ id: c.id, text: c.text.trim(), done: !!c.done })).filter(c => c.text);
+            const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId };
             if (editing) updateReminder(reminder.id, patch); else addReminder(patch);
             onClose();
-          }}>{editing ? 'Save' : 'Add reminder'}</Btn>
+          }}>{editing ? 'Save' : 'Add task'}</Btn>
         </div>
       </div>
     </Modal>
@@ -260,4 +359,4 @@ function MaintenanceForm({ record, propertyId, onClose }) {
   );
 }
 
-Object.assign(window, { RemindersPanel, ReminderForm, MaintenancePanel, MaintenanceForm });
+Object.assign(window, { RemindersPanel, TasksPanel: RemindersPanel, ReminderForm, TaskForm: ReminderForm, PriorityPip, MaintenancePanel, MaintenanceForm });

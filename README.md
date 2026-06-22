@@ -1,33 +1,31 @@
-# Atmore Operations — deploy package
+# Atmore Operations
 
-Drop-in replacement for **atmoreadmin/atmore-ops**. The mobile layout has been
-**completely removed** — this is the desktop app only.
+A single-page property-operations app (ledger, rent roll, properties, tax binder, bank import) built with React + Babel served directly in the browser — no build step.
 
-## Update the live site
-Your live site is served from **`index.html`**. Replace it with the one in this folder
-and GitHub Pages redeploys automatically (~1–2 min). Then hard-refresh the page
-(Cmd/Ctrl+Shift+R) to clear the cached bundle.
+## Run locally
 
-Simplest path on GitHub: **Add file → Upload files** → drag in the entire contents of
-this folder → **Commit changes**. GitHub overwrites the matching files.
+Because the app loads `.jsx` modules over `fetch`, open it through a local web server (not `file://`):
+
+```bash
+# from this folder
+python3 -m http.server 8000
+# then visit http://localhost:8000/Atmore%20Operations.html
+```
+
+Any static server works (`npx serve`, etc.).
 
 ## Files
-- **`index.html`** — what the live site serves (a copy of the standalone bundle).
-- **`Atmore Operations (standalone).html`** — same bundle, second name kept for parity with your repo.
-- **`Atmore Operations.html`** + the `.jsx`/`.js` files + `lib/` + `screens/` — the multi-file source. Keep the folder structure intact.
-- **`Apps Script Bridge.gs`** — UNCHANGED. No need to re-deploy the Apps Script.
 
-## What's in this build (vs. your current production)
-- Tenant turnover: **Move out** button on the active lease — retires the tenant to
-  "past" (history kept) and records the **security-deposit settlement** (refunded vs.
-  withheld + reason). The vacated unit then shows a **Previous tenant** summary and a
-  **+ Start a lease** CTA for the new renter. Starting a lease also retires any prior tenant.
-- Payee on a transaction can now be picked from your **contractors** (or free-typed).
-- Mobile layout **removed** — desktop layout only, as before.
-- Save button shows a visible disabled state + reason hint (no more silent dead clicks).
-- `$0` accepted as a valid transaction amount.
-- New "Rentals (general)" overhead bucket (rolls into the P&L like "Office").
-- Rent ledger de-duplication (healed on load, on sheet-pull, and at render).
-- Click a transaction row on a property to open its editor.
-- Column picker on the property Transactions table.
-- App clock auto-advances to the real current date on load (never backward).
+- **Atmore Operations.html** — app entry point; loads React, Babel, and all modules.
+- **Atmore Operations (standalone).html** — self-contained single-file build (works offline, openable directly).
+- **app.jsx** — shell + hash routing.
+- **store.jsx / seed.js** — state store and seed data.
+- **ui.jsx** — shared UI primitives.
+- **screens/** — one module per screen (transactions, rent-roll, property, dashboard, …).
+- **lib/xlsx.js** — spreadsheet import/export.
+- **Apps Script Bridge.gs** — optional Google Sheets sync backend.
+
+## Notes
+
+- Data persists in the browser's `localStorage`.
+- The Transactions ledger paginates at 100 rows per page (Prev / Next below the table).

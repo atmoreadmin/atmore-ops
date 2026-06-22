@@ -104,6 +104,7 @@ function SyncIndicator() {
 
 const NAV = [
   { path: '/dashboard',    label: 'Dashboard' },
+  { path: '/calendar',     label: 'Calendar' },
   { sep: true },
   { path: '/properties',   label: 'Properties' },
   { path: '/rent',         label: 'Rent Roll' },
@@ -166,7 +167,9 @@ function App() {
     const monthLedger = getLedgerForMonth(month);
     const vacateDue = monthLedger.filter(r => r.status === 'vacate-due').length;
     const untagged = untaggedTransactions().length;
-    return { vacateDue, untagged };
+    const today = TODAY();
+    const tasksDue = (Store.state.reminders || []).filter(r => !r.done && r.dueDate && daysBetween(today, r.dueDate) <= 7).length;
+    return { vacateDue, untagged, tasksDue };
   }, [store]);
 
   // Route resolution
@@ -178,6 +181,8 @@ function App() {
     screen = <PropertyScreen propertyId={segs[1]} subtab={segs[2] || 'capture'} />;
   } else if (top === 'dashboard') {
     screen = <DashboardScreen />;
+  } else if (top === 'calendar') {
+    screen = <CalendarScreen />;
   } else if (top === 'rent') {
     screen = <RentRollScreen />;
   } else if (top === 'pipeline') {
@@ -237,6 +242,7 @@ function App() {
             let count = null, alert = false;
             if (n.path === '/rent' && counts.vacateDue) { count = counts.vacateDue; alert = true; }
             if (n.path === '/transactions' && counts.untagged) { count = counts.untagged; alert = true; }
+            if (n.path === '/calendar' && counts.tasksDue) { count = counts.tasksDue; alert = true; }
             return (
               <div key={n.path}
                 onClick={() => nav(n.path)}
@@ -430,19 +436,16 @@ function PropertiesListScreen() {
         <div className="row gap-8 items-center">
           <PropViewToggle view="list"/>
           <Btn kind="ghost" sz="sm" onClick={() => {
-            downloadCSV('properties.csv', props, [
-              { key: 'statusCode', label: 'Stage' },
-              { key: 'address', label: 'Address' },
-              { key: 'city', label: 'City' },
-              { key: 'state', label: 'State' },
-              { key: 'type', label: 'Type' },
-              { key: 'assigned', label: 'Assigned' },
-              { key: 'loanType', label: 'Loan type' },
-              { key: 'purchasePrice', label: 'Purchase price' },
-              { key: 'rehab', label: 'Rehab' },
-              { key: 'salesPrice', label: 'Sale price' },
-              { key: 'vestingLLC', label: 'Vesting LLC' },
-            ]);
+            // Export EVERY property field. SHEET_SCHEMA.Properties.rowSource folds in
+            // insurance, loan, tax and HOA detail; columns lists every field + label.
+            // Scope to the rows currently shown (respects filter/search/archive).
+            const schema = window.SHEET_SCHEMA && window.SHEET_SCHEMA.Properties;
+            const visibleIds = new Set(props.map(p => p.id));
+            const flat = schema ? schema.rowSource(store).filter(r => visibleIds.has(r.id)) : props;
+            const cols = schema
+              ? schema.columns.map(c => ({ key: c.key, label: c.label }))
+              : [{ key: 'address', label: 'Address' }];
+            downloadCSV('properties.csv', flat, cols);
           }}>⤓ Export CSV</Btn>
           <Tag tone={showArchive ? 'solid-blue' : 'ghost'} style={{cursor: 'pointer'}}>
             <span onClick={() => setShowArchive(v => !v)}>{showArchive ? '✓ ' : ''}Show archive ({archivedCount})</span>

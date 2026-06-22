@@ -32,6 +32,7 @@ const TX_LIST_COLUMNS = [
   { key: 'project',  label: 'Property' },
 ];
 const TX_LIST_COLS_KEY = 'atmore-tx-list-columns-v1';
+const TX_PAGE_SIZE = 100;
 
 function TransactionsScreen() {
   const store = useStore();
@@ -40,6 +41,9 @@ function TransactionsScreen() {
   const [acctFilter, setAcctFilter] = useState('all');
   const [catFilter, setCatFilter] = useState('all');
   const [onlyUntagged, setOnlyUntagged] = useState(false);
+  const [page, setPage] = useState(0);
+  // Jump back to the first page whenever the result set changes underneath us.
+  React.useEffect(() => { setPage(0); }, [search, acctFilter, catFilter, onlyUntagged, showSelectedOnly, txFocus, sortKey, sortDir]);
   const [selected, setSelected] = useState(new Set());
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [txFocus, setTxFocus] = useState(() => takeFocus('transactions'));
@@ -110,9 +114,15 @@ function TransactionsScreen() {
     if (cmp === 0 && sortKey !== 'date') cmp = (a.date || '').localeCompare(b.date || '');
     return sortDir === 'asc' ? cmp : -cmp;
   });
-  const filteredIds = rows.map(r => r.id);   // every match (before the display cap)
+  const filteredIds = rows.map(r => r.id);   // every match (before the page slice)
   const filteredCount = filteredIds.length;
-  rows = rows.slice(0, 100); // cap for performance
+  // Paginate — 100 per page, Next/Prev below the table.
+  const totalPages = Math.max(1, Math.ceil(filteredCount / TX_PAGE_SIZE));
+  const curPage = Math.min(page, totalPages - 1);
+  const pageStart = curPage * TX_PAGE_SIZE;
+  rows = rows.slice(pageStart, pageStart + TX_PAGE_SIZE);
+  const pageFirst = filteredCount === 0 ? 0 : pageStart + 1;
+  const pageLast = pageStart + rows.length;
 
   const Th = ({ k, label, num }) => (
     <th className={num ? 'num' : ''} style={{cursor: 'pointer', userSelect: 'none'}} onClick={() => clickHeader(k)}>
@@ -242,7 +252,7 @@ function TransactionsScreen() {
                   </>
                 )}
               </div>
-              <span className="small dim">Showing {rows.length}</span>
+              <span className="small dim">{filteredCount === 0 ? 'No matches' : `${pageFirst}–${pageLast} of ${filteredCount}`}</span>
             </div>
             )}
           </Card>
@@ -363,6 +373,15 @@ function TransactionsScreen() {
             {rows.length === 0 && (txFocus
               ? <div className="card__body"><Empty icon="✓" title="Nothing left to review" sub="Every flagged transaction has been corrected. Use “Show all transactions” to return to the full ledger."/></div>
               : <div className="card__body"><Empty title="No transactions match" sub="Try clearing filters."/></div>)}
+            {totalPages > 1 && (
+              <div className="row items-center gap-12" style={{padding: '10px 14px', borderTop: '1px solid var(--rule-soft)'}}>
+                <span className="small dim">Showing {pageFirst}–{pageLast} of {filteredCount}</span>
+                <div className="grow"/>
+                <Btn sz="sm" kind="ghost" disabled={curPage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>← Prev</Btn>
+                <span className="small dim mono">Page {curPage + 1} of {totalPages}</span>
+                <Btn sz="sm" kind="ghost" disabled={curPage >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}>Next →</Btn>
+              </div>
+            )}
           </Card>
         </div>
 
