@@ -108,7 +108,41 @@ function deserializeFromSheet(pulledData) {
         checklist: (() => { try { const a = JSON.parse(r.checklist || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
       }))
     : (Store.state.reminders || []);
-  state.maintenance = Store.state.maintenance || [];
+  // ── Child-tab helpers ──────────────────────────────────────────────────
+  // Sub-collections (splits, histories, fee items, …) are flattened into their
+  // own tabs with a foreign key. Each helper regroups them by parent id. If a
+  // tab is ABSENT (older bridge not yet migrated), the helper returns null so
+  // the caller keeps this device's local copy instead of wiping it.
+  const childTab = (name) => Array.isArray(tabs[name]) ? tabs[name] : null;
+  const byOrd = (a, b) => (a.ord || 0) - (b.ord || 0);
+  const groupByFk = (rows, fk) => {
+    const m = {};
+    (rows || []).forEach(r => { const k = r[fk]; (m[k] = m[k] || []).push(r); });
+    return m;
+  };
+
+  // Maintenance log — now a synced tab; fail-safe to local if the tab is absent.
+  state.maintenance = childTab('Maintenance')
+    ? tabs.Maintenance.map(m => ({
+        id: m.id, propertyId: m.propertyId || '', date: m.date || '',
+        category: m.category || '', description: m.description || '',
+        vendor: m.vendor || '', cost: (m.cost === '' || m.cost == null) ? null : m.cost,
+        status: m.status || 'open',
+      }))
+    : (Store.state.maintenance || []);
+
+  // Completed calendar events — now synced. Rebuild the {key:true} map from rows.
+  state.completedEvents = childTab('CompletedEvents')
+    ? Object.fromEntries(tabs.CompletedEvents.filter(r => r.key).map(r => [String(r.key), true]))
+    : (Store.state.completedEvents || {});
+
+  // Pre-grouped child tables consumed by the passes below.
+  const splitsByTx  = childTab('TransactionSplits') ? groupByFk(tabs.TransactionSplits, 'txId') : null;
+  const rentHistByT = childTab('TenantRentHistory') ? groupByFk(tabs.TenantRentHistory, 'tenantId') : null;
+  const ten99ByC    = childTab('ContractorTen99') ? groupByFk(tabs.ContractorTen99, 'contractorId') : null;
+  const stageByP    = childTab('StageHistory') ? groupByFk(tabs.StageHistory, 'propertyId') : null;
+  const feesByP     = childTab('FeeItems') ? groupByFk(tabs.FeeItems, 'propertyId') : null;
+  const utilByP     = childTab('Utilities') ? groupByFk(tabs.Utilities, 'propertyId') : null;
 
   const localProps = {};
   (Store.state.properties || []).forEach(p => { localProps[p.id] = p; });
@@ -123,11 +157,26 @@ function deserializeFromSheet(pulledData) {
     const out = { ...p };
     const local = localProps[p.id] || {};
     // Stage history isn't synced anymore — keep local, or seed one entry for a fresh import.
-    out.stageHistory = (local.stageHistory && local.stageHistory.length)
-      ? local.stageHistory
-      : [{ from: null, to: out.statusCode, at: out.purchaseDate || out.signingDate || out.ddDate || state.today, note: 'Imported', by: 'import' }];
-    out.purchaseFeeItems = local.purchaseFeeItems || [];
-    out.saleFeeItems = local.saleFeeItems || [];
+    // Stage history — synced tab authoritative; else keep local; else seed one entry.
+    if (stageByP) {
+      const sh = (stageByP[p.id] || []).slice().sort(byOrd)
+        .map(h => ({ from: h.from || null, to: h.to || null, at: h.at || '', note: h.note || '', by: h.by || '' }));
+      out.stageHistory = sh.length ? sh
+        : [{ from: null, to: out.statusCode, at: out.purchaseDate || out.signingDate || out.ddDate || state.today, note: 'Imported', by: 'import' }];
+    } else {
+      out.stageHistory = (local.stageHistory && local.stageHistory.length)
+        ? local.stageHistory
+        : [{ from: null, to: out.statusCode, at: out.purchaseDate || out.signingDate || out.ddDate || state.today, note: 'Imported', by: 'import' }];
+    }
+    // Fee items — synced tab authoritative; else keep local.
+    if (feesByP) {
+      const items = feesByP[p.id] || [];
+      out.purchaseFeeItems = items.filter(r => r.kind === 'purchase').slice().sort(byOrd).map(r => ({ label: r.label || '', amount: r.amount ?? 0 }));
+      out.saleFeeItems = items.filter(r => r.kind === 'sale').slice().sort(byOrd).map(r => ({ label: r.label || '', amount: r.amount ?? 0 }));
+    } else {
+      out.purchaseFeeItems = local.purchaseFeeItems || [];
+      out.saleFeeItems = local.saleFeeItems || [];
+    }
 
     // Insurance
     const ins = { carrier: p.insCarrier || '', policyNumber: p.insPolicy || '', premium: num(p.insPremium), renewalDate: p.insRenewal || '', agentName: p.insAgent || '', agentPhone: p.insAgentPhone || '' };
@@ -138,8 +187,15 @@ function deserializeFromSheet(pulledData) {
     // Taxes
     const tax = { annualAmount: num(p.taxAnnual), dueDate: p.taxDueDate || '', escrowed: truthy(p.taxEscrowed), taxId: p.taxParcel || '' };
     out.taxes = (tax.annualAmount != null || tax.taxId || tax.dueDate) ? tax : null;
-    // Utilities — not synced; keep local note + structure, refresh note from column
-    out.utilities = local.utilities || null;
+    // Utilities — synced tab authoritative for provider/account/status; else keep
+    // local structure. The per-property note still rides on the Properties column.
+    if (utilByP) {
+      const u = {};
+      (utilByP[p.id] || []).forEach(r => { if (r.type) u[r.type] = { provider: r.provider || '', account: r.account || '', status: r.status || '' }; });
+      out.utilities = Object.keys(u).length ? u : null;
+    } else {
+      out.utilities = local.utilities || null;
+    }
     if (p.utilityNote) { out.utilities = { ...(out.utilities || {}), note: p.utilityNote }; }
 
     // HOAs → rebuild rows into the global hoas array
@@ -163,7 +219,9 @@ function deserializeFromSheet(pulledData) {
   (Store.state.tenants || []).forEach(t => { localTenants[t.id] = t; });
   state.tenants = (tabs.Tenants || []).map(t => {
     const out = { ...t };
-    out.rentHistory = (localTenants[t.id] && localTenants[t.id].rentHistory) || [];
+    out.rentHistory = rentHistByT
+      ? (rentHistByT[t.id] || []).slice().sort(byOrd).map(h => ({ effectiveDate: h.effectiveDate || '', amount: h.amount ?? 0, note: h.note || '' }))
+      : ((localTenants[t.id] && localTenants[t.id].rentHistory) || []);
     return out;
   });
 
@@ -178,7 +236,12 @@ function deserializeFromSheet(pulledData) {
   (Store.state.transactions || []).forEach(t => { localTx[t.id] = t; });
   state.transactions = (tabs.Transactions || []).map(tx => {
     const out = { ...tx };
-    if (localTx[tx.id] && localTx[tx.id].splits) out.splits = localTx[tx.id].splits;
+    if (splitsByTx) {
+      const sp = (splitsByTx[tx.id] || []).slice().sort(byOrd);
+      if (sp.length) out.splits = sp.map(x => ({ project: x.project || '', amount: x.amount ?? 0, category: x.category || '' }));
+    } else if (localTx[tx.id] && localTx[tx.id].splits) {
+      out.splits = localTx[tx.id].splits;
+    }
     return out;
   });
 
@@ -190,7 +253,9 @@ function deserializeFromSheet(pulledData) {
   (Store.state.contractors || []).forEach(c => { localContractors[c.id] = c; });
   state.contractors = (tabs.Contractors || []).map(c => {
     const out = { ...c };
-    out.ten99History = (localContractors[c.id] && localContractors[c.id].ten99History) || [];
+    out.ten99History = ten99ByC
+      ? (ten99ByC[c.id] || []).map(h => ({ taxYear: h.taxYear ?? null, status: h.status || '', issuedDate: h.issuedDate || '', amountReported: h.amountReported ?? null }))
+      : ((localContractors[c.id] && localContractors[c.id].ten99History) || []);
     out.ytd = state.transactions
       .filter(t => t.payee === c.name && t.category === 'Contractor Payment')
       .reduce((a,t) => a + Math.abs(t.amount), 0);
@@ -277,9 +342,6 @@ function deserializeFromSheet(pulledData) {
     ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '' }))
     : (Store.state.webAccounts || []);
 
-  // Completed calendar events are no longer synced — keep local.
-  state.completedEvents = Store.state.completedEvents || {};
-
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.
   if (Array.isArray(tabs.Statuses) && tabs.Statuses.length) {
     state.statuses = tabs.Statuses.map(r => ({
@@ -301,6 +363,18 @@ function deserializeFromSheet(pulledData) {
   const realToday = new Date().toISOString().slice(0, 10);
   state.today = (Store.state && Store.state.today && Store.state.today > realToday)
     ? Store.state.today : realToday;
+
+  // Auto-tag rules — now a synced tab (ordered by Ord). Fail-safe: if the tab is
+  // absent (older bridge), keep this device's rules; if there are none either,
+  // leave unset so ensureAutoTagRules() seeds the built-in defaults later.
+  if (childTab('AutoTagRules')) {
+    state.autoTagRules = tabs.AutoTagRules.slice().sort(byOrd).map(r => ({
+      id: r.id, pattern: r.pattern || '', category: r.category || '',
+      payee: r.payee || '', project: r.project || '', conf: r.conf ?? 80,
+    }));
+  } else if (Array.isArray(Store.state && Store.state.autoTagRules)) {
+    state.autoTagRules = Store.state.autoTagRules;
+  }
 
   return state;
 }
