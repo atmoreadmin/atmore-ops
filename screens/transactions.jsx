@@ -473,6 +473,9 @@ function BulkActionBar({ selectedIds, onClear }) {
   const [showProj, setShowProj] = useState(false);
   const [cat, setCat] = useState('');
   const [proj, setProj] = useState('');
+  const [payee, setPayee] = useState('');
+  // Distinct existing payees → datalist suggestions for quick reuse.
+  const knownPayees = [...new Set(store.transactions.map(t => t.payee).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 
   const total = store.transactions
     .filter(t => selectedIds.includes(t.id))
@@ -508,6 +511,16 @@ function BulkActionBar({ selectedIds, onClear }) {
         {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
       </select>
       {proj && <button onClick={() => { bulkTagTransactions(selectedIds, {project: proj}); setProj(''); }}
+        style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
+
+      <input list="bulk-payee-options" value={payee} onChange={e => setPayee(e.target.value)}
+        placeholder="Set payee…"
+        className="select"
+        style={{background: 'var(--ink-2)', color: 'white', borderColor: 'var(--ink-3)', width: 150}}/>
+      <datalist id="bulk-payee-options">
+        {knownPayees.map(p => <option key={p} value={p}></option>)}
+      </datalist>
+      {payee.trim() && <button onClick={() => { bulkTagTransactions(selectedIds, {payee: payee.trim()}); setPayee(''); }}
         style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
 
       <span style={{color: 'var(--ink-4)'}}>·</span>
