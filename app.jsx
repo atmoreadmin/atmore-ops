@@ -111,6 +111,7 @@ const NAV = [
   { sep: true },
   { path: '/transactions', label: 'Transactions' },
   { path: '/contractors',  label: 'Contractors' },
+  { path: '/reports',      label: 'Reports' },
   { path: '/tax-binder',   label: 'Tax Binder' },
 ];
 
@@ -201,6 +202,8 @@ function App() {
     screen = <RefiScreen />;
   } else if (top === 'notice') {
     screen = <NoticeScreen />;
+  } else if (top === 'reports') {
+    screen = <ReportsScreen />;
   } else if (top === 'tax-binder') {
     screen = <TaxBinderScreen />;
   } else if (top === 'settings') {

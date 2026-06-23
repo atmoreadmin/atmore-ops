@@ -88,7 +88,10 @@ function SettingsScreen() {
 
 function ListEditor({ def, showArchived, setShowArchived }) {
   const store = useStore();
-  const items = (store.lists?.[def.key] || []).filter(x => showArchived || !x.archived);
+  const items = (store.lists?.[def.key] || [])
+    .filter(x => showArchived || !x.archived)
+    .slice()
+    .sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { sensitivity: 'base' }));
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState('');
   const [newKind, setNewKind] = useState(def.hasKind ? 'expense' : null);
@@ -321,7 +324,7 @@ function AccountRow({ acct }) {
 
 function TeamEditor() {
   const store = useStore();
-  const team = store.team || [];
+  const team = (store.team || []).slice().sort((a, b) => (a || '').localeCompare(b || '', undefined, { sensitivity: 'base' }));
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState('');
 

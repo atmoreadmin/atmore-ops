@@ -569,7 +569,12 @@ function ensureLedgerForMonth(month) {
   const missing = active.filter(t => {
     if (have.has(t.id)) return false;
     if (t.moveIn && t.moveIn.slice(0, 7) > month) return false;       // not moved in yet
-    if (t.leaseEnd && t.leaseEnd.slice(0, 7) < month) return false;    // lease ended before this month
+    // Stop charging only once a tenant has ACTUALLY moved out. Key off moveOut
+    // (set by moveOutTenant when the lease is retired), NOT leaseEnd: a tenant
+    // who is still status:'active' past their lease-end date is a holdover /
+    // month-to-month renter and continues to owe rent. Using leaseEnd here
+    // silently dropped month-to-month tenants from the rent roll.
+    if (t.moveOut && t.moveOut.slice(0, 7) < month) return false;     // moved out before this month
     return true;
   });
   // Heal: a tenant who moved in during this very month shouldn't read as "vacate-due"/"late"
