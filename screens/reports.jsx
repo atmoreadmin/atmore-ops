@@ -76,15 +76,38 @@ function RentalsReport() {
   const archiveLane = getStatuses().filter(s => s.lane === 'archive').map(s => s.code);
   const isRental = p => (p.type === 'Rental' || rentalLane.includes(p.statusCode)) && !archiveLane.includes(p.statusCode);
 
+  // Actual logged expenses tagged to each property within the month range.
+  const catKind = {};
+  (store.lists?.categories || []).forEach(c => { catKind[c.label] = c.kind; });
+  const expByProp = {};
+  (store.transactions || []).forEach(t => {
+    if (!t.date) return;
+    const mo = t.date.slice(0, 7);
+    if (mo < lo || mo > hi) return;
+    const parts = (t.splits && t.splits.length)
+      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || t.category || '', project: s.project || t.project || '' }))
+      : [{ amount: t.amount || 0, category: t.category || '', project: t.project || '' }];
+    parts.forEach(pt => {
+      const prop = getPropertyByAddr(pt.project);
+      if (!prop) return;
+      const kind = catKind[pt.category];
+      const isExp = kind === 'expense' ? true : kind === 'income' ? false : pt.amount < 0;
+      if (!isExp) return;
+      expByProp[prop.id] = (expByProp[prop.id] || 0) + Math.abs(pt.amount);
+    });
+  });
+
   const rows = store.properties.filter(isRental).map(p => {
     const active = getTenantsForProperty(p.id).filter(t => t.status === 'active' && (t.rent || 0) > 0);
     const rent = months.reduce((a, m) => a + active.reduce((s, t) => s + getRentForMonth(t, m), 0), 0);
     const c = rentalCarry(p);
+    const cost = expByProp[p.id] || 0; // actual logged expenses tagged to this property
+    const carry = c.mort * N + (c.escI ? 0 : c.insMo * N) + (c.escT ? 0 : c.taxMo * N); // modeled mortgage + insurance + taxes
     const reno = !rentalLane.includes(p.statusCode); // in a pipeline stage = still being renovated
     return {
       p, rent, escI: c.escI, escT: c.escT, reno, nTenants: active.length,
-      mort: c.mort * N, insMo: c.insMo * N, taxMo: c.taxMo * N, cost: c.cost * N,
-      net: rent - c.cost * N,
+      mort: c.mort * N, insMo: c.insMo * N, taxMo: c.taxMo * N, cost,
+      net: rent - carry - cost,
     };
   }).sort((a, b) => {
     if (a.reno !== b.reno) return a.reno ? 1 : -1;           // rented first, renovating last
@@ -99,6 +122,7 @@ function RentalsReport() {
     cost: a.cost + r.cost,
     net: a.net + r.net,
   }), { rent: 0, mort: 0, ins: 0, tax: 0, cost: 0, net: 0 });
+  T.deduct = T.mort + T.ins + T.tax + T.cost;
 
   const nRented = rows.filter(r => !r.reno).length;
   const nReno = rows.filter(r => r.reno).length;
@@ -146,7 +170,7 @@ function RentalsReport() {
           {(from !== cur || to !== cur) &&
             <Btn sz="sm" kind="ghost" onClick={() => { setFrom(cur); setTo(cur); }}>This month</Btn>}
           <div className="grow" />
-          <span className="tiny dim">Totals over the range. Mortgage, insurance &amp; taxes are fixed monthly; rent reflects the lease rate in force.</span>
+          <span className="tiny dim">Totals over the range. Net = rent minus modeled mortgage, insurance &amp; taxes, minus the actual logged expenses (Cost) tagged to each property.</span>
         </div>
       </Card>
 
@@ -164,9 +188,9 @@ function RentalsReport() {
             <div className="stat__sub">{fmtMoney(T.rent / N)} / mo</div>
           </div>
           <div className="stat grow">
-            <div className="stat__label">Carrying cost · {rangeShort}</div>
-            <div className="stat__value">{fmtMoney(T.cost)}</div>
-            <div className="stat__sub">{fmtMoney(T.cost / N)} / mo</div>
+            <div className="stat__label">Total costs · {rangeShort}</div>
+            <div className="stat__value">{fmtMoney(T.deduct)}</div>
+            <div className="stat__sub">mortgage, ins, taxes + logged</div>
           </div>
           <div className="stat grow" style={{ borderLeft: '2px solid var(--rule)' }}>
             <div className="stat__label">Net cash flow · {rangeShort}</div>
@@ -188,7 +212,7 @@ function RentalsReport() {
               <th className="num" style={{ width: 110 }}>Mortgage</th>
               <th className="num" style={{ width: 120 }}>Insurance</th>
               <th className="num" style={{ width: 110 }}>Taxes</th>
-              <th className="num" style={{ width: 120 }}>Cost</th>
+              <th className="num" style={{ width: 120 }} title="Actual logged expenses tagged to this property">Cost</th>
               <th className="num" style={{ width: 130 }}>Net cash flow</th>
             </tr>
           </thead>
@@ -224,8 +248,7 @@ function RentalsReport() {
           </tfoot>
         </table>
         <div className="card__body small dim" style={{ lineHeight: 1.6 }}>
-          Figures are totals over the selected range. Carrying cost is <strong>mortgage + insurance + property taxes</strong> — renovation spend is excluded.
-          Insurance and taxes are annual figures prorated monthly. Amounts marked <span className="mono tiny">esc</span> are escrowed
+          Figures are totals over the selected range. <strong>Net cash flow = Rent − Mortgage − Insurance − Taxes − Cost</strong>, where Mortgage, Insurance and Taxes are the modeled monthly figures (insurance and taxes are annual amounts prorated monthly) and <strong>Cost</strong> is the actual logged expenses tagged to each property. Amounts marked <span className="mono tiny">esc</span> are escrowed
           inside the mortgage payment, so they aren't added again.
         </div>
       </Card>
