@@ -40,42 +40,94 @@ function stageReachedAt(p, code) {
   return hit ? hit.at : null;
 }
 
-// Render a "13:30" 24h clock string as "1:30 PM". Returns null on empty/bad input.
-function fmtClock(t) {
-  if (!t) return null;
-  const parts = String(t).split(':');
-  const h = parseInt(parts[0], 10);
-  if (isNaN(h)) return t;
-  const m = parseInt(parts[1], 10) || 0;
-  const ap = h < 12 ? 'AM' : 'PM';
-  const h12 = ((h + 11) % 12) + 1;
-  return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap;
-}
-
-// Contract details surfaced when an "Under contract" milestone is clicked.
-function ucMilestoneDetails(p, key) {
+// Contract details surfaced (and editable) when an "Under contract" milestone is
+// clicked. Each field maps 1:1 to a synced Property column so edits round-trip to
+// the Google Sheet on the next push.
+function ucMilestoneSpec(key) {
   if (key === 'ucbuy') {
     return {
       title: 'Under contract — to buy',
-      rows: [
-        { k: 'EMD (earnest money)', v: p.acqEarnest != null ? fmtMoney(Math.abs(p.acqEarnest)) : null },
-        { k: 'DD amount (due-diligence fee)', v: p.acqDDFee != null ? fmtMoney(Math.abs(p.acqDDFee)) : null },
-        { k: 'DD deadline', v: p.ddDate ? fmtDate(p.ddDate) : null, tone: 'ochre' },
-        { k: 'Signing date', v: p.signingDate ? fmtDate(p.signingDate) : null },
-        { k: 'Signing time', v: fmtClock(p.closingTime) },
+      fields: [
+        { key: 'acqEarnest',  label: 'EMD (earnest money)',          type: 'money' },
+        { key: 'acqDDFee',    label: 'DD amount (due-diligence fee)', type: 'money' },
+        { key: 'ddDate',      label: 'DD deadline',                  type: 'date', tone: 'ochre' },
+        { key: 'signingDate', label: 'Signing date',                 type: 'date' },
+        { key: 'closingTime', label: 'Signing time',                 type: 'time' },
       ],
     };
   }
   return {
     title: 'Under contract — to sell',
-    rows: [
-      { k: 'Buyer EMD (earnest money)', v: p.saleEarnest != null ? fmtMoney(Math.abs(p.saleEarnest)) : null },
-      { k: 'DD amount collected', v: p.saleDDCollected != null ? fmtMoney(Math.abs(p.saleDDCollected)) : null },
-      { k: 'Buyer DD deadline', v: p.buyerDDDate ? fmtDate(p.buyerDDDate) : null, tone: 'ochre' },
-      { k: 'Sale / signing date', v: p.salesDate ? fmtDate(p.salesDate) : null },
-      { k: 'Signing time', v: fmtClock(p.salesClosingTime || p.closingTime) },
+    fields: [
+      { key: 'saleEarnest',    label: 'Buyer EMD (earnest money)', type: 'money' },
+      { key: 'saleDDCollected',label: 'DD amount collected',       type: 'money' },
+      { key: 'buyerDDDate',    label: 'Buyer DD deadline',         type: 'date', tone: 'ochre' },
+      { key: 'saleSigningDate',label: 'Sale / signing date',       type: 'date' },
+      { key: 'saleSigningTime',label: 'Signing time',              type: 'time' },
     ],
   };
+}
+
+// Editable popover for an Under-contract milestone. Saves straight through
+// updateProperty() → localStorage → sync push (same path the capture dialogs use).
+function MilestonePopover({ p, spec, anchorRight, onClose }) {
+  const init = {};
+  spec.fields.forEach(f => {
+    const v = p[f.key];
+    init[f.key] = f.type === 'money' ? (v == null ? '' : String(Math.abs(v))) : (v || '');
+  });
+  const [draft, setDraft] = React.useState(init);
+  const [saved, setSaved] = React.useState(false);
+  const set = (k, val) => { setDraft(d => ({ ...d, [k]: val })); setSaved(false); };
+
+  function save() {
+    const patch = {};
+    spec.fields.forEach(f => {
+      const raw = draft[f.key];
+      if (f.type === 'money') patch[f.key] = (raw === '' || raw == null) ? null : Math.abs(parseFloat(raw));
+      else patch[f.key] = raw || null;
+    });
+    updateProperty(p.id, patch);
+    setSaved(true);
+    setTimeout(onClose, 650);
+  }
+
+  return (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: 'absolute', top: 'calc(100% + 8px)', zIndex: 30,
+        [anchorRight ? 'right' : 'left']: -6,
+        width: 256, textAlign: 'left',
+        background: 'var(--paper)', border: '1px solid var(--rule)',
+        borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.16)', padding: '12px 14px',
+      }}>
+      <div className="up dim mb-8" style={{fontWeight: 600}}>{spec.title}</div>
+      <div className="col" style={{gap: 9}}>
+        {spec.fields.map(f => (
+          <label key={f.key} className="col" style={{gap: 3}}>
+            <span className="tiny dim">{f.label}</span>
+            {f.type === 'money' ? (
+              <div className="row items-center" style={{gap: 4}}>
+                <span className="tiny dim">$</span>
+                <input className="input mono" type="number" step="100" min="0"
+                  value={draft[f.key]} onChange={e => set(f.key, e.target.value)}
+                  placeholder="0" style={{width: '100%'}}/>
+              </div>
+            ) : (
+              <input className="input mono" type={f.type === 'time' ? 'time' : 'date'}
+                value={draft[f.key]} onChange={e => set(f.key, e.target.value)}
+                style={{width: '100%', color: f.tone === 'ochre' && draft[f.key] ? 'var(--ochre)' : undefined}}/>
+            )}
+          </label>
+        ))}
+      </div>
+      <div className="row between items-center" style={{marginTop: 12, gap: 8}}>
+        <Btn sz="sm" kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn sz="sm" kind="primary" onClick={save}>{saved ? 'Saved ✓' : 'Save'}</Btn>
+      </div>
+    </div>
+  );
 }
 
 function MilestoneTimeline({ p }) {
@@ -107,10 +159,9 @@ function MilestoneTimeline({ p }) {
           {steps.map((s, i) => {
             const done = !!s.at;
             const isUC = s.key === 'ucbuy' || s.key === 'ucsell';
-            const details = isUC ? ucMilestoneDetails(p, s.key) : null;
-            const hasDetails = details && details.rows.some(r => r.v != null);
-            const clickable = isUC && hasDetails;
+            const clickable = isUC && done; // reached UC steps are editable
             const isOpen = open === s.key;
+            const anchorRight = i >= steps.length / 2;
             return (
               <React.Fragment key={s.key}>
                 <div className="col items-center text-c" style={{flex: '0 0 auto', width: 108, position: 'relative'}}>
@@ -141,33 +192,12 @@ function MilestoneTimeline({ p }) {
                     )}
                     {clickable && (
                       <div className="tiny" style={{marginTop: 5, color: 'var(--blue)', fontWeight: 600}}>
-                        {isOpen ? 'Hide details' : 'View details'}
+                        {isOpen ? 'Close' : 'View / edit'}
                       </div>
                     )}
                   </div>
-                  {isOpen && details && (
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      style={{
-                        position: 'absolute', top: 'calc(100% + 8px)', zIndex: 30,
-                        [i >= steps.length / 2 ? 'right' : 'left']: -6,
-                        width: 240, textAlign: 'left',
-                        background: 'var(--paper)', border: '1px solid var(--rule)',
-                        borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.16)', padding: '12px 14px',
-                      }}>
-                      <div className="up dim mb-8" style={{fontWeight: 600}}>{details.title}</div>
-                      <div className="col" style={{gap: 7}}>
-                        {details.rows.map((r, ri) => (
-                          <div key={ri} className="row between items-baseline" style={{gap: 12}}>
-                            <span className="tiny dim" style={{whiteSpace: 'nowrap'}}>{r.k}</span>
-                            <span className="mono tiny" style={{
-                              fontVariantNumeric: 'tabular-nums', textAlign: 'right',
-                              color: r.v == null ? 'var(--ink-4)' : (r.tone === 'ochre' ? 'var(--ochre)' : 'var(--ink)'),
-                            }}>{r.v == null ? '—' : r.v}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                  {isOpen && (
+                    <MilestonePopover p={p} spec={ucMilestoneSpec(s.key)} anchorRight={anchorRight} onClose={() => setOpen(null)} />
                   )}
                 </div>
                 {i < steps.length - 1 && (
