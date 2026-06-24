@@ -40,7 +40,48 @@ function stageReachedAt(p, code) {
   return hit ? hit.at : null;
 }
 
+// Render a "13:30" 24h clock string as "1:30 PM". Returns null on empty/bad input.
+function fmtClock(t) {
+  if (!t) return null;
+  const parts = String(t).split(':');
+  const h = parseInt(parts[0], 10);
+  if (isNaN(h)) return t;
+  const m = parseInt(parts[1], 10) || 0;
+  const ap = h < 12 ? 'AM' : 'PM';
+  const h12 = ((h + 11) % 12) + 1;
+  return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+
+// Contract details surfaced when an "Under contract" milestone is clicked.
+function ucMilestoneDetails(p, key) {
+  if (key === 'ucbuy') {
+    return {
+      title: 'Under contract — to buy',
+      rows: [
+        { k: 'EMD (earnest money)', v: p.acqEarnest != null ? fmtMoney(Math.abs(p.acqEarnest)) : null },
+        { k: 'DD amount (due-diligence fee)', v: p.acqDDFee != null ? fmtMoney(Math.abs(p.acqDDFee)) : null },
+        { k: 'DD deadline', v: p.ddDate ? fmtDate(p.ddDate) : null, tone: 'ochre' },
+        { k: 'Signing date', v: p.signingDate ? fmtDate(p.signingDate) : null },
+        { k: 'Signing time', v: fmtClock(p.closingTime) },
+      ],
+    };
+  }
+  return {
+    title: 'Under contract — to sell',
+    rows: [
+      { k: 'Buyer EMD (earnest money)', v: p.saleEarnest != null ? fmtMoney(Math.abs(p.saleEarnest)) : null },
+      { k: 'DD amount collected', v: p.saleDDCollected != null ? fmtMoney(Math.abs(p.saleDDCollected)) : null },
+      { k: 'Buyer DD deadline', v: p.buyerDDDate ? fmtDate(p.buyerDDDate) : null, tone: 'ochre' },
+      { k: 'Sale / signing date', v: p.salesDate ? fmtDate(p.salesDate) : null },
+      { k: 'Signing time', v: fmtClock(p.salesClosingTime || p.closingTime) },
+    ],
+  };
+}
+
 function MilestoneTimeline({ p }) {
+  const [open, setOpen] = React.useState(null); // step.key whose popover is shown
+  React.useEffect(() => { setOpen(null); }, [p.id]);
+
   const ucBuy   = p.signingDate || null;
   const acquired = p.purchaseDate || null;
   const listed  = p.listDate || (p.listPrice != null ? stageReachedAt(p, 'F') : null);
@@ -65,24 +106,67 @@ function MilestoneTimeline({ p }) {
         <div className="row items-start" style={{gap: 0}}>
           {steps.map((s, i) => {
             const done = !!s.at;
+            const isUC = s.key === 'ucbuy' || s.key === 'ucsell';
+            const details = isUC ? ucMilestoneDetails(p, s.key) : null;
+            const hasDetails = details && details.rows.some(r => r.v != null);
+            const clickable = isUC && hasDetails;
+            const isOpen = open === s.key;
             return (
               <React.Fragment key={s.key}>
-                <div className="col items-center text-c" style={{flex: '0 0 auto', width: 108}}>
-                  <div style={{
-                    width: 12, height: 12, borderRadius: '50%',
-                    background: done ? 'var(--blue)' : 'var(--paper)',
-                    border: '2px solid ' + (done ? 'var(--blue)' : 'var(--rule)'),
-                    boxShadow: done ? '0 0 0 4px var(--blue-tint)' : 'none',
-                    marginBottom: 14,
-                  }}/>
-                  <div className="up" style={{color: done ? 'var(--ink)' : 'var(--ink-4)', lineHeight: 1.25, height: 28, display: 'flex', alignItems: 'flex-end', justifyContent: 'center'}}>{s.label}</div>
-                  <div className="tiny dim" style={{marginTop: 3}}>{s.sub}</div>
-                  <div className="mono tiny" style={{marginTop: 7, color: done ? 'var(--ink-2)' : 'var(--ink-4)'}}>
-                    {done ? fmtDate(s.at) : '—'}
+                <div className="col items-center text-c" style={{flex: '0 0 auto', width: 108, position: 'relative'}}>
+                  <div
+                    className="col items-center text-c"
+                    onClick={clickable ? (e) => { e.stopPropagation(); setOpen(isOpen ? null : s.key); } : undefined}
+                    style={{
+                      cursor: clickable ? 'pointer' : 'default',
+                      borderRadius: 8, padding: '4px 6px 6px', margin: '-4px -6px -6px',
+                      background: isOpen ? 'var(--blue-tint)' : 'transparent',
+                    }}>
+                    <div style={{
+                      width: 12, height: 12, borderRadius: '50%',
+                      background: done ? 'var(--blue)' : 'var(--paper)',
+                      border: '2px solid ' + (done ? 'var(--blue)' : 'var(--rule)'),
+                      boxShadow: done ? '0 0 0 4px var(--blue-tint)' : 'none',
+                      marginBottom: 14,
+                    }}/>
+                    <div className="up" style={{color: done ? 'var(--ink)' : 'var(--ink-4)', lineHeight: 1.25, height: 28, display: 'flex', alignItems: 'flex-end', justifyContent: 'center'}}>{s.label}</div>
+                    <div className="tiny dim" style={{marginTop: 3}}>{s.sub}</div>
+                    <div className="mono tiny" style={{marginTop: 7, color: done ? 'var(--ink-2)' : 'var(--ink-4)'}}>
+                      {done ? fmtDate(s.at) : '—'}
+                    </div>
+                    {s.dd !== undefined && (
+                      <div className="mono tiny" style={{marginTop: 3, color: s.dd ? 'var(--ochre)' : 'var(--ink-4)'}}>
+                        {s.dd ? 'DD ' + fmtDate(s.dd) : 'DD —'}
+                      </div>
+                    )}
+                    {clickable && (
+                      <div className="tiny" style={{marginTop: 5, color: 'var(--blue)', fontWeight: 600}}>
+                        {isOpen ? 'Hide details' : 'View details'}
+                      </div>
+                    )}
                   </div>
-                  {s.dd !== undefined && (
-                    <div className="mono tiny" style={{marginTop: 3, color: s.dd ? 'var(--ochre)' : 'var(--ink-4)'}}>
-                      {s.dd ? 'DD ' + fmtDate(s.dd) : 'DD —'}
+                  {isOpen && details && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        position: 'absolute', top: 'calc(100% + 8px)', zIndex: 30,
+                        [i >= steps.length / 2 ? 'right' : 'left']: -6,
+                        width: 240, textAlign: 'left',
+                        background: 'var(--paper)', border: '1px solid var(--rule)',
+                        borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,0.16)', padding: '12px 14px',
+                      }}>
+                      <div className="up dim mb-8" style={{fontWeight: 600}}>{details.title}</div>
+                      <div className="col" style={{gap: 7}}>
+                        {details.rows.map((r, ri) => (
+                          <div key={ri} className="row between items-baseline" style={{gap: 12}}>
+                            <span className="tiny dim" style={{whiteSpace: 'nowrap'}}>{r.k}</span>
+                            <span className="mono tiny" style={{
+                              fontVariantNumeric: 'tabular-nums', textAlign: 'right',
+                              color: r.v == null ? 'var(--ink-4)' : (r.tone === 'ochre' ? 'var(--ochre)' : 'var(--ink)'),
+                            }}>{r.v == null ? '—' : r.v}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -94,6 +178,9 @@ function MilestoneTimeline({ p }) {
           })}
         </div>
       </div>
+      {open && (
+        <div onClick={() => setOpen(null)} style={{position: 'fixed', inset: 0, zIndex: 20}}/>
+      )}
     </Card>
   );
 }
