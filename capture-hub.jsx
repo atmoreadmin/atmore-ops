@@ -43,7 +43,7 @@ function stageReachedAt(p, code) {
 // Contract details surfaced (and editable) when an "Under contract" milestone is
 // clicked. Each field maps 1:1 to a synced Property column so edits round-trip to
 // the Google Sheet on the next push.
-function ucMilestoneSpec(key) {
+function milestoneSpec(key) {
   if (key === 'ucbuy') {
     return {
       title: 'Under contract — to buy',
@@ -53,6 +53,33 @@ function ucMilestoneSpec(key) {
         { key: 'ddDate',      label: 'DD deadline',                  type: 'date', tone: 'ochre' },
         { key: 'signingDate', label: 'Signing date',                 type: 'date' },
         { key: 'closingTime', label: 'Signing time',                 type: 'time' },
+      ],
+    };
+  }
+  if (key === 'acq') {
+    return {
+      title: 'Acquired — closing',
+      fields: [
+        { key: 'purchasePrice', label: 'Purchase price', type: 'money' },
+        { key: 'purchaseDate',  label: 'Closing date',   type: 'date' },
+      ],
+    };
+  }
+  if (key === 'list') {
+    return {
+      title: 'Listed — on market',
+      fields: [
+        { key: 'listPrice', label: 'List price', type: 'money' },
+        { key: 'listDate',  label: 'List date',  type: 'date' },
+      ],
+    };
+  }
+  if (key === 'sold') {
+    return {
+      title: 'Sold — close-out',
+      fields: [
+        { key: 'salesPrice', label: 'Sale price', type: 'money' },
+        { key: 'salesDate',  label: 'Sale date',  type: 'date' },
       ],
     };
   }
@@ -175,8 +202,7 @@ function MilestoneTimeline({ p }) {
         <div className="row items-start" style={{gap: 0}}>
           {steps.map((s, i) => {
             const done = !!s.at || s.reached;
-            const isUC = s.key === 'ucbuy' || s.key === 'ucsell';
-            const clickable = isUC && done; // reached UC steps are editable
+            const clickable = true; // every milestone is editable, regardless of status
             const isOpen = open === s.key;
             const anchorRight = i >= steps.length / 2;
             return (
@@ -214,7 +240,7 @@ function MilestoneTimeline({ p }) {
                     )}
                   </div>
                   {isOpen && (
-                    <MilestonePopover p={p} spec={ucMilestoneSpec(s.key)} anchorRight={anchorRight} onClose={() => setOpen(null)} />
+                    <MilestonePopover p={p} spec={milestoneSpec(s.key)} anchorRight={anchorRight} onClose={() => setOpen(null)} />
                   )}
                 </div>
                 {i < steps.length - 1 && (
