@@ -134,6 +134,7 @@ function MilestoneTimeline({ p }) {
   const [open, setOpen] = React.useState(null); // step.key whose popover is shown
   React.useEffect(() => { setOpen(null); }, [p.id]);
 
+  // ── Dates that anchor each milestone (may be missing on synced/imported records) ──
   const ucBuy   = p.signingDate || null;
   const acquired = p.purchaseDate || null;
   const listed  = p.listDate || (p.listPrice != null ? stageReachedAt(p, 'F') : null);
@@ -142,22 +143,38 @@ function MilestoneTimeline({ p }) {
   // recorded while still under contract (e.g. a scheduled signing) must not read as sold.
   const sold    = p.statusCode === 'I' ? (p.salesDate || stageReachedAt(p, 'I')) : null;
 
+  // ── Milestones reached purely from the current stage code ──
+  // Imported / synced properties often carry a statusCode but no dates and no
+  // stageHistory rows. Without this, a property that's genuinely owned, listed,
+  // under contract to sell, or sold would show NO timeline at all. Deriving
+  // "reached" from the stage code makes the strip appear consistently; the date
+  // under each dot still reads "—" until the actual date is captured.
+  const code = p.statusCode;
+  const owned = ['C','D','E','F','G','H','K','I'].includes(code); // matches the acquisition card's own "owned" rule
+  const reach = {
+    ucbuy:  owned,                              // owning it means it was under contract to buy
+    acq:    owned,                              // closed / acquired
+    list:   ['F','G','H','I'].includes(code),   // On Market or beyond
+    ucsell: ['G','H','I'].includes(code),       // Under Contract (sell), Pending 1031, Sold
+    sold:   code === 'I',
+  };
+
   const steps = [
-    { key: 'ucbuy', label: 'Under contract', sub: 'to buy', at: ucBuy, dd: p.ddDate || null },
-    { key: 'acq',   label: 'Acquired',       sub: 'closed',  at: acquired },
-    { key: 'list',  label: 'Listed',         sub: 'on market', at: listed },
-    { key: 'ucsell',label: 'Under contract', sub: 'to sell', at: ucSell, dd: p.buyerDDDate || null },
-    { key: 'sold',  label: 'Sold',           sub: 'closed',  at: sold },
+    { key: 'ucbuy', label: 'Under contract', sub: 'to buy', at: ucBuy, dd: p.ddDate || null, reached: reach.ucbuy },
+    { key: 'acq',   label: 'Acquired',       sub: 'closed',  at: acquired, reached: reach.acq },
+    { key: 'list',  label: 'Listed',         sub: 'on market', at: listed, reached: reach.list },
+    { key: 'ucsell',label: 'Under contract', sub: 'to sell', at: ucSell, dd: p.buyerDDDate || null, reached: reach.ucsell },
+    { key: 'sold',  label: 'Sold',           sub: 'closed',  at: sold, reached: reach.sold },
   ];
-  // Hide the whole strip if literally nothing has happened yet.
-  if (!steps.some(s => s.at)) return null;
+  // Note: we no longer hide the strip when no dates exist — it renders as an
+  // empty placeholder so the lifecycle is always visible on the property screen.
 
   return (
     <Card>
       <div className="card__body" style={{paddingTop: 18, paddingBottom: 18}}>
         <div className="row items-start" style={{gap: 0}}>
           {steps.map((s, i) => {
-            const done = !!s.at;
+            const done = !!s.at || s.reached;
             const isUC = s.key === 'ucbuy' || s.key === 'ucsell';
             const clickable = isUC && done; // reached UC steps are editable
             const isOpen = open === s.key;
@@ -182,8 +199,8 @@ function MilestoneTimeline({ p }) {
                     }}/>
                     <div className="up" style={{color: done ? 'var(--ink)' : 'var(--ink-4)', lineHeight: 1.25, height: 28, display: 'flex', alignItems: 'flex-end', justifyContent: 'center'}}>{s.label}</div>
                     <div className="tiny dim" style={{marginTop: 3}}>{s.sub}</div>
-                    <div className="mono tiny" style={{marginTop: 7, color: done ? 'var(--ink-2)' : 'var(--ink-4)'}}>
-                      {done ? fmtDate(s.at) : '—'}
+                    <div className="mono tiny" style={{marginTop: 7, color: s.at ? 'var(--ink-2)' : 'var(--ink-4)'}}>
+                      {s.at ? fmtDate(s.at) : '—'}
                     </div>
                     {s.dd !== undefined && (
                       <div className="mono tiny" style={{marginTop: 3, color: s.dd ? 'var(--ochre)' : 'var(--ink-4)'}}>
@@ -201,7 +218,7 @@ function MilestoneTimeline({ p }) {
                   )}
                 </div>
                 {i < steps.length - 1 && (
-                  <div style={{flex: 1, height: 2, background: steps[i+1].at ? 'var(--blue-soft)' : 'var(--rule)', marginTop: 19, minWidth: 16, borderRadius: 1}}/>
+                  <div style={{flex: 1, height: 2, background: (steps[i+1].at || steps[i+1].reached) ? 'var(--blue-soft)' : 'var(--rule)', marginTop: 19, minWidth: 16, borderRadius: 1}}/>
                 )}
               </React.Fragment>
             );
