@@ -49,6 +49,7 @@ const SCHEMA = {
   Tenants: [
     'id','propertyId','name','phone','email','moveIn','leaseEnd','rent',
     'deposit','source','voucher','phaPortion','tenantPortion','occupants','status','notes',
+    'lateFeeAmount','lateFeeStartDay','lateFeeMax','lateFeePerDay',
   ],
   RentLedger: [
     'id','tenantId','propertyId','month','charge','paid','paidOn','source',

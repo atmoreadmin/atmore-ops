@@ -372,7 +372,7 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
             <>
               <div className="divider-v"/>
               <div>
-                <div className="up dim">Late fee (5%)</div>
+                <div className="up dim">Late fee</div>
                 <div className="serif" style={{fontSize: 22, fontWeight: 500, color: 'var(--ochre)'}}>{fmtMoney(lateFee)}</div>
               </div>
             </>
@@ -422,7 +422,7 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
 function NoticeModal({ ledgerEntry, onClose }) {
   const t = getTenant(ledgerEntry.tenantId);
   const p = getProperty(ledgerEntry.propertyId);
-  const lateFee = Math.round(ledgerEntry.charge * 0.05);
+  const lateFee = lateFeeFor(ledgerEntry);
   const totalDue = ledgerEntry.charge - ledgerEntry.paid + lateFee;
   return (
     <Modal title="10-day notice to pay or quit"
@@ -453,7 +453,7 @@ function NoticeModal({ ledgerEntry, onClose }) {
             <tbody>
               <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Rent for {fmtMonthLong(ledgerEntry.month)}</td><td className="text-r mono">{fmtMoney(ledgerEntry.charge)}</td></tr>
               {ledgerEntry.paid > 0 && <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Less amount already paid</td><td className="text-r mono" style={{color: 'var(--sage)'}}>−{fmtMoney(ledgerEntry.paid)}</td></tr>}
-              <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Late fee (5% per lease §6.b)</td><td className="text-r mono">{fmtMoney(lateFee)}</td></tr>
+              <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Late fee (per lease)</td><td className="text-r mono">{fmtMoney(lateFee)}</td></tr>
               <tr><td style={{padding: '4px 0', fontWeight: 600, borderTop: '1px solid #1c1a14'}}>Total due</td><td className="text-r mono" style={{fontWeight: 600}}>{fmtMoney(totalDue)}</td></tr>
             </tbody>
           </table>

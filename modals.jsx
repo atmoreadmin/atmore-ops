@@ -202,6 +202,10 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
   const [phaPortion, setPhaPortion] = useState(tenant?.phaPortion != null ? String(tenant.phaPortion) : '');
   const [tenantPortion, setTenantPortion] = useState(tenant?.tenantPortion != null ? String(tenant.tenantPortion) : '');
   const [occupants, setOccupants] = useState(tenant?.occupants != null ? String(tenant.occupants) : '');
+  const [lateFeeAmt, setLateFeeAmt] = useState(tenant?.lateFeeAmount != null ? String(tenant.lateFeeAmount) : '');
+  const [lateFeeDay, setLateFeeDay] = useState(tenant?.lateFeeStartDay != null ? String(tenant.lateFeeStartDay) : '');
+  const [lateFeeCap, setLateFeeCap] = useState(tenant?.lateFeeMax != null ? String(tenant.lateFeeMax) : '');
+  const [lateFeePerDay, setLateFeePerDay] = useState(!!tenant?.lateFeePerDay);
   const [notes, setNotes] = useState(tenant?.notes || '');
   const [convertToK, setConvertToK] = useState(!editing && p?.statusCode !== 'K');
 
@@ -221,6 +225,19 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
           <div><div className="up dim mb-4">Monthly rent</div><input className="input mono" type="number" value={rent} onChange={e => setRent(e.target.value)} style={{width: '100%'}}/></div>
           <div><div className="up dim mb-4">Security deposit</div><input className="input mono" type="number" value={deposit} onChange={e => setDeposit(e.target.value)} style={{width: '100%'}}/></div>
           <div><div className="up dim mb-4">Occupants</div><input className="input" type="number" value={occupants} onChange={e => setOccupants(e.target.value)} style={{width: '100%'}}/></div>
+        </div>
+        <div>
+          <div className="up dim mb-4">Late fee policy</div>
+          <div className="grid g-3">
+            <div><div className="up dim mb-4">Fee amount ($)</div><input className="input mono" type="number" value={lateFeeAmt} onChange={e => setLateFeeAmt(e.target.value)} placeholder="e.g. 50" style={{width: '100%'}}/></div>
+            <div><div className="up dim mb-4">Starts on day of month</div><input className="input mono" type="number" min="1" max="28" value={lateFeeDay} onChange={e => setLateFeeDay(e.target.value)} placeholder="e.g. 6" style={{width: '100%'}}/></div>
+            <div><div className="up dim mb-4">Max cap ($)</div><input className="input mono" type="number" value={lateFeeCap} onChange={e => setLateFeeCap(e.target.value)} placeholder="no cap" style={{width: '100%'}}/></div>
+          </div>
+          <label className="row gap-6 items-center tiny mt-4" style={{cursor: 'pointer'}}>
+            <input type="checkbox" checked={lateFeePerDay} onChange={e => setLateFeePerDay(e.target.checked)}/>
+            <span className="dim">Fee accrues per day late (until cap) — unchecked = one-time fee</span>
+          </label>
+          <div className="tiny dim mt-4">Leave amount blank to use the default 5% of rent. Enter 0 for no late fee.</div>
         </div>
         <div>
           <div className="up dim mb-4">Payment source</div>
@@ -269,6 +286,10 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
                 phaPortion: source === 'Section 8' && phaPortion !== '' ? parseFloat(phaPortion) : null,
                 tenantPortion: source === 'Section 8' && tenantPortion !== '' ? parseFloat(tenantPortion) : null,
                 occupants: parseInt(occupants) || null,
+                lateFeeAmount: lateFeeAmt !== '' ? parseFloat(lateFeeAmt) : null,
+                lateFeeStartDay: lateFeeDay !== '' ? parseInt(lateFeeDay) : null,
+                lateFeeMax: lateFeeCap !== '' ? parseFloat(lateFeeCap) : null,
+                lateFeePerDay,
                 notes,
               };
               if (editing) {

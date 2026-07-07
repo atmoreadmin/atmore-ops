@@ -2161,6 +2161,19 @@ function lateFeeFor(ledger) {
   if (ledger.status !== 'late' && ledger.status !== 'vacate-due' && ledger.status !== 'partial') return 0;
   // No late fee if paid in full
   if (ledger.paid >= ledger.charge) return 0;
+  // Per-tenant policy (set on the lease): flat or per-day fee, start day, cap.
+  const t = (Store.state.tenants || []).find(x => x.id === ledger.tenantId);
+  if (t && t.lateFeeAmount != null) {
+    if (t.lateFeeAmount <= 0) return 0; // explicit "no late fee"
+    const startDay = Math.min(Math.max(parseInt(t.lateFeeStartDay) || 2, 1), 28);
+    const feeStart = ledger.month + '-' + String(startDay).padStart(2, '0');
+    const today = TODAY();
+    if (today < feeStart) return 0; // still in grace period
+    let fee = t.lateFeeAmount;
+    if (t.lateFeePerDay) fee = t.lateFeeAmount * (Math.max(0, daysBetween(feeStart, today)) + 1);
+    if (t.lateFeeMax != null && t.lateFeeMax > 0) fee = Math.min(fee, t.lateFeeMax);
+    return Math.round(fee);
+  }
   return Math.round(ledger.charge * LATE_FEE_PCT);
 }
 function totalOwedFor(ledger) {

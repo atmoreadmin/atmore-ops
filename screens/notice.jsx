@@ -75,7 +75,7 @@ function NoticeScreen() {
                           <div className="mono mt-2">{fmtMoney(r.charge - r.paid)}</div>
                         </div>
                         <div>
-                          <div className="up dim">+ Late fee (5%)</div>
+                          <div className="up dim">+ Late fee</div>
                           <div className="mono mt-2">{fmtMoney(lateFee)}</div>
                         </div>
                         <div>
@@ -179,7 +179,7 @@ function renderNoticeHtml(r) {
           <tbody>
             <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Rent for {fmtMonthLong(r.month)}</td><td className="text-r mono">{fmtMoney(r.charge)}</td></tr>
             {r.paid > 0 && <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Less amount already paid</td><td className="text-r mono" style={{color: '#4d6e42'}}>−{fmtMoney(r.paid)}</td></tr>}
-            <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Late fee (5% per lease §6.b)</td><td className="text-r mono">{fmtMoney(lateFee)}</td></tr>
+            <tr><td style={{padding: '4px 0', borderBottom: '1px dotted #c9c2b5'}}>Late fee (per lease)</td><td className="text-r mono">{fmtMoney(lateFee)}</td></tr>
             <tr><td style={{padding: '4px 0', fontWeight: 600, borderTop: '1px solid #1c1a14'}}>Total due</td><td className="text-r mono" style={{fontWeight: 600}}>{fmtMoney(totalDue)}</td></tr>
           </tbody>
         </table>
@@ -270,7 +270,7 @@ function openPrintWindow(rows) {
             <tbody>
               <tr><td>Rent for ${esc(fmtMonthLong(r.month))}</td><td class="r">${esc(fmtMoney(r.charge))}</td></tr>
               ${r.paid > 0 ? `<tr><td>Less amount already paid</td><td class="r green">−${esc(fmtMoney(r.paid))}</td></tr>` : ''}
-              <tr><td>Late fee (5% per lease §6.b)</td><td class="r">${esc(fmtMoney(lateFee))}</td></tr>
+              <tr><td>Late fee (per lease)</td><td class="r">${esc(fmtMoney(lateFee))}</td></tr>
               <tr class="total"><td>Total due</td><td class="r">${esc(fmtMoney(totalDue))}</td></tr>
             </tbody>
           </table>
