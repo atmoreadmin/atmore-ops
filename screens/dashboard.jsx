@@ -5,6 +5,7 @@ const MONTHS_3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','N
 function DashboardScreen() {
   const store = useStore();
   const [addingProperty, setAddingProperty] = React.useState(false);
+  const [showCashOut, setShowCashOut] = React.useState(false);
   const month = getCurrentMonth();
   const todayIso = TODAY();
   ensureLedgerForMonth(month);
@@ -70,9 +71,6 @@ function DashboardScreen() {
     return d != null && d <= 90 && d >= -7;
   }).sort((a,b) => a.loanDetail.maturityDate.localeCompare(b.loanDetail.maturityDate));
 
-  // Capital at risk: sum of |purchasePrice| + rehab for owned, pre-sale properties (B–F)
-  const capitalAtRisk = store.properties.filter(p => ['B','C','D','E','F'].includes(p.statusCode))
-    .reduce((a,p) => a + Math.abs(p.purchasePrice||0) + (p.rehab || 0), 0);
 
   // active count excluding archive
   const activeCount = store.properties.filter(p => p.statusCode !== 'I' && p.statusCode !== 'J').length;
@@ -96,6 +94,7 @@ function DashboardScreen() {
         </div>
       </div>
       {addingProperty && <AddPropertyModal onClose={() => setAddingProperty(false)}/>}
+      {showCashOut && <CashOutModal month={month} onClose={() => setShowCashOut(false)}/>}
 
       {/* STAT BAND */}
       <Card className="mb-16">
@@ -110,20 +109,10 @@ function DashboardScreen() {
             <div className="stat__value">{fmtMoney(totalOwed)}</div>
             <div className="stat__sub">{outstanding.length} tenant{outstanding.length===1?'':'s'} outstanding</div>
           </div>
-          <div className="stat stat--blue grow">
-            <div className="stat__label">Pipeline · active</div>
-            <div className="stat__value">{activeCount.toLocaleString()}</div>
-            <div className="stat__sub">{stageCounts.G || 0} under contract</div>
-          </div>
-          <div className="stat grow">
-            <div className="stat__label">Capital at risk</div>
-            <div className="stat__value">{fmtMoney(capitalAtRisk, {dp:0})}</div>
-            <div className="stat__sub">B–F stages</div>
-          </div>
-          <div className="stat grow">
+          <div className="stat grow" onClick={() => setShowCashOut(true)} style={{cursor: 'pointer'}} title="View this month's transactions">
             <div className="stat__label">Cash out · {fmtMonthShort(month)}</div>
             <div className="stat__value">{fmtMoney(mtdCashOut)}</div>
-            <div className="stat__sub">across all categories</div>
+            <div className="stat__sub" style={{color: 'var(--blue)'}}>view transactions →</div>
           </div>
         </div>
       </Card>
@@ -139,6 +128,47 @@ function DashboardScreen() {
 }
 
 // ────────── Sub-components ──────────
+
+// Month's cash-out transactions, opened from the "Cash out" stat on the dashboard.
+function CashOutModal({ month, onClose }) {
+  const store = useStore();
+  const txs = store.transactions
+    .filter(t => t.date && t.date.startsWith(month) && t.amount < 0)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const total = txs.reduce((a, t) => a + Math.abs(t.amount), 0);
+  const monthName = MONTHS_3[parseInt(month.slice(5, 7), 10) - 1] + ' ' + month.slice(0, 4);
+  return (
+    <Modal title={'Cash out · ' + monthName} onClose={onClose}
+      right={<Btn kind="ghost" sz="sm" onClick={() => { onClose(); nav('/transactions'); }}>Open transactions →</Btn>}>
+      <div className="row items-center between mb-8">
+        <div className="dim tiny">{txs.length} transaction{txs.length === 1 ? '' : 's'}</div>
+        <div className="mono" style={{fontWeight: 600}}>{fmtMoney(total)}</div>
+      </div>
+      {txs.length === 0 ? (
+        <div className="dim tiny" style={{padding: '16px 0'}}>No cash-out transactions recorded for {monthName} yet.</div>
+      ) : (
+        <div style={{maxHeight: '55vh', overflowY: 'auto'}}>
+          <table className="tbl" style={{width: '100%'}}>
+            <thead>
+              <tr><th>Date</th><th>Payee / description</th><th>Category</th><th>Property</th><th style={{textAlign: 'right'}}>Amount</th></tr>
+            </thead>
+            <tbody>
+              {txs.map(t => (
+                <tr key={t.id}>
+                  <td className="mono tiny" style={{whiteSpace: 'nowrap'}}>{fmtDate(t.date)}</td>
+                  <td className="tiny">{t.payee || t.desc || '—'}</td>
+                  <td className="tiny dim">{t.category || 'untagged'}</td>
+                  <td className="tiny dim">{t.project || '—'}</td>
+                  <td className="mono tiny" style={{textAlign: 'right', whiteSpace: 'nowrap'}}>{fmtMoney(Math.abs(t.amount))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 function AlertRow({ tone, count, title, sub, actionLabel, onAction, hidden }) {
   if (hidden) return null;

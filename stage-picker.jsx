@@ -265,6 +265,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const [ddCollected, setDdCollected] = usePS(p.saleDDCollected != null ? String(Math.abs(p.saleDDCollected)) : '');
   const [saleEMD, setSaleEMD] = usePS(p.saleEarnest != null ? String(Math.abs(p.saleEarnest)) : '');
   const [rehab, setRehab]           = usePS(p.rehab != null ? String(p.rehab) : (taggedRehab ? String(taggedRehab) : ''));
+  const [rehabDraws, setRehabDraws] = usePS(p.rehabDraws != null ? String(Math.abs(p.rehabDraws)) : '');
   const [interest, setInterest]     = usePS(p.interest != null ? String(p.interest) : '');
   const [note, setNote] = usePS(initialNote);
 
@@ -288,6 +289,8 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const netProceeds = price - closeCosts - concessions + ddColl;
   const netProfit   = netProceeds - costBasis;
   const netCash     = (price - closeCosts - concessions) - payoff;
+  const draws = Math.abs(num(rehabDraws));
+  const outOfPocketRehab = Math.max(0, num(rehab) - draws);
   const rehabDiffers = taggedRehab > 0 && Math.abs(num(rehab) - taggedRehab) > 1;
 
   return (
@@ -351,6 +354,14 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         </div>
         <div><div className="up dim mb-4">Interest accrued</div><CloseoutMoney value={interest} onChange={setInterest}/></div>
       </div>
+      <div className="grid g-2 mb-4">
+        <div>
+          <div className="up dim mb-4">Rehab funds from lender (draws)</div>
+          <CloseoutMoney value={rehabDraws} onChange={setRehabDraws}/>
+          <div className="tiny dim mt-4">Draws you requested from the lender for rehab. Repaid inside the loan payoff — they don't change profit, but show your out-of-pocket rehab on the P&L.</div>
+        </div>
+        <div></div>
+      </div>
       <div className="up dim mb-8" style={{marginTop: 4}}>Atmore loan <span className="dim" style={{textTransform:'none',letterSpacing:0}}>(if Atmore fronted funds)</span></div>
       <div className="grid g-2 mb-4">
         <div><div className="up dim mb-4">Atmore loan principal</div><CloseoutMoney value={atmorePrincipal} onChange={setAtmorePrincipal}/></div>
@@ -378,6 +389,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         {ddColl > 0 && <CloseoutSummaryRow label="+ DD fee collected" value={'+' + fmtMoney(ddColl)} color="var(--sage)"/>}
         {(closeCosts > 0 || concessions > 0 || ddColl > 0) && <CloseoutSummaryRow label="= Net proceeds" value={fmtMoney(netProceeds)} strong/>}
         {atmoreInterest > 0 && <CloseoutSummaryRow label="− Atmore loan interest" value={'−' + fmtMoney(atmoreInterest)} color="var(--brick)"/>}
+        {draws > 0 && <CloseoutSummaryRow label="Rehab draws from lender" value={fmtMoney(draws)} sub={'out-of-pocket rehab ' + fmtMoney(outOfPocketRehab)}/>}
         <div className="divider" style={{margin: '2px 0'}}/>
         <CloseoutSummaryRow label="Gross profit" value={fmtMoney(grossProfit, {sign: true})} sub="price − basis" color={grossProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
         <CloseoutSummaryRow label="Net profit" value={fmtMoney(netProfit, {sign: true})} big color={netProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
@@ -417,6 +429,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
               saleDDCollected: toStore(ddCollected),
               saleEarnest: toStore(saleEMD),
               rehab: toStore(rehab),
+              rehabDraws: toStore(rehabDraws),
               interest: toStore(interest),
               grossProfit: salesPrice === '' ? null : Math.round(netProfit),
               note,

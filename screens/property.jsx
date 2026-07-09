@@ -239,6 +239,8 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   const rehab = p.rehab || 0;
   const interest = Math.abs(p.interest || 0);
   const rehabBudget = p.rehabFunds ? Math.abs(p.rehabFunds) : null;
+  const rehabDraws = Math.abs(p.rehabDraws || 0);
+  const outOfPocketRehab = Math.max(0, rehab - rehabDraws);
   const purchaseFeeItems = p.purchaseFeeItems || [];
   const saleFeeItems = p.saleFeeItems || [];
 
@@ -314,6 +316,12 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
                 </div>
               </div>
             </div>
+            {rehabDraws > 0 && (
+              <div className="row between items-center">
+                <div className="small mid">↳ Lender rehab draws</div>
+                <div className="mono small dim">{fmtMoney(rehabDraws)} · {fmtMoney(outOfPocketRehab)} out of pocket</div>
+              </div>
+            )}
             <div className="row between items-center">
               <div>+ Loan interest</div>
               <div className="mono">{fmtMoney(interest)}</div>
@@ -332,6 +340,11 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
             {(acqDD > 0 || acqEMD > 0) && (
               <div className="tiny dim" style={{lineHeight: 1.5}}>
                 Incl. {acqDD > 0 ? `${fmtMoney(acqDD)} due-diligence fee` : ''}{acqDD > 0 && acqEMD > 0 ? ' and ' : ''}{acqEMD > 0 ? `${fmtMoney(acqEMD)} earnest` : ''} paid up front — already inside the price.
+              </div>
+            )}
+            {rehabDraws > 0 && (
+              <div className="tiny dim" style={{lineHeight: 1.5}}>
+                {fmtMoney(rehabDraws)} of rehab was lender-funded (draws) — repaid inside the loan payoff, so it stays in cost basis; your out-of-pocket rehab was {fmtMoney(outOfPocketRehab)}.
               </div>
             )}
             {atmorePayoff > 0 && (

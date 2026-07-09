@@ -47,6 +47,7 @@ const SHEET_SCHEMA = {
       { key: 'acqDDFee',        label: 'Due Diligence Fee (Buy)', type: 'money', notes: 'Non-refundable DD fee paid at purchase (already inside price)' },
       { key: 'rehab',           label: 'Rehab Spent',        type: 'money' },
       { key: 'rehabFunds',      label: 'Rehab Budget',       type: 'money' },
+      { key: 'rehabDraws',      label: 'Rehab Funds From Lender', type: 'money', notes: 'Draws requested from the lender — repaid inside loan payoff' },
       { key: 'interest',        label: 'Interest Accrued',   type: 'money' },
       { key: 'salesDate',       label: 'Sales Date',         type: 'date' },
       { key: 'saleSigningDate',  label: 'Sale Signing Date',  type: 'date',   notes: 'Closing/signing appointment date (sale side)' },

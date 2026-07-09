@@ -34,7 +34,7 @@ const SCHEMA = {
     'id','address','type','status','statusCode','city','county','state','zip',
     'assigned','loanType','lockbox','ddDate','signingDate','purchaseDate',
     'purchasePrice','acqEarnest','purchaseFees','purchaseCredits','purchaseLoan','acqExchangeFunds','acqDDFee',
-    'rehab','rehabFunds','interest','salesDate','listPrice','salesPrice','grossProfit',
+    'rehab','rehabFunds','rehabDraws','interest','salesDate','listPrice','salesPrice','grossProfit',
     'vestingLLC','driveUrl','failedReason','notes','attorney','attorneyContact','closingTime',
     'saleSigningDate','saleSigningTime',
     'salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest','exchangeFunds',
