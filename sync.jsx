@@ -156,6 +156,12 @@ function deserializeFromSheet(pulledData) {
   state.properties = (tabs.Properties || []).map(p => {
     const out = { ...p };
     const local = localProps[p.id] || {};
+    // Columns the Sheet doesn't have yet (bridge not migrated) come back with the
+    // key entirely ABSENT from the pulled row. Keep this device's local value for
+    // those instead of erasing it. (Blank cells DO come back as null and win.)
+    for (const k of Object.keys(local)) {
+      if (!(k in out)) out[k] = local[k];
+    }
     // Stage history isn't synced anymore — keep local, or seed one entry for a fresh import.
     // Stage history — synced tab authoritative; else keep local; else seed one entry.
     if (stageByP) {
