@@ -197,6 +197,11 @@ function TransactionsScreen() {
       <div className="row gap-16 items-start">
         {/* main */}
         <div className="grow col gap-16" style={{minWidth: 0}}>
+          <AskBooksCard onViewRows={ids => {
+            setSelected(ids);
+            setSearch(''); setAcctFilter('all'); setCatFilter('all'); setOnlyUntagged(false);
+            setShowSelectedOnly(true);
+          }}/>
           <Card>
             {txFocus ? (
               <div className="card__body row gap-12 items-center wrap" style={{background: txFocusSet && txFocusSet.size === 0 ? 'rgba(74,122,86,0.08)' : 'rgba(154,102,24,0.06)', borderLeft: '3px solid ' + (txFocusSet && txFocusSet.size === 0 ? 'var(--sage-deep, var(--sage))' : 'var(--ochre)')}}>

@@ -256,6 +256,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const [listPrice, setListPrice]   = usePS(p.listPrice != null ? String(p.listPrice) : '');
   const [salesFees, setSalesFees] = usePS(p.salesFees != null ? String(Math.abs(p.salesFees)) : (feeItemsTotal(p.saleFeeItems) ? String(feeItemsTotal(p.saleFeeItems)) : ''));
   const [salesCredits, setSalesCredits] = usePS(p.salesCredits != null ? String(p.salesCredits) : offerConcStr);
+  const [saleCreditsRecd, setSaleCreditsRecd] = usePS(p.saleCreditsReceived != null ? String(Math.abs(p.saleCreditsReceived)) : '');
   const [purchaseFees, setPurchaseFees] = usePS(p.purchaseFees != null ? String(Math.abs(p.purchaseFees)) : (feeItemsTotal(p.purchaseFeeItems) ? String(feeItemsTotal(p.purchaseFeeItems)) : ''));
   const [purchaseCredits, setPurchaseCredits] = usePS(p.purchaseCredits != null ? String(Math.abs(p.purchaseCredits)) : '');
   const [loanPayoff, setLoanPayoff] = usePS(p.salesLoanPayoff != null ? String(p.salesLoanPayoff) : '');
@@ -264,8 +265,14 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const [exchangeFunds, setExchangeFunds] = usePS(p.exchangeFunds != null ? String(p.exchangeFunds) : '');
   const [ddCollected, setDdCollected] = usePS(p.saleDDCollected != null ? String(Math.abs(p.saleDDCollected)) : '');
   const [saleEMD, setSaleEMD] = usePS(p.saleEarnest != null ? String(Math.abs(p.saleEarnest)) : '');
+  const [buyerDD, setBuyerDD] = usePS(p.buyerDDDate || '');
+  const [attorney, setAttorney] = usePS(p.saleAttorney || '');
   const [rehab, setRehab]           = usePS(p.rehab != null ? String(p.rehab) : (taggedRehab ? String(taggedRehab) : ''));
   const [rehabDraws, setRehabDraws] = usePS(p.rehabDraws != null ? String(Math.abs(p.rehabDraws)) : '');
+  const [interestCredit, setInterestCredit] = usePS(p.interestCredit != null ? String(Math.abs(p.interestCredit)) : '');
+  const [otherFees, setOtherFees] = usePS(p.otherFees != null ? String(Math.abs(p.otherFees)) : '');
+  const [cashBack, setCashBack] = usePS(p.cashReceivedAtClose != null ? String(Math.abs(p.cashReceivedAtClose)) : '');
+  const [loanFunded, setLoanFunded] = usePS(p.purchaseLoan != null ? String(Math.abs(p.purchaseLoan)) : '');
   const [interest, setInterest]     = usePS(p.interest != null ? String(p.interest) : '');
   const [note, setNote] = usePS(initialNote);
 
@@ -279,18 +286,31 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const atmorePrin = Math.abs(num(atmorePrincipal));
   const atmorePay  = Math.abs(num(atmorePayoff));
   const atmoreInterest = atmorePay > 0 ? Math.max(0, atmorePay - atmorePrin) : 0;
-  const costBasis = purchase + pFees - pCredits + num(rehab) + Math.abs(num(interest)) + atmoreInterest;
+  const intCredit = Math.abs(num(interestCredit));
+  const otherFeesAmt = Math.abs(num(otherFees));
+  const cashBackAmt = Math.abs(num(cashBack));
+  const acq1031 = Math.abs(num(p.acqExchangeFunds));
+  const costBasis = purchase + pFees - pCredits + num(rehab) + Math.abs(num(interest)) - intCredit + otherFeesAmt + atmoreInterest;
   const price       = num(salesPrice);
   const closeCosts  = Math.abs(num(salesFees));
   const concessions = Math.abs(num(salesCredits));
   const payoff      = Math.abs(num(loanPayoff));
   const ddColl      = Math.abs(num(ddCollected));
+  const creditsRecd = Math.abs(num(saleCreditsRecd));
   const grossProfit = price - costBasis;
-  const netProceeds = price - closeCosts - concessions + ddColl;
+  const netProceeds = price - closeCosts - concessions + ddColl + creditsRecd;
   const netProfit   = netProceeds - costBasis;
-  const netCash     = (price - closeCosts - concessions) - payoff;
+  const netCash     = (price - closeCosts - concessions + creditsRecd) - payoff;
+  const loanFundedAmt = Math.abs(num(loanFunded));
+  const cashAtClose = (num(salesPrice) - Math.abs(num(salesFees)) - Math.abs(num(salesCredits)) + Math.abs(num(saleCreditsRecd))) - Math.abs(num(loanPayoff)) - Math.abs(num(atmorePayoff));
   const draws = Math.abs(num(rehabDraws));
   const outOfPocketRehab = Math.max(0, num(rehab) - draws);
+  // Cash-basis profit: cash received + DD collected − cash to close − DD paid − other fees
+  const ddPaid = Math.abs(num(p.acqDDFee));
+  const cashToCloseAmt = Math.abs(num(p.cashToClose));
+  const otherFeesTotal = outOfPocketRehab + Math.abs(num(interest)) - intCredit + otherFeesAmt + atmoreInterest;
+  const cashNetProfit = cashBackAmt + ddColl - cashToCloseAmt - ddPaid - otherFeesTotal;
+  const haveCashFigures = cashBackAmt > 0 && cashToCloseAmt > 0;
   const rehabDiffers = taggedRehab > 0 && Math.abs(num(rehab) - taggedRehab) > 1;
 
   return (
@@ -307,39 +327,47 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
       </div>
 
       {/* SALE */}
-      <div className="up dim mb-8">Sale</div>
-      <div className="grid g-3 mb-16">
-        <div><div className="up dim mb-4">Sale date</div><input className="input" type="date" value={salesDate} onChange={e => setSalesDate(e.target.value)} style={{width: '100%'}}/></div>
+      <div className="up dim mb-8">Sales Contract</div>
+      <div className="grid g-3 mb-8">
         <div><div className="up dim mb-4">Sale price</div><CloseoutMoney value={salesPrice} onChange={setSalesPrice} autoFocus/>{chosenOffer && p.salesPrice == null && <div className="tiny dim mt-4">From {chosenOffer.status === 'accepted' ? 'accepted' : 'top'} offer{chosenOffer.buyer ? ' · ' + chosenOffer.buyer : ''}</div>}</div>
-        <div><div className="up dim mb-4">List price</div><CloseoutMoney value={listPrice} onChange={setListPrice}/></div>
+        <div><div className="up dim mb-4">DD received</div><CloseoutMoney value={ddCollected} onChange={setDdCollected}/></div>
+        <div><div className="up dim mb-4">EMD amount</div><CloseoutMoney value={saleEMD} onChange={setSaleEMD}/></div>
       </div>
-      <div className="grid g-3 mb-16">
+      <div className="grid g-3 mb-8">
+        <div><div className="up dim mb-4">DD deadline</div><input className="input" type="date" value={buyerDD} onChange={e => setBuyerDD(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Signing date</div><input className="input" type="date" value={saleSigningDate} onChange={e => setSaleSigningDate(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Signing time</div><input className="input" type="time" value={saleSigningTime} onChange={e => setSaleSigningTime(e.target.value)} style={{width: '100%'}}/></div>
-        <div className="col justify-end"><div className="tiny dim">Shows on the dashboard “Next 14 days” scheduler.</div></div>
+      </div>
+      <div className="grid g-3 mb-16">
+        <div><div className="up dim mb-4">Closing attorney</div><input className="input" value={attorney} onChange={e => setAttorney(e.target.value)} style={{width: '100%'}}/></div>
+        <div><div className="up dim mb-4">Sale date</div><input className="input" type="date" value={salesDate} onChange={e => setSalesDate(e.target.value)} style={{width: '100%'}}/></div>
+        <div className="col justify-end"><div className="tiny dim">Signing shows on the dashboard “Next 14 days” scheduler.</div></div>
       </div>
 
       {/* CLOSING ADJUSTMENTS */}
       <div className="up dim mb-8">Closing adjustments</div>
-      <div className="mb-8">
-        <div className="up dim mb-4">Sale closing costs</div>
-        <CloseoutMoney value={salesFees} onChange={setSalesFees}/>
-        <div className="tiny dim mt-4">Lump sum — commission + title, escrow, recording, transfer tax, etc.</div>
-      </div>
       <div className="grid g-3 mb-8">
+        <div>
+          <div className="up dim mb-4">Sale closing costs</div>
+          <CloseoutMoney value={salesFees} onChange={setSalesFees}/>
+          <div className="tiny dim mt-4">Lump sum — commission + title, escrow, recording, transfer tax, etc.</div>
+        </div>
         <div><div className="up dim mb-4">Seller concessions</div><CloseoutMoney value={salesCredits} onChange={setSalesCredits}/></div>
         <div><div className="up dim mb-4">Loan payoff at closing</div><CloseoutMoney value={loanPayoff} onChange={setLoanPayoff}/></div>
-        <div><div className="up dim mb-4">1031 funds rolled out</div><CloseoutMoney value={exchangeFunds} onChange={setExchangeFunds}/></div>
       </div>
       <div className="grid g-3 mb-8">
-        <div><div className="up dim mb-4">Due-diligence fee collected</div><CloseoutMoney value={ddCollected} onChange={setDdCollected}/></div>
-        <div><div className="up dim mb-4">Buyer earnest money</div><CloseoutMoney value={saleEMD} onChange={setSaleEMD}/></div>
-        <div></div>
+        <div><div className="up dim mb-4">1031 funds rolled out</div><CloseoutMoney value={exchangeFunds} onChange={setExchangeFunds}/></div>
+        <div><div className="up dim mb-4">Sale credits received</div><CloseoutMoney value={saleCreditsRecd} onChange={setSaleCreditsRecd}/></div>
+        <div>
+          <div className="up dim mb-4">Cash received at closing (actual)</div>
+          <CloseoutMoney value={cashBack} onChange={setCashBack}/>
+          <div className="tiny dim mt-4">From the HUD — what actually hit the bank.</div>
+        </div>
       </div>
-      <div className="tiny dim mb-16">Closing costs &amp; seller concessions reduce net profit. The DD fee you collected adds to it. Loan payoff, 1031 funds &amp; buyer earnest affect cash at closing, not profit.</div>
+      <div className="tiny dim mb-16">Closing costs &amp; seller concessions reduce net profit. The DD fee you collected and credits received (tax prorations etc.) add to it. Loan payoff, 1031 funds &amp; buyer earnest affect cash at closing, not profit.</div>
 
       {/* COST BASIS CONFIRM */}
-      <div className="up dim mb-8">Confirm cost basis</div>
+      <div className="up dim mb-8">Other Costs</div>
       <div className="grid g-2 mb-4">
         <div>
           <div className="up dim mb-4">Rehab spent</div>
@@ -356,44 +384,68 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
       </div>
       <div className="grid g-2 mb-4">
         <div>
-          <div className="up dim mb-4">Rehab funds from lender (draws)</div>
+          <div className="up dim mb-4">Rehab funds drawn</div>
           <CloseoutMoney value={rehabDraws} onChange={setRehabDraws}/>
-          <div className="tiny dim mt-4">Draws you requested from the lender for rehab. Repaid inside the loan payoff — they don't change profit, but show your out-of-pocket rehab on the P&L.</div>
+          <div className="tiny dim mt-4">Draws from the lender for rehab. Repaid inside the loan payoff — they don't change profit, but show your out-of-pocket rehab.</div>
+        </div>
+        <div><div className="up dim mb-4">Atmore loan payoff</div><CloseoutMoney value={atmorePayoff} onChange={setAtmorePayoff}/>
+          <div className="tiny dim mt-4">Only the amount above the principal (the interest fee) counts as a cost.</div>
+        </div>
+      </div>
+      <div className="grid g-2 mb-4">
+        <div>
+          <div className="up dim mb-4">Interest credit</div>
+          <CloseoutMoney value={interestCredit} onChange={setInterestCredit}/>
+          <div className="tiny dim mt-4">Credit received back after closing on the loan — reduces interest cost.</div>
+        </div>
+        <div><div className="up dim mb-4">Atmore loan principal</div><CloseoutMoney value={atmorePrincipal} onChange={setAtmorePrincipal}/>
+          <div className="tiny dim mt-4">Nets to zero at payoff.</div>
+        </div>
+      </div>
+      <div className="grid g-2 mb-4">
+        <div>
+          <div className="up dim mb-4">Other fees</div>
+          <CloseoutMoney value={otherFees} onChange={setOtherFees}/>
+          <div className="tiny dim mt-4">Anything else that hit this deal — counted as a cost.</div>
         </div>
         <div></div>
       </div>
-      <div className="up dim mb-8" style={{marginTop: 4}}>Atmore loan <span className="dim" style={{textTransform:'none',letterSpacing:0}}>(if Atmore fronted funds)</span></div>
-      <div className="grid g-2 mb-4">
-        <div><div className="up dim mb-4">Atmore loan principal</div><CloseoutMoney value={atmorePrincipal} onChange={setAtmorePrincipal}/></div>
-        <div><div className="up dim mb-4">Atmore loan payoff</div><CloseoutMoney value={atmorePayoff} onChange={setAtmorePayoff}/></div>
-      </div>
-      <div className="tiny dim mb-8">{atmorePay > 0
-        ? <>Payoff {fmtMoney(atmorePay)} − principal {fmtMoney(atmorePrin)} = <b style={{color:'var(--ink-2)'}}>{fmtMoney(atmoreInterest)}</b> interest counted as a cost. Principal nets to zero.</>
-        : <>Enter what Atmore lent and what you repaid — only the difference (the interest fee) hits profit. Principal in/out nets to zero.</>}</div>
-      <div className="mb-4">
-        <div className="up dim mb-4">Purchase closing costs</div>
-        <CloseoutMoney value={purchaseFees} onChange={setPurchaseFees}/>
-      </div>
-      <div className="grid g-2 mb-4">
-        <div><div className="up dim mb-4">Purchase credits</div><CloseoutMoney value={purchaseCredits} onChange={setPurchaseCredits}/></div>
-        <div></div>
-      </div>
-      <div className="tiny dim mb-16">Purchase price {fmtMoney(purchase)} is pulled from the property record. Closing costs add to your cost basis; credits reduce it.</div>
+      <div className="tiny dim mb-16">Purchase price {fmtMoney(purchase)}, closing costs {fmtMoney(pFees)}, credits {fmtMoney(pCredits)} and loan funded {fmtMoney(loanFundedAmt)} are pulled from the acquisition side — edit them there.</div>
 
       {/* LIVE SUMMARY */}
       <div className="mb-16 col gap-8" style={{padding: '14px 16px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
-        <CloseoutSummaryRow label="Cost basis" value={fmtMoney(costBasis)} strong/>
-        <CloseoutSummaryRow label="Sale price" value={fmtMoney(price)}/>
-        {closeCosts > 0 && <CloseoutSummaryRow label="− Closing costs" value={'−' + fmtMoney(closeCosts)} color="var(--brick)"/>}
-        {concessions > 0 && <CloseoutSummaryRow label="− Seller concessions" value={'−' + fmtMoney(concessions)} color="var(--brick)"/>}
-        {ddColl > 0 && <CloseoutSummaryRow label="+ DD fee collected" value={'+' + fmtMoney(ddColl)} color="var(--sage)"/>}
-        {(closeCosts > 0 || concessions > 0 || ddColl > 0) && <CloseoutSummaryRow label="= Net proceeds" value={fmtMoney(netProceeds)} strong/>}
-        {atmoreInterest > 0 && <CloseoutSummaryRow label="− Atmore loan interest" value={'−' + fmtMoney(atmoreInterest)} color="var(--brick)"/>}
-        {draws > 0 && <CloseoutSummaryRow label="Rehab draws from lender" value={fmtMoney(draws)} sub={'out-of-pocket rehab ' + fmtMoney(outOfPocketRehab)}/>}
+        {/* Acquisition side */}
+        <div className="up dim" style={{fontSize: 10, letterSpacing: '.1em'}}>Acquisition side</div>
+        <CloseoutSummaryRow label="Purchase price" value={fmtMoney(purchase)}/>
+        {ddPaid > 0 && <CloseoutSummaryRow label="− DD paid" value={'−' + fmtMoney(ddPaid)} color="var(--brick)"/>}
+        <CloseoutSummaryRow label="− Cash to close" value={'−' + fmtMoney(cashToCloseAmt)} color="var(--brick)" sub={cashToCloseAmt === 0 ? 'enter it in the Acquisition dialog' : null}/>
+
         <div className="divider" style={{margin: '2px 0'}}/>
-        <CloseoutSummaryRow label="Gross profit" value={fmtMoney(grossProfit, {sign: true})} sub="price − basis" color={grossProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
-        <CloseoutSummaryRow label="Net profit" value={fmtMoney(netProfit, {sign: true})} big color={netProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
-        {payoff > 0 && <CloseoutSummaryRow label="Net cash at closing" value={fmtMoney(netCash)} sub="after loan payoff"/>}
+
+        {/* Sales side */}
+        <div className="up dim" style={{fontSize: 10, letterSpacing: '.1em'}}>Sales side</div>
+        <CloseoutSummaryRow label="Sales price" value={fmtMoney(price)}/>
+        {ddColl > 0 && <CloseoutSummaryRow label="+ DD collected" value={'+' + fmtMoney(ddColl)} color="var(--sage)"/>}
+        <CloseoutSummaryRow label="+ Cash received" value={'+' + fmtMoney(cashBackAmt)} color="var(--sage)" sub={cashBackAmt === 0 ? 'enter "Cash received at closing" above' : null}/>
+
+        <div className="divider" style={{margin: '2px 0'}}/>
+
+        {/* Other fees */}
+        <div className="up dim" style={{fontSize: 10, letterSpacing: '.1em'}}>Other fees</div>
+        {draws > 0 && <CloseoutSummaryRow label="Rehab funds drawn" value={fmtMoney(draws)} sub="repaid in payoff — only out-of-pocket rehab counts below"/>}
+        {outOfPocketRehab > 0 && <CloseoutSummaryRow label="− Rehab fees (out of pocket)" value={'−' + fmtMoney(outOfPocketRehab)} color="var(--brick)"/>}
+        {Math.abs(num(interest)) > 0 && <CloseoutSummaryRow label="− Interest" value={'−' + fmtMoney(Math.abs(num(interest)))} color="var(--brick)"/>}
+        {intCredit > 0 && <CloseoutSummaryRow label="+ Interest credit" value={'+' + fmtMoney(intCredit)} color="var(--sage)"/>}
+        {otherFeesAmt > 0 && <CloseoutSummaryRow label="− Other fees" value={'−' + fmtMoney(otherFeesAmt)} color="var(--brick)"/>}
+        {atmoreInterest > 0 && <CloseoutSummaryRow label="− Atmore loan interest" value={'−' + fmtMoney(atmoreInterest)} color="var(--brick)"/>}
+        <CloseoutSummaryRow label="= Other fees total" value={'−' + fmtMoney(otherFeesTotal)} strong/>
+
+        <div className="divider" style={{margin: '2px 0'}}/>
+
+        {/* Bottom line */}
+        <CloseoutSummaryRow label="Net profit" value={fmtMoney(cashNetProfit, {sign: true})} big sub="cash received + DD collected − cash to close − DD paid − other fees" color={cashNetProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
+        {!haveCashFigures && <div className="tiny dim">Enter actual cash-to-close and cash-received figures for an accurate number.</div>}
+
       </div>
 
       <div className="mb-16">
@@ -413,15 +465,19 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
             const payload = {
               salesDate,
               saleSigningDate: saleSigningDate || null,
+              buyerDDDate: buyerDD || null,
+              saleAttorney: attorney,
               saleSigningTime: saleSigningTime || null,
               salesPrice: toStore(salesPrice),
               listPrice: toStore(listPrice),
               salesFees: toStore(salesFees),
               saleFeeItems: [],
               salesCredits: toStore(salesCredits),
+              saleCreditsReceived: toStore(saleCreditsRecd),
               purchaseFees: toStore(purchaseFees),
               purchaseFeeItems: [],
               purchaseCredits: toStore(purchaseCredits),
+              purchaseLoan: toStore(loanFunded),
               salesLoanPayoff: toStore(loanPayoff),
               atmoreLoanPrincipal: toStore(atmorePrincipal),
               atmoreLoanPayoff: toStore(atmorePayoff),
@@ -430,8 +486,11 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
               saleEarnest: toStore(saleEMD),
               rehab: toStore(rehab),
               rehabDraws: toStore(rehabDraws),
+              interestCredit: toStore(interestCredit),
+              otherFees: toStore(otherFees),
+              cashReceivedAtClose: toStore(cashBack),
               interest: toStore(interest),
-              grossProfit: salesPrice === '' ? null : Math.round(netProfit),
+              grossProfit: salesPrice === '' ? null : Math.round(haveCashFigures ? cashNetProfit : netProfit),
               note,
             };
             if (editMode) updateCloseout(property.id, payload);
@@ -545,7 +604,7 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
   const [concessions, setConcessions] = usePS(init ? String(offerTotalConcessions(init) || '') : '');
   const [closeDate, setCloseDate]     = usePS(init ? (init.closeDate || '') : '');
   const [contingencies, setContingencies] = usePS(init ? (init.contingencies || []) : []);
-  const [attorney, setAttorney]       = usePS(p.attorney || '');
+  const [attorney, setAttorney]       = usePS(p.saleAttorney || '');
   const [attorneyContact, setAttorneyContact] = usePS(p.attorneyContact || '');
   const [buyerDD, setBuyerDD]         = usePS(p.buyerDDDate || (init && init.ddDeadline) || '');
   const [saleSigningDate, setSaleSigningDate] = usePS(p.saleSigningDate || '');

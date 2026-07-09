@@ -456,6 +456,7 @@ function AcquisitionDialog({ property, onClose }) {
   const [purchaseLoan, setPurchaseLoan] = useCapState(p.purchaseLoan != null ? String(Math.abs(p.purchaseLoan)) : '');
   const [acqDD, setAcqDD]             = useCapState(p.acqDDFee != null ? String(Math.abs(p.acqDDFee)) : '');
   const [rehabFunds, setRehabFunds]   = useCapState(p.rehabFunds != null ? String(Math.abs(p.rehabFunds)) : '');
+  const [cashToClose, setCashToClose] = useCapState(p.cashToClose != null ? String(Math.abs(p.cashToClose)) : '');
   const [rehab, setRehab]             = useCapState(p.rehab != null ? String(Math.abs(p.rehab)) : '');
   const [acqExchangeFunds, setAcqExchangeFunds] = useCapState(p.acqExchangeFunds != null ? String(Math.abs(p.acqExchangeFunds)) : '');
   const [attorney, setAttorney]       = useCapState(p.attorney || '');
@@ -467,7 +468,7 @@ function AcquisitionDialog({ property, onClose }) {
   const credits = Math.abs(capNum(purchaseCredits));
   const exchange = Math.abs(capNum(acqExchangeFunds));
   const loanFunds = Math.abs(capNum(purchaseLoan));
-  const cashToClose = price + fees - credits - Math.abs(capNum(earnest)) - Math.abs(capNum(acqDD)) - exchange - loanFunds;
+  const cashToCloseEst = price + fees - credits - Math.abs(capNum(earnest)) - Math.abs(capNum(acqDD)) - exchange - loanFunds;
 
   function save() {
     updateProperty(p.id, {
@@ -483,7 +484,7 @@ function AcquisitionDialog({ property, onClose }) {
       purchaseLoan: purchaseLoan !== '' ? -Math.abs(parseFloat(purchaseLoan)) : null,
       acqDDFee: acqDD !== '' ? Math.abs(parseFloat(acqDD)) : null,
       rehabFunds: capToStore(rehabFunds),
-      rehab: capToStore(rehab),
+      cashToClose: capToStore(cashToClose),
       acqExchangeFunds: acqExchangeFunds !== '' ? Math.abs(parseFloat(acqExchangeFunds)) : null,
       attorney, attorneyContact,
     });
@@ -501,41 +502,31 @@ function AcquisitionDialog({ property, onClose }) {
       </div>
 
       <div className="up dim mb-8">Contract</div>
-      <div className="grid g-2 mb-8">
+      <div className="grid g-3 mb-8">
         <CapField label="Purchase price"><CapMoney value={purchasePrice} onChange={setPurchasePrice} autoFocus/></CapField>
+        <CapField label="Due diligence" hint="Non-refundable fee paid to seller up front."><CapMoney value={acqDD} onChange={setAcqDD}/></CapField>
         <CapField label="Earnest money"><CapMoney value={earnest} onChange={setEarnest}/></CapField>
       </div>
-      <div className="grid g-2 mb-16">
-        <CapField label="Under contract date"><input className="input" type="date" value={signingDate} onChange={e => { setSigningDate(e.target.value); const d = parseInt(ddDays, 10); if (e.target.value && !isNaN(d)) setDdDate(capAddDaysISO(e.target.value, d)); }} style={{width: '100%'}}/></CapField>
-        <CapField label="Due-diligence deadline" hint="Pick a date — or type the number of days from the under-contract date and the date fills itself in.">
-          <div className="row gap-6">
-            <input className="input" type="date" value={ddDate} onChange={e => { setDdDate(e.target.value); if (signingDate && e.target.value) setDdDays(String(capDaysBetween(signingDate, e.target.value))); }} style={{flex: 1, minWidth: 0}}/>
-            <input className="input mono" type="number" min="0" placeholder="days" value={ddDays} title="Days from under-contract date"
-              onChange={e => { setDdDays(e.target.value); const d = parseInt(e.target.value, 10); const base = signingDate || (typeof Store !== 'undefined' && Store.state.today) || new Date().toISOString().slice(0, 10); if (!isNaN(d)) setDdDate(capAddDaysISO(base, d)); }}
-              style={{width: 70}}/>
-          </div>
-        </CapField>
-      </div>
-
-      <div className="up dim mb-8">Closing</div>
       <div className="grid g-3 mb-8">
+        <CapField label="DD deadline"><input className="input" type="date" value={ddDate} onChange={e => setDdDate(e.target.value)} style={{width: '100%'}}/></CapField>
         <CapField label="Closing date"><input className="input" type="date" value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)} style={{width: '100%'}}/></CapField>
         <CapField label="Closing time"><input className="input" type="time" value={closingTime} onChange={e => setClosingTime(e.target.value)} style={{width: '100%'}}/></CapField>
-        <CapField label="Rehab budget"><CapMoney value={rehabFunds} onChange={setRehabFunds}/></CapField>
-      </div>
-      <div className="grid g-3 mb-8">
-        <CapField label="Purchase closing costs" hint="Lump sum — title, escrow, lender, recording, transfer tax, etc."><CapMoney value={purchaseFees} onChange={setPurchaseFees}/></CapField>
-        <CapField label="Purchase credits" hint="Credits received at purchase — reduces cost basis."><CapMoney value={purchaseCredits} onChange={setPurchaseCredits}/></CapField>
-        <CapField label="Due-diligence fee paid" hint="Non-refundable fee paid to seller up front. Already part of the price — recorded for the deal history."><CapMoney value={acqDD} onChange={setAcqDD}/></CapField>
-      </div>
-      <div className="grid g-3 mb-8">
-        <CapField label="Loan funds" hint="New loan at purchase — reduces cash to close."><CapMoney value={purchaseLoan} onChange={setPurchaseLoan}/></CapField>
-        <CapField label="Rehab spent to date" hint="Actuals so far — feeds cost basis and the P&L."><CapMoney value={rehab} onChange={setRehab}/></CapField>
-        <CapField label="1031 funds brought in" hint="Replacement-side exchange proceeds applied to this purchase — reduces cash to close."><CapMoney value={acqExchangeFunds} onChange={setAcqExchangeFunds}/></CapField>
       </div>
       <div className="grid g-2 mb-16">
         <CapField label="Closing attorney"><input className="input" value={attorney} onChange={e => setAttorney(e.target.value)} placeholder="e.g. Hankin & Pack PLLC" style={{width: '100%'}}/></CapField>
-        <CapField label="Attorney contact"><input className="input" value={attorneyContact} onChange={e => setAttorneyContact(e.target.value)} placeholder="phone or email" style={{width: '100%'}}/></CapField>
+        <div></div>
+      </div>
+
+      <div className="up dim mb-8">Financing &amp; cost basis</div>
+      <div className="grid g-3 mb-8">
+        <CapField label="Purchase closing costs" hint="Lump sum — title, escrow, lender, recording, transfer tax, etc."><CapMoney value={purchaseFees} onChange={setPurchaseFees}/></CapField>
+        <CapField label="Purchase credits" hint="Credits received at purchase — reduces cost basis."><CapMoney value={purchaseCredits} onChange={setPurchaseCredits}/></CapField>
+        <CapField label="Rehab budget"><CapMoney value={rehabFunds} onChange={setRehabFunds}/></CapField>
+      </div>
+      <div className="grid g-3 mb-16">
+        <CapField label="Loan funds" hint="New loan at purchase — reduces cash to close."><CapMoney value={purchaseLoan} onChange={setPurchaseLoan}/></CapField>
+        <CapField label="1031 funds brought in" hint="Replacement-side exchange proceeds applied to this purchase — reduces cash to close."><CapMoney value={acqExchangeFunds} onChange={setAcqExchangeFunds}/></CapField>
+        <CapField label="Cash to close (actual)" hint="From the HUD — what you actually brought to closing."><CapMoney value={cashToClose} onChange={setCashToClose}/></CapField>
       </div>
 
       <div className="row between items-center mb-16" style={{padding: '12px 14px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
@@ -543,7 +534,7 @@ function AcquisitionDialog({ property, onClose }) {
           <div className="small dim">Est. cash to close</div>
           <div className="tiny dim">price + closing costs − credits − earnest − DD fee − loan funds − 1031 funds</div>
         </div>
-        <div className="serif" style={{fontSize: 22, fontWeight: 500}}>{fmtMoney(cashToClose)}</div>
+        <div className="serif" style={{fontSize: 22, fontWeight: 500}}>{fmtMoney(cashToCloseEst)}</div>
       </div>
 
       <CapField label="Note (optional)"><textarea className="input" rows="2" value={note} onChange={e => setNote(e.target.value)} style={{width: '100%', resize: 'vertical', fontFamily: 'inherit'}} placeholder="Anything notable about this acquisition…"/></CapField>

@@ -1168,10 +1168,10 @@ const STAGE_PERSIST_KEYS = [
   'purchaseDate','purchasePrice','purchaseFees','purchaseCredits','purchaseFeeItems','saleFeeItems','rehabFunds','rehab','interest','listPrice',
   'acqEarnest','acqDDFee','acqExchangeFunds',
   'salesDate','saleSigningDate','saleSigningTime','salesPrice','salesFees','salesCredits','salesLoanPayoff','saleDDCollected','saleEarnest',
-  'rehabDraws',
+  'rehabDraws','saleCreditsReceived',
   'atmoreLoanPrincipal','atmoreLoanPayoff',
-  'exchangeFunds','grossProfit','failedReason',
-  'attorney','attorneyContact','buyerDDDate','expectedCloseDate','contractDate',
+  'exchangeFunds','interestCredit','otherFees','cashToClose','cashReceivedAtClose','grossProfit','failedReason',
+  'attorney','attorneyContact','saleAttorney','buyerDDDate','expectedCloseDate','contractDate',
 ];
 
 // Fields a property is expected to have once it reaches a given stage.
@@ -1974,7 +1974,7 @@ function goUnderContract(propId, { offerId = null, terms = {}, closing = {}, not
       if (offer.offerPrice != null) p.salesPrice = offer.offerPrice;
       const concTotal = offerTotalConcessions(offer);
       if (concTotal > 0) p.salesCredits = concTotal;
-      if (c.attorney) p.attorney = c.attorney;
+      if (c.attorney) p.saleAttorney = c.attorney;
       if (c.attorneyContact) p.attorneyContact = c.attorneyContact;
       if (c.buyerDDDate) p.buyerDDDate = c.buyerDDDate;
       else if (offer.dueDiligenceDate) p.buyerDDDate = offer.dueDiligenceDate;

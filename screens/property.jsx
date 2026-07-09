@@ -248,6 +248,7 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   const closeCosts = Math.abs(p.salesFees || 0);
   const concessions = Math.abs(p.salesCredits || 0);
   const ddCollected = Math.abs(p.saleDDCollected || 0);
+  const saleCreditsRecd = Math.abs(p.saleCreditsReceived || 0);
   const saleEMD = Math.abs(p.saleEarnest || 0);
   const payoff = Math.abs(p.salesLoanPayoff || 0);
   // Atmore loan: principal in nets against payoff out; only the interest fee is a cost.
@@ -257,12 +258,14 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
 
   // All-in cost out. Loan payoff is NOT here — the borrowed money is already
   // inside the purchase price; only its interest is a cost.
-  const costBasis = purchase + fees - credits + rehab + interest + atmoreInterest;
+  const interestCreditAmt = Math.abs(p.interestCredit || 0);
+  const otherFeesAmt = Math.abs(p.otherFees || 0);
+  const costBasis = purchase + fees - credits + rehab + interest - interestCreditAmt + otherFeesAmt + atmoreInterest;
   // Money in. DD fee collected up front is income (it's deducted from line 603
   // precisely because it was already received). EMD nets through closing.
-  const netProceeds = salesPrice != null ? salesPrice - closeCosts - concessions + ddCollected : null;
+  const netProceeds = salesPrice != null ? salesPrice - closeCosts - concessions + ddCollected + saleCreditsRecd : null;
   const netProfit = salesPrice != null ? netProceeds - costBasis : null;
-  const netCashAtClose = salesPrice != null ? (salesPrice - closeCosts - concessions) - payoff : null;
+  const netCashAtClose = salesPrice != null ? (salesPrice - closeCosts - concessions + saleCreditsRecd) - payoff : null;
   const sold = p.statusCode === 'I';
 
   return (
@@ -387,6 +390,10 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
                 {ddCollected > 0 && <div className="row between items-center">
                   <div className="small mid">+ Due-diligence fee collected</div>
                   <div className="mono small" style={{color: 'var(--sage)'}}>+{fmtMoney(ddCollected)}</div>
+                </div>}
+                {saleCreditsRecd > 0 && <div className="row between items-center">
+                  <div className="small mid">+ Sale credits received</div>
+                  <div className="mono small" style={{color: 'var(--sage)'}}>+{fmtMoney(saleCreditsRecd)}</div>
                 </div>}
                 <div className="divider" style={{margin: '3px 0'}}/>
                 <div className="row between items-center">
@@ -740,20 +747,21 @@ const TX_COLUMNS = [
     render: t => <span className="mono small dim">{t.acct}</span> },
   { key: 'desc',     label: 'Description', alwaysShow: true,
     render: t => <span className="small">{t.desc}{t.split && <Tag tone="ghost" style={{marginLeft: 6}}>split</Tag>}</span> },
-  { key: 'payee',    label: 'Payee',
+  { key: 'payee',    label: 'Payee',       default: true,
     render: t => <span className="small dim">{t.payee || '—'}</span> },
   { key: 'category', label: 'Category',    default: true,
     render: t => <Tag tone="ghost">{t.category || '—'}</Tag> },
   { key: 'amount',   label: 'Amount',      alwaysShow: true, numeric: true,
     render: t => <span className="mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span> },
 ];
-const TX_COLS_KEY = 'atmore-tx-columns-v1';
+const TX_COLS_KEY = 'atmore-tx-columns-v2';
 
 function TransactionsPanel({ p, tx }) {
   const store = useStore();
   const [editing, setEditing] = useState(null);
   const [splitting, setSplitting] = useState(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [sort, setSort] = useState({ key: 'date', dir: 'desc' });
   const [visibleCols, setVisibleCols] = useState(() => {
     try { const saved = localStorage.getItem(TX_COLS_KEY); if (saved) return JSON.parse(saved); } catch (e) {}
     return TX_COLUMNS.filter(c => c.default || c.alwaysShow).map(c => c.key);
@@ -791,7 +799,14 @@ function TransactionsPanel({ p, tx }) {
       }));
   });
   const rows = [...tx.map(t => ({ ...t, split: false })), ...splitRows]
-    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    .sort((a, b) => {
+      const { key, dir } = sort;
+      let cmp;
+      if (key === 'amount') cmp = (a.amount || 0) - (b.amount || 0);
+      else cmp = String(a[key] || '').localeCompare(String(b[key] || ''));
+      if (cmp === 0) cmp = (a.date || '').localeCompare(b.date || '');
+      return dir === 'asc' ? cmp : -cmp;
+    });
 
   if (rows.length === 0) return (
     <Card><CardHead title="Transactions"/><div className="card__body">
@@ -861,7 +876,14 @@ function TransactionsPanel({ p, tx }) {
       </div>
       <table className="tbl">
         <thead>
-          <tr>{activeCols.map(c => <th key={c.key} className={c.numeric ? 'num' : undefined}>{c.label}</th>)}</tr>
+          <tr>{activeCols.map(c => (
+            <th key={c.key} className={c.numeric ? 'num' : undefined}
+              onClick={() => setSort(s => ({ key: c.key, dir: s.key === c.key && s.dir === 'desc' ? 'asc' : 'desc' }))}
+              style={{cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap'}}
+              title="Click to sort">
+              {c.label}{sort.key === c.key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+            </th>
+          ))}</tr>
         </thead>
         <tbody>
           {rows.map(t => (

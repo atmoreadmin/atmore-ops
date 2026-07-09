@@ -5,6 +5,7 @@
 function TaxBinderScreen() {
   const store = useStore();
   const [year, setYear] = useState(parseInt(TODAY().slice(0,4)));
+  const [soldSort, setSoldSort] = useState({ key: 'salesDate', dir: 'desc' });
   const yearStr = String(year);
 
   // Rent collected — sum paid amount where paidOn falls in the year
@@ -205,12 +206,43 @@ function TaxBinderScreen() {
         ) : (
           <table className="tbl">
             <thead>
-              <tr><th>Property</th><th>Sold date</th><th className="num">Sale price</th><th className="num">Cost basis</th><th className="num">Gross profit</th><th>Vesting LLC</th></tr>
+              <tr>{[
+                ['address', 'Property', false],
+                ['salesDate', 'Sold date', false],
+                ['salesPrice', 'Sale price', true],
+                ['cost', 'Cost basis', true],
+                ['profit', 'Net profit', true],
+                ['llc', 'Vesting LLC', false],
+              ].map(([k, label, numeric]) => (
+                <th key={k} className={numeric ? 'num' : undefined}
+                  onClick={() => setSoldSort(s => ({ key: k, dir: s.key === k && s.dir === 'desc' ? 'asc' : 'desc' }))}
+                  style={{cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap'}} title="Click to sort">
+                  {label}{soldSort.key === k ? (soldSort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+                </th>
+              ))}</tr>
             </thead>
             <tbody>
-              {soldThisYear.map(p => {
+              {[...soldThisYear].sort((a, b) => {
+                const val = p => {
+                  const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
+                  const profit = p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost;
+                  switch (soldSort.key) {
+                    case 'address': return (p.address || '').toLowerCase();
+                    case 'salesDate': return p.salesDate || '';
+                    case 'salesPrice': return p.salesPrice || 0;
+                    case 'cost': return cost;
+                    case 'profit': return profit;
+                    case 'llc': return (p.vestingLLC || '').toLowerCase();
+                    default: return p.salesDate || '';
+                  }
+                };
+                const av = val(a), bv = val(b);
+                const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
+                return soldSort.dir === 'asc' ? cmp : -cmp;
+              }).map(p => {
                 const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
-                const gross = (p.salesPrice || 0) - cost;
+                // Use the close-out's saved profit (cash-basis when actuals were entered); fall back to the rough estimate.
+                const gross = p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost;
                 return (
                   <tr key={p.id} onClick={() => nav('/property/'+p.id)}>
                     <td><span className="addr">{p.address}</span><div className="addr-sub">{p.type}</div></td>

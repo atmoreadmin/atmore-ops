@@ -70,6 +70,7 @@ const SHEET_SCHEMA = {
       { key: 'saleDDCollected',  label: 'DD Fee Collected',    type: 'money',  notes: 'Due diligence fee collected from buyer — counts as income' },
       { key: 'saleEarnest',      label: 'Buyer Earnest (Sale)',type: 'money',  notes: 'Buyer EMD — nets through closing, informational' },
       { key: 'exchangeFunds',    label: '1031 Funds Rolled Out (Sale)', type: 'money', notes: 'Relinquished side — sale proceeds rolled into the exchange when this property is sold' },
+      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'text' },
       { key: 'contractDate',     label: 'Under Contract Date', type: 'date' },
       { key: 'buyerDDDate',      label: 'Buyer DD Deadline',   type: 'date' },
       { key: 'expectedCloseDate',label: 'Expected Close Date', type: 'date' },
