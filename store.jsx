@@ -984,6 +984,21 @@ function markPaid(ledgerId, fullAmt) {
   });
 }
 
+// Settle a month at a reduced rate: lower the charge to what was actually accepted
+// and mark it fully paid. Applies to this month's row only.
+function settleReducedRent(ledgerId, newCharge) {
+  Store.update(s => {
+    const r = s.rentLedger.find(x => x.id === ledgerId);
+    if (!r) return;
+    r.originalCharge = r.originalCharge != null ? r.originalCharge : r.charge;
+    r.charge = newCharge;
+    r.reducedCharge = true;
+    r.paid = newCharge;
+    r.paidOn = s.today;
+    r.status = 'paid';
+  });
+}
+
 function markUnpaid(ledgerId) {
   Store.update(s => {
     const r = s.rentLedger.find(x => x.id === ledgerId);
@@ -1003,9 +1018,18 @@ function markUnpaid(ledgerId) {
 function autoReconcileRentForMonth(month) {
   const s = Store.state;
   if (!month) return;
-  const rows = (s.rentLedger || []).filter(r => r.month === month && (r.paid || 0) === 0 && !r.linkedTxId);
+  // Rows that could still absorb payments: unpaid AND unlinked, or auto-linked but
+  // underpaid (a second payment for the month may have arrived since the first was linked).
+  const rows = (s.rentLedger || []).filter(r => r.month === month && !r.reducedCharge && (
+    ((r.paid || 0) === 0 && !r.linkedTxId) ||
+    ((r.paid || 0) < r.charge && (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length)))
+  ));
   if (rows.length === 0) return;
-  const usedTx = new Set((s.rentLedger || []).filter(r => r.linkedTxId).map(r => r.linkedTxId));
+  const usedTx = new Set();
+  (s.rentLedger || []).forEach(r => {
+    if (r.linkedTxId) usedTx.add(r.linkedTxId);
+    (r.linkedTxIds || []).forEach(id => usedTx.add(id));
+  });
   const monthStart = month + '-01';
   const monthEnd = addMonthsISO(monthStart, 1);
   const updates = [];
@@ -1040,12 +1064,16 @@ function autoReconcileRentForMonth(month) {
       cand.push({ tx, amt, nameMatch: firstName && (tx.desc || '').toLowerCase().includes(firstName) });
     }
     if (cand.length === 0) continue;
-    // Prefer name matches and closeness to the charge.
+    // Prefer name matches and closeness to the charge. ALL matching transactions count
+    // toward the month (multiple partial payments add up) — including new ones appended
+    // to an already-linked, underpaid row.
     cand.sort((a, b) => (b.nameMatch - a.nameMatch) || (Math.abs(a.amt - r.charge) - Math.abs(b.amt - r.charge)));
-    const sum = cand.reduce((a, c) => a + c.amt, 0);
+    const existing = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds.slice() : (r.linkedTxId ? [r.linkedTxId] : []);
+    const txIds = existing.concat(cand.map(c => c.tx.id).filter(id => !existing.includes(id)));
+    if (txIds.length === existing.length && (r.paid || 0) > 0) continue; // nothing new for a linked row
     const primary = cand[0];
-    usedTx.add(primary.tx.id);
-    updates.push({ id: r.id, txId: primary.tx.id, paid: Math.min(sum, r.charge), paidOn: primary.tx.date });
+    cand.forEach(c => usedTx.add(c.tx.id));
+    updates.push({ id: r.id, txId: existing[0] || primary.tx.id, txIds, paidOn: primary.tx.date });
   }
   if (updates.length === 0) return;
   Store.update(st => {
@@ -1053,60 +1081,76 @@ function autoReconcileRentForMonth(month) {
       const r = st.rentLedger.find(x => x.id === u.id);
       if (!r) return;
       r.linkedTxId = u.txId;
-      r.paid = u.paid;
-      r.paidOn = u.paidOn || st.today;
-      r.status = r.paid >= r.charge ? 'paid' : 'partial';
+      r.linkedTxIds = u.txIds;
+      if (!r.paidOn) r.paidOn = u.paidOn || st.today;
     });
   });
+  // Amounts are recomputed from the full linked set in syncLinkedRentAmounts.
 }
 
-// Re-validate auto-linked rent rows: if the linked transaction was deleted or moved to a
-// different month, unlink the charge and reset it to unpaid so it can re-match correctly.
+// Re-validate auto-linked rent rows: drop linked transactions that were deleted or moved
+// to a different month; if none remain, reset the charge to unpaid so it can re-match.
 function validateRentLinks() {
   const s = Store.state;
   const txById = new Map((s.transactions || []).map(t => [t.id, t]));
-  const stale = (s.rentLedger || []).filter(r => {
-    if (!r.linkedTxId) return false;
-    const tx = txById.get(r.linkedTxId);
-    if (!tx) return true;                                   // transaction deleted
-    if ((tx.date || '').slice(0, 7) !== r.month) return true; // transaction moved to another month
-    return false;
-  });
-  if (stale.length === 0) return;
+  const okTx = (id, month) => { const tx = txById.get(id); return !!tx && (tx.date || '').slice(0, 7) === month; };
+  const changes = [];
+  for (const r of (s.rentLedger || [])) {
+    const ids = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds : (r.linkedTxId ? [r.linkedTxId] : []);
+    if (ids.length === 0) continue;
+    const valid = ids.filter(id => okTx(id, r.month));
+    if (valid.length === ids.length && r.linkedTxIds && r.linkedTxIds.length) continue;
+    if (valid.length === ids.length && !r.linkedTxIds) { changes.push({ id: r.id, valid }); continue; } // migrate legacy single link to array
+    changes.push({ id: r.id, valid });
+  }
+  if (changes.length === 0) return;
   Store.update(st => {
     const curMonth = st.today.slice(0, 7);
-    stale.forEach(sr => {
-      const r = st.rentLedger.find(x => x.id === sr.id);
+    changes.forEach(ch => {
+      const r = st.rentLedger.find(x => x.id === ch.id);
       if (!r) return;
-      r.linkedTxId = null; r.paid = 0; r.paidOn = null;
-      r.status = r.month < curMonth ? 'late' : 'upcoming';
+      if (ch.valid.length === 0) {
+        r.linkedTxId = null; r.linkedTxIds = []; r.paid = 0; r.paidOn = null;
+        r.status = r.month < curMonth ? 'late' : 'upcoming';
+      } else {
+        r.linkedTxIds = ch.valid;
+        r.linkedTxId = ch.valid[0];
+      }
     });
   });
 }
 
-// Keep auto-linked rent rows in sync with their transaction's CURRENT amount, so editing a
-// transaction's amount updates the payment (e.g. a $3,100 partial corrected to a $3,200 full).
+// Keep auto-linked rent rows in sync with their transactions' CURRENT amounts, summing
+// across ALL linked transactions (multiple payments in a month add up).
 function syncLinkedRentAmounts() {
   const s = Store.state;
   const txById = new Map((s.transactions || []).map(t => [t.id, t]));
   const fixes = [];
   for (const r of (s.rentLedger || [])) {
-    if (!r.linkedTxId) continue;
-    const tx = txById.get(r.linkedTxId);
-    if (!tx) continue;                                  // deletion handled by validateRentLinks
-    if ((tx.date || '').slice(0, 7) !== r.month) continue; // month move handled by validateRentLinks
+    const ids = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds : (r.linkedTxId ? [r.linkedTxId] : []);
+    if (ids.length === 0) continue;
     const prop = (s.properties || []).find(p => p.id === r.propertyId);
     if (!prop) continue;
     const addrLower = (prop.address || '').toLowerCase().trim();
     const addrShort = addrLower.split(',')[0].replace(/\s*#\w+\s*$/, '').trim();
     const taggedToProp = pj => { const pl = (pj || '').toLowerCase().trim(); return pl && (pl === addrLower || pl.includes(addrShort) || addrLower.includes(pl)); };
-    let amt = 0;
-    if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
-    if (!amt && tx.splits) { const sl = tx.splits.find(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '')); if (sl && sl.amount > 0) amt = sl.amount; }
-    if (!amt) continue;
-    const newPaid = Math.min(amt, r.charge);
+    let sum = 0, anyTx = false, lastDate = null;
+    for (const id of ids) {
+      const tx = txById.get(id);
+      if (!tx) continue;                                  // deletion handled by validateRentLinks
+      if ((tx.date || '').slice(0, 7) !== r.month) continue; // month move handled by validateRentLinks
+      let amt = 0;
+      if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
+      if (!amt && tx.splits) { const sl = tx.splits.find(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '')); if (sl && sl.amount > 0) amt = sl.amount; }
+      if (!amt) continue;
+      anyTx = true;
+      sum += amt;
+      if (!lastDate || tx.date > lastDate) lastDate = tx.date;
+    }
+    if (!anyTx) continue;
+    const newPaid = Math.min(sum, r.charge);
     const newStatus = newPaid >= r.charge ? 'paid' : 'partial';
-    if (newPaid !== r.paid || newStatus !== r.status) fixes.push({ id: r.id, paid: newPaid, status: newStatus, paidOn: tx.date });
+    if (newPaid !== r.paid || newStatus !== r.status) fixes.push({ id: r.id, paid: newPaid, status: newStatus, paidOn: lastDate });
   }
   if (fixes.length === 0) return;
   Store.update(st => {
@@ -1613,7 +1657,10 @@ function txSplitsForProperty(propAddr) {
 function linkLedgerToTransaction(ledgerId, txId) {
   Store.update(s => {
     const r = s.rentLedger.find(x => x.id === ledgerId);
-    if (r) r.linkedTxId = txId;
+    if (!r) return;
+    r.linkedTxIds = r.linkedTxIds || (r.linkedTxId ? [r.linkedTxId] : []);
+    if (!r.linkedTxIds.includes(txId)) r.linkedTxIds.push(txId);
+    r.linkedTxId = r.linkedTxIds[0];
   });
 }
 function findMatchingTxForLedger(ledger) {
@@ -2751,7 +2798,7 @@ Object.assign(window, {
   Store, useStore, TODAY,
   getProperty, getPropertyByAddr, getTenant, getTenantsForProperty, getActiveTenants,
   getLedgerForMonth, ensureLedgerForMonth, getLedgerForTenant, dedupeRentLedger, getTxForProperty, untaggedTransactions, getCurrentMonth,
-  markPaid, markUnpaid, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
+  markPaid, markUnpaid, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,

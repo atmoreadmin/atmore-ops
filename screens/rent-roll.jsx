@@ -203,8 +203,19 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                     {owed > 0 ? (
                       <div>
                         <div>{fmtMoney(owed)}</div>
-                        {lateFee > 0 && <div className="tiny dim" style={{fontWeight: 400}}>incl. {fmtMoney(lateFee)} fee</div>}
+                        {lateFee > 0 && (
+                          <div className="tiny dim" style={{fontWeight: 400}}>
+                            incl. {fmtMoney(lateFee)} fee · <span style={{color: 'var(--blue)', cursor: 'pointer', textDecoration: 'underline'}} onClick={(e) => { e.stopPropagation(); waiveLateFee(r.id, true); }}>waive</span>
+                          </div>
+                        )}
+                        {lateFee === 0 && r.lateFeeWaived && (
+                          <div className="tiny dim" style={{fontWeight: 400}}>
+                            fee waived · <span style={{color: 'var(--blue)', cursor: 'pointer', textDecoration: 'underline'}} onClick={(e) => { e.stopPropagation(); waiveLateFee(r.id, false); }}>restore</span>
+                          </div>
+                        )}
                       </div>
+                    ) : (r.lateFeeWaived || r.reducedCharge) ? (
+                      <div className="tiny dim" style={{fontWeight: 400}}>{r.reducedCharge ? 'reduced rate' : 'fee waived'}</div>
                     ) : '—'}
                   </td>
                   <td><Tag tone="ghost">{r.source || '—'}</Tag></td>
@@ -331,6 +342,7 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
   const totalOutstanding = ledgerEntry.charge - ledgerEntry.paid + lateFee;
   const [amount, setAmount] = useState(totalOutstanding);
   const [waive, setWaive] = useState(!!ledgerEntry.lateFeeWaived);
+  const [acceptLower, setAcceptLower] = useState(false);
   const [showReconcile, setShowReconcile] = useState(true);
 
   // Recompute when waive toggles
@@ -403,13 +415,24 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
           </div>
         </div>
 
+        {(ledgerEntry.paid + amount) < ledgerEntry.charge && amount > 0 && (
+          <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}>
+            <input type="checkbox" checked={acceptLower} onChange={e => setAcceptLower(e.target.checked)}/>
+            <span>Accept as paid in full at this lower rate <span className="dim">(reduces this month's charge to {fmtMoney(ledgerEntry.paid + amount)})</span></span>
+          </label>
+        )}
+
         <div className="row gap-12 items-center" style={{marginTop: 8}}>
           <span className="small dim">Recording as paid on {fmtDate(TODAY(), {full: true})}</span>
-          <div className="grow"/>
+          <div className="grow"></div>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn kind="primary" onClick={() => {
             if (waive !== !!ledgerEntry.lateFeeWaived) waiveLateFee(ledgerEntry.id, waive);
-            markPaid(ledgerEntry.id, ledgerEntry.paid + amount);
+            if (acceptLower && (ledgerEntry.paid + amount) < ledgerEntry.charge) {
+              settleReducedRent(ledgerEntry.id, ledgerEntry.paid + amount);
+            } else {
+              markPaid(ledgerEntry.id, ledgerEntry.paid + amount);
+            }
             onClose();
           }}>Record payment</Btn>
         </div>
