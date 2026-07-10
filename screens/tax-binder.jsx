@@ -225,7 +225,8 @@ function TaxBinderScreen() {
               {[...soldThisYear].sort((a, b) => {
                 const val = p => {
                   const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
-                  const profit = p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost;
+                  const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+                  const profit = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
                   switch (soldSort.key) {
                     case 'address': return (p.address || '').toLowerCase();
                     case 'salesDate': return p.salesDate || '';
@@ -241,8 +242,9 @@ function TaxBinderScreen() {
                 return soldSort.dir === 'asc' ? cmp : -cmp;
               }).map(p => {
                 const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
-                // Use the close-out's saved profit (cash-basis when actuals were entered); fall back to the rough estimate.
-                const gross = p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost;
+                // Same live-calculated net profit as the property's close-out dialog and Sale card.
+                const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+                const gross = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
                 return (
                   <tr key={p.id} onClick={() => nav('/property/'+p.id)}>
                     <td><span className="addr">{p.address}</span><div className="addr-sub">{p.type}</div></td>
