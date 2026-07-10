@@ -189,6 +189,7 @@ function RefiCard({ refi, onClick, today }) {
 }
 
 function RefiEditor({ refi, adding, kProps, onClose }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [propertyId, setPropertyId] = useState(refi?.propertyId || (kProps && kProps[0]?.id) || '');
   const [status, setStatus] = useState(refi?.status || 'applied');
   const [lender, setLender] = useState(refi?.lender || '');
@@ -272,8 +273,18 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
           <textarea className="input" rows="2" value={notes} onChange={e => setNotes(e.target.value)} style={{width: '100%'}}/>
         </div>
 
-        <div className="row gap-8 mt-8">
-          <div className="grow"/>
+        <div className="row gap-8 mt-8 items-center">
+          {!adding && !confirmDelete && (
+            <Btn kind="ghost" onClick={() => setConfirmDelete(true)} style={{color: 'var(--brick)'}}>Delete refi</Btn>
+          )}
+          {!adding && confirmDelete && (
+            <div className="row gap-8 items-center">
+              <span className="small" style={{color: 'var(--brick)'}}>Delete this refi?</span>
+              <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Keep</Btn>
+              <Btn onClick={() => { deleteRefi(refi.id); onClose(); }} style={{background: 'var(--brick)', borderColor: 'var(--brick)', color: '#fff'}}>Yes, delete</Btn>
+            </div>
+          )}
+          <div className="grow"></div>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn kind="primary" onClick={() => {
             const patch = { propertyId, status, lender, applicationDate, appraisalDate: appraisalDate || null,

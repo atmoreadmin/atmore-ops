@@ -1324,6 +1324,11 @@ function addRefi(refi) {
     s.refis.push({ id, status: 'applied', applicationDate: s.today, ...refi });
   });
 }
+function deleteRefi(id) {
+  Store.update(s => {
+    s.refis = s.refis.filter(r => r.id !== id);
+  });
+}
 
 // ─── Exchange mutations ───
 function getExchange(id) { return Store.state.exchanges.find(e => e.id === id); }
@@ -2749,7 +2754,7 @@ Object.assign(window, {
   markPaid, markUnpaid, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
-  REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi,
+  REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
   getExchange, updateExchange,
   commitImportRows,
   STATUS_LABEL, STATUS_ORDER, STAGE_LABEL_MAP,
