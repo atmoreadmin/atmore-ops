@@ -172,6 +172,7 @@ function Empty({ icon, title, sub, action }) {
 // Rent status helpers
 function rentStatusTone(s) {
   return s === 'paid' ? 'sage'
+    : s === 'overpaid' ? 'sage'
     : s === 'partial' ? 'ochre'
     : s === 'late' ? 'ochre'
     : s === 'upcoming' ? 'blue'
@@ -181,6 +182,7 @@ function rentStatusTone(s) {
 function rentStatusLabel(s) {
   return ({
     'paid': 'Paid',
+    'overpaid': 'Overpaid',
     'partial': 'Partial',
     'late': 'Late',
     'upcoming': 'Due',

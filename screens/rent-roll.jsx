@@ -16,7 +16,9 @@ function RentRollScreen() {
   // Filter
   let rows = monthLedger.slice();
   rows = rows.filter(r => {
-    if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'paid' ? (r.status !== 'paid' && r.status !== 'overpaid') : r.status !== statusFilter) return false;
+    }
     if (search) {
       const t = getTenant(r.tenantId);
       const p = getProperty(r.propertyId);
@@ -26,7 +28,7 @@ function RentRollScreen() {
     return true;
   });
   // sort: vacate first, late, partial, paid
-  const order = { 'vacate-due': 0, 'late': 1, 'partial': 2, 'paid': 3 };
+  const order = { 'vacate-due': 0, 'late': 1, 'partial': 2, 'paid': 3, 'overpaid': 4 };
   rows.sort((a,b) => (order[a.status]||9) - (order[b.status]||9));
 
   const totalCharge = monthLedger.reduce((a,r) => a + r.charge, 0);
@@ -103,7 +105,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir(key === 'charge' || key === 'paid' || key === 'owed' ? 'desc' : 'asc'); }
   }
-  const statusOrder = { 'vacate-due': 0, 'late': 1, 'partial': 2, 'paid': 3 };
+  const statusOrder = { 'vacate-due': 0, 'late': 1, 'partial': 2, 'paid': 3, 'overpaid': 4 };
   const RR_SORT = {
     tenant:   r => (getTenant(r.tenantId)?.name || '').toLowerCase(),
     property: r => (getProperty(r.propertyId)?.address || '').toLowerCase(),
@@ -141,7 +143,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
               {value: 'vacate-due', label: `Vacate due (${statusCounts['vacate-due']||0})`},
               {value: 'late', label: `Late (${statusCounts['late']||0})`},
               {value: 'partial', label: `Partial (${statusCounts['partial']||0})`},
-              {value: 'paid', label: `Paid (${statusCounts['paid']||0})`},
+              {value: 'paid', label: `Paid (${(statusCounts['paid']||0) + (statusCounts['overpaid']||0)})`},
             ]}
             onChange={setStatusFilter}/>
           <div className="grow"/>
@@ -214,6 +216,8 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                           </div>
                         )}
                       </div>
+                    ) : (r.paid || 0) > r.charge ? (
+                      <div className="tiny" style={{fontWeight: 400, color: 'var(--sage)'}}>+{fmtMoney((r.paid || 0) - r.charge)} over</div>
                     ) : (r.lateFeeWaived || r.reducedCharge) ? (
                       <div className="tiny dim" style={{fontWeight: 400}}>{r.reducedCharge ? 'reduced rate' : 'fee waived'}</div>
                     ) : '—'}
@@ -222,7 +226,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                   <td><Tag tone={rentStatusTone(r.status)}>{rentStatusLabel(r.status)}</Tag></td>
                   <td>
                     <div className="row gap-6">
-                      {r.status !== 'paid' && (
+                      {r.status !== 'paid' && r.status !== 'overpaid' && (
                         <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); onMarkPaid(r); }}>Mark paid</Btn>
                       )}
                       {r.status === 'vacate-due' && (
@@ -257,6 +261,7 @@ function YearGridView() {
   const cell = (status) => {
     if (!status) return { bg: 'transparent', color: 'var(--ink-4)', sym: '·', label: '' };
     if (status === 'paid')        return { bg: 'var(--sage-soft)', color: 'var(--sage)', sym: '✓', label: 'Paid' };
+    if (status === 'overpaid')    return { bg: 'var(--sage-soft)', color: 'var(--sage)', sym: '+', label: 'Overpaid' };
     if (status === 'upcoming')    return { bg: 'var(--blue-soft)', color: 'var(--blue)',  sym: '•', label: 'Due' };
     if (status === 'partial')     return { bg: 'var(--ochre-soft)',color: 'var(--ochre)',sym: '½', label: 'Partial' };
     if (status === 'late')        return { bg: 'var(--brick-soft)',color: 'var(--brick)',sym: '✗', label: 'Late' };
@@ -415,7 +420,7 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
           </div>
         </div>
 
-        {(ledgerEntry.paid + amount) < ledgerEntry.charge && amount > 0 && (
+        {(ledgerEntry.paid + amount) < ledgerEntry.charge && amount >= 0 && (
           <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}>
             <input type="checkbox" checked={acceptLower} onChange={e => setAcceptLower(e.target.checked)}/>
             <span>Accept as paid in full at this lower rate <span className="dim">(reduces this month's charge to {fmtMoney(ledgerEntry.paid + amount)})</span></span>

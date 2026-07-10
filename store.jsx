@@ -980,7 +980,7 @@ function markPaid(ledgerId, fullAmt) {
     if (!r) return;
     r.paid = fullAmt != null ? fullAmt : r.charge;
     r.paidOn = s.today;
-    r.status = r.paid >= r.charge ? 'paid' : 'partial';
+    r.status = r.paid > r.charge ? 'overpaid' : r.paid >= r.charge ? 'paid' : 'partial';
   });
 }
 
@@ -1127,6 +1127,7 @@ function syncLinkedRentAmounts() {
   const txById = new Map((s.transactions || []).map(t => [t.id, t]));
   const fixes = [];
   for (const r of (s.rentLedger || [])) {
+    if (r.reducedCharge) continue; // settled at an accepted lower rate — manual settle is authoritative
     const ids = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds : (r.linkedTxId ? [r.linkedTxId] : []);
     if (ids.length === 0) continue;
     const prop = (s.properties || []).find(p => p.id === r.propertyId);
@@ -1148,8 +1149,9 @@ function syncLinkedRentAmounts() {
       if (!lastDate || tx.date > lastDate) lastDate = tx.date;
     }
     if (!anyTx) continue;
-    const newPaid = Math.min(sum, r.charge);
-    const newStatus = newPaid >= r.charge ? 'paid' : 'partial';
+    // Show exactly what was collected — no cap at the charge; over-collection is flagged.
+    const newPaid = sum;
+    const newStatus = newPaid > r.charge ? 'overpaid' : newPaid >= r.charge ? 'paid' : 'partial';
     if (newPaid !== r.paid || newStatus !== r.status) fixes.push({ id: r.id, paid: newPaid, status: newStatus, paidOn: lastDate });
   }
   if (fixes.length === 0) return;
