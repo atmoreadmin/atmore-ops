@@ -1025,10 +1025,17 @@ function autoReconcileRentForMonth(month) {
     ((r.paid || 0) < r.charge && (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length)))
   ));
   if (rows.length === 0) return;
+  // Track consumption per tx — but a SPLIT transaction is consumed per property slice,
+  // so one split covering several rentals can link to each of their ledger rows.
+  const txById0 = new Map((s.transactions || []).map(t => [t.id, t]));
+  const usedKey = (txId, propId) => {
+    const tx = txById0.get(txId);
+    return (tx && tx.splits && tx.splits.length) ? txId + ':' + propId : txId;
+  };
   const usedTx = new Set();
   (s.rentLedger || []).forEach(r => {
-    if (r.linkedTxId) usedTx.add(r.linkedTxId);
-    (r.linkedTxIds || []).forEach(id => usedTx.add(id));
+    if (r.linkedTxId) usedTx.add(usedKey(r.linkedTxId, r.propertyId));
+    (r.linkedTxIds || []).forEach(id => usedTx.add(usedKey(id, r.propertyId)));
   });
   const monthStart = month + '-01';
   const monthEnd = addMonthsISO(monthStart, 1);
@@ -1045,18 +1052,15 @@ function autoReconcileRentForMonth(month) {
     // Income transactions tagged to this property (direct or via a split slice) in the month.
     const cand = [];
     for (const tx of (s.transactions || [])) {
-      if (usedTx.has(tx.id)) continue;
+      if (usedTx.has(usedKey(tx.id, r.propertyId))) continue;
       if (!(tx.date >= monthStart && tx.date < monthEnd)) continue;
-      if (!/rent/i.test(tx.category || '')) {
-        // also allow split slices whose category is rental income
-      }
       // direct tag
       let amt = 0;
       if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
-      // split slice tagged to this property
+      // split slices tagged to this property (sum ALL matching slices, not just the first)
       if (!amt && tx.splits && tx.splits.length) {
-        const slice = tx.splits.find(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || ''));
-        if (slice && slice.amount > 0) amt = slice.amount;
+        amt = tx.splits.filter(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '') && sp.amount > 0)
+          .reduce((a, sp) => a + sp.amount, 0);
       }
       if (!amt) continue;
       // If several tenants share the property, require the name to match to avoid mis-assigning.
@@ -1072,7 +1076,7 @@ function autoReconcileRentForMonth(month) {
     const txIds = existing.concat(cand.map(c => c.tx.id).filter(id => !existing.includes(id)));
     if (txIds.length === existing.length && (r.paid || 0) > 0) continue; // nothing new for a linked row
     const primary = cand[0];
-    cand.forEach(c => usedTx.add(c.tx.id));
+    cand.forEach(c => usedTx.add(usedKey(c.tx.id, r.propertyId)));
     updates.push({ id: r.id, txId: existing[0] || primary.tx.id, txIds, paidOn: primary.tx.date });
   }
   if (updates.length === 0) return;
@@ -1142,7 +1146,10 @@ function syncLinkedRentAmounts() {
       if ((tx.date || '').slice(0, 7) !== r.month) continue; // month move handled by validateRentLinks
       let amt = 0;
       if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
-      if (!amt && tx.splits) { const sl = tx.splits.find(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '')); if (sl && sl.amount > 0) amt = sl.amount; }
+      if (!amt && tx.splits) {
+        amt = tx.splits.filter(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '') && sp.amount > 0)
+          .reduce((a, sp) => a + sp.amount, 0);
+      }
       if (!amt) continue;
       anyTx = true;
       sum += amt;
