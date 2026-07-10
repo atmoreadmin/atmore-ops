@@ -282,10 +282,13 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const purchase  = Math.abs(num(p.purchasePrice));
   const pFees     = Math.abs(num(purchaseFees));
   const pCredits  = Math.abs(num(purchaseCredits));
-  // Atmore loan: principal in nets against payoff out — only the interest fee is a real cost.
+  // Atmore loan: payoff out minus the loan funded on the acquisition side — only the
+  // interest fee (payoff − loan) is a real cost. Falls back to the principal field if no
+  // acquisition loan was entered.
   const atmorePrin = Math.abs(num(atmorePrincipal));
   const atmorePay  = Math.abs(num(atmorePayoff));
-  const atmoreInterest = atmorePay > 0 ? Math.max(0, atmorePay - atmorePrin) : 0;
+  const atmorePrinBasis = Math.abs(num(loanFunded)) > 0 ? Math.abs(num(loanFunded)) : atmorePrin;
+  const atmoreInterest = atmorePay > 0 ? Math.max(0, atmorePay - atmorePrinBasis) : 0;
   const intCredit = Math.abs(num(interestCredit));
   const otherFeesAmt = Math.abs(num(otherFees));
   const cashBackAmt = Math.abs(num(cashBack));
@@ -418,6 +421,8 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         {/* Acquisition side */}
         <div className="up dim" style={{fontSize: 10, letterSpacing: '.1em'}}>Acquisition side</div>
         <CloseoutSummaryRow label="Purchase price" value={fmtMoney(purchase)}/>
+        {loanFundedAmt > 0 && <CloseoutSummaryRow label="Loan funded" value={fmtMoney(loanFundedAmt)} sub="repaid at payoff — informational"/>}
+        {acq1031 > 0 && <CloseoutSummaryRow label="1031 funds brought in" value={fmtMoney(acq1031)} sub="informational — not counted in net profit"/>}
         {ddPaid > 0 && <CloseoutSummaryRow label="− DD paid" value={'−' + fmtMoney(ddPaid)} color="var(--brick)"/>}
         <CloseoutSummaryRow label="− Cash to close" value={'−' + fmtMoney(cashToCloseAmt)} color="var(--brick)" sub={cashToCloseAmt === 0 ? 'enter it in the Acquisition dialog' : null}/>
 
@@ -438,7 +443,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         {Math.abs(num(interest)) > 0 && <CloseoutSummaryRow label="− Interest" value={'−' + fmtMoney(Math.abs(num(interest)))} color="var(--brick)"/>}
         {intCredit > 0 && <CloseoutSummaryRow label="+ Interest credit" value={'+' + fmtMoney(intCredit)} color="var(--sage)"/>}
         {otherFeesAmt > 0 && <CloseoutSummaryRow label="− Other fees" value={'−' + fmtMoney(otherFeesAmt)} color="var(--brick)"/>}
-        {atmoreInterest > 0 && <CloseoutSummaryRow label="− Atmore loan interest" value={'−' + fmtMoney(atmoreInterest)} color="var(--brick)"/>}
+        {atmoreInterest > 0 && <CloseoutSummaryRow label="− Atmore loan interest" value={'−' + fmtMoney(atmoreInterest)} color="var(--brick)" sub={'payoff ' + fmtMoney(atmorePay) + ' − loan ' + fmtMoney(atmorePrinBasis)}/>}
         <CloseoutSummaryRow label="= Other fees total" value={'−' + fmtMoney(otherFeesTotal)} strong/>
 
         <div className="divider" style={{margin: '2px 0'}}/>
@@ -886,7 +891,8 @@ function computeCloseoutProfit(p) {
   if (p.salesPrice == null) return p.grossProfit != null ? p.grossProfit : null;
   const abs = v => { const x = parseFloat(v); return isNaN(x) ? 0 : Math.abs(x); };
   const raw = v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
-  const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - abs(p.atmoreLoanPrincipal)) : 0;
+  const atmorePrinBasisP = abs(p.purchaseLoan) > 0 ? abs(p.purchaseLoan) : abs(p.atmoreLoanPrincipal);
+  const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - atmorePrinBasisP) : 0;
   // Rehab funds drawn are informational only — full rehab spent counts as the cost.
   const otherFeesTotal = abs(p.rehab) + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
   const cashNetProfit = abs(p.cashReceivedAtClose) + abs(p.saleDDCollected) - abs(p.cashToClose) - abs(p.acqDDFee) - otherFeesTotal;

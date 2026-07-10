@@ -251,10 +251,11 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   const saleCreditsRecd = Math.abs(p.saleCreditsReceived || 0);
   const saleEMD = Math.abs(p.saleEarnest || 0);
   const payoff = Math.abs(p.salesLoanPayoff || 0);
-  // Atmore loan: principal in nets against payoff out; only the interest fee is a cost.
+  // Atmore loan: payoff out minus the loan funded at acquisition; only the interest fee is a cost.
   const atmorePrincipal = Math.abs(p.atmoreLoanPrincipal || 0);
   const atmorePayoff = Math.abs(p.atmoreLoanPayoff || 0);
-  const atmoreInterest = atmorePayoff > 0 ? Math.max(0, atmorePayoff - atmorePrincipal) : 0;
+  const atmorePrinBasis = Math.abs(p.purchaseLoan || 0) > 0 ? Math.abs(p.purchaseLoan || 0) : atmorePrincipal;
+  const atmoreInterest = atmorePayoff > 0 ? Math.max(0, atmorePayoff - atmorePrinBasis) : 0;
 
   // All-in cost out. Loan payoff is NOT here — the borrowed money is already
   // inside the purchase price; only its interest is a cost.
