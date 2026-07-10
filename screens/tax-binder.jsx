@@ -212,6 +212,8 @@ function TaxBinderScreen() {
                 ['salesPrice', 'Sale price', true],
                 ['cost', 'Cost basis', true],
                 ['profit', 'Net profit', true],
+                ['ex1031In', '1031 in', true],
+                ['ex1031Out', '1031 rolled', true],
                 ['llc', 'Vesting LLC', false],
               ].map(([k, label, numeric]) => (
                 <th key={k} className={numeric ? 'num' : undefined}
@@ -233,6 +235,8 @@ function TaxBinderScreen() {
                     case 'salesPrice': return p.salesPrice || 0;
                     case 'cost': return cost;
                     case 'profit': return profit;
+                    case 'ex1031In': return Math.abs(p.acqExchangeFunds || 0);
+                    case 'ex1031Out': return Math.abs(p.exchangeFunds || 0);
                     case 'llc': return (p.vestingLLC || '').toLowerCase();
                     default: return p.salesDate || '';
                   }
@@ -245,6 +249,8 @@ function TaxBinderScreen() {
                 // Same live-calculated net profit as the property's close-out dialog and Sale card.
                 const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
                 const gross = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
+                const ex1031In = Math.abs(p.acqExchangeFunds || 0);   // 1031 funds brought in at acquisition
+                const ex1031Out = Math.abs(p.exchangeFunds || 0);     // 1031 funds rolled out at sale
                 return (
                   <tr key={p.id} onClick={() => nav('/property/'+p.id)}>
                     <td><span className="addr">{p.address}</span><div className="addr-sub">{p.type}</div></td>
@@ -252,6 +258,8 @@ function TaxBinderScreen() {
                     <td className="num mono">{fmtMoney(p.salesPrice || 0)}</td>
                     <td className="num mono dim">{fmtMoney(cost)}</td>
                     <td className="num mono" style={{color: gross > 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 500}}>{fmtMoney(gross, {sign: true})}</td>
+                    <td className="num mono dim">{ex1031In ? fmtMoney(ex1031In) : '—'}</td>
+                    <td className="num mono dim">{ex1031Out ? fmtMoney(ex1031Out) : '—'}</td>
                     <td className="small dim">{p.vestingLLC || '—'}</td>
                   </tr>
                 );
