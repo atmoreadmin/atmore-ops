@@ -304,11 +304,12 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   const loanFundedAmt = Math.abs(num(loanFunded));
   const cashAtClose = (num(salesPrice) - Math.abs(num(salesFees)) - Math.abs(num(salesCredits)) + Math.abs(num(saleCreditsRecd))) - Math.abs(num(loanPayoff)) - Math.abs(num(atmorePayoff));
   const draws = Math.abs(num(rehabDraws));
-  const outOfPocketRehab = Math.max(0, num(rehab) - draws);
-  // Cash-basis profit: cash received + DD collected − cash to close − DD paid − other fees
+  // Cash-basis profit: cash received + DD collected − cash to close − DD paid − other fees.
+  // Rehab funds drawn are informational only — they never enter the profit math;
+  // the full rehab spent is counted as the cost.
   const ddPaid = Math.abs(num(p.acqDDFee));
   const cashToCloseAmt = Math.abs(num(p.cashToClose));
-  const otherFeesTotal = outOfPocketRehab + Math.abs(num(interest)) - intCredit + otherFeesAmt + atmoreInterest;
+  const otherFeesTotal = Math.abs(num(rehab)) + Math.abs(num(interest)) - intCredit + otherFeesAmt + atmoreInterest;
   const cashNetProfit = cashBackAmt + ddColl - cashToCloseAmt - ddPaid - otherFeesTotal;
   const haveCashFigures = cashBackAmt > 0 && cashToCloseAmt > 0;
   const rehabDiffers = taggedRehab > 0 && Math.abs(num(rehab) - taggedRehab) > 1;
@@ -386,7 +387,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         <div>
           <div className="up dim mb-4">Rehab funds drawn</div>
           <CloseoutMoney value={rehabDraws} onChange={setRehabDraws}/>
-          <div className="tiny dim mt-4">Draws from the lender for rehab. Repaid inside the loan payoff — they don't change profit, but show your out-of-pocket rehab.</div>
+          <div className="tiny dim mt-4">Draws from the lender for rehab. Informational only — never counted in net profit.</div>
         </div>
         <div><div className="up dim mb-4">Atmore loan payoff</div><CloseoutMoney value={atmorePayoff} onChange={setAtmorePayoff}/>
           <div className="tiny dim mt-4">Only the amount above the principal (the interest fee) counts as a cost.</div>
@@ -432,8 +433,8 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
 
         {/* Other fees */}
         <div className="up dim" style={{fontSize: 10, letterSpacing: '.1em'}}>Other fees</div>
-        {draws > 0 && <CloseoutSummaryRow label="Rehab funds drawn" value={fmtMoney(draws)} sub="repaid in payoff — only out-of-pocket rehab counts below"/>}
-        {outOfPocketRehab > 0 && <CloseoutSummaryRow label="− Rehab fees (out of pocket)" value={'−' + fmtMoney(outOfPocketRehab)} color="var(--brick)"/>}
+        {draws > 0 && <CloseoutSummaryRow label="Rehab funds drawn" value={fmtMoney(draws)} sub="informational — not counted in net profit"/>}
+        {Math.abs(num(rehab)) > 0 && <CloseoutSummaryRow label="− Rehab" value={'−' + fmtMoney(Math.abs(num(rehab)))} color="var(--brick)"/>}
         {Math.abs(num(interest)) > 0 && <CloseoutSummaryRow label="− Interest" value={'−' + fmtMoney(Math.abs(num(interest)))} color="var(--brick)"/>}
         {intCredit > 0 && <CloseoutSummaryRow label="+ Interest credit" value={'+' + fmtMoney(intCredit)} color="var(--sage)"/>}
         {otherFeesAmt > 0 && <CloseoutSummaryRow label="− Other fees" value={'−' + fmtMoney(otherFeesAmt)} color="var(--brick)"/>}
@@ -886,8 +887,8 @@ function computeCloseoutProfit(p) {
   const abs = v => { const x = parseFloat(v); return isNaN(x) ? 0 : Math.abs(x); };
   const raw = v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
   const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - abs(p.atmoreLoanPrincipal)) : 0;
-  const outOfPocketRehab = Math.max(0, raw(p.rehab) - abs(p.rehabDraws));
-  const otherFeesTotal = outOfPocketRehab + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
+  // Rehab funds drawn are informational only — full rehab spent counts as the cost.
+  const otherFeesTotal = abs(p.rehab) + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
   const cashNetProfit = abs(p.cashReceivedAtClose) + abs(p.saleDDCollected) - abs(p.cashToClose) - abs(p.acqDDFee) - otherFeesTotal;
   return Math.round(cashNetProfit);
 }
