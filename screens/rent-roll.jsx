@@ -100,6 +100,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
   const month = getCurrentMonth();
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
+  const [confirmUnmark, setConfirmUnmark] = useState(null); // ledger id pending confirm
 
   function clickHeader(key) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -228,6 +229,15 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                     <div className="row gap-6">
                       {r.status !== 'paid' && r.status !== 'overpaid' && (
                         <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); onMarkPaid(r); }}>Mark paid</Btn>
+                      )}
+                      {(r.paid || 0) > 0 && confirmUnmark !== r.id && (
+                        <Btn sz="sm" kind="ghost" title="Undo this payment — resets to unpaid" onClick={(e) => { e.stopPropagation(); setConfirmUnmark(r.id); }}>Unmark</Btn>
+                      )}
+                      {confirmUnmark === r.id && (
+                        <>
+                          <Btn sz="sm" kind="danger" onClick={(e) => { e.stopPropagation(); unmarkPayment(r.id); setConfirmUnmark(null); }}>Undo payment?</Btn>
+                          <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); setConfirmUnmark(null); }}>Keep</Btn>
+                        </>
                       )}
                       {r.status === 'vacate-due' && (
                         <Btn sz="sm" kind="danger" onClick={(e) => { e.stopPropagation(); onNotice(r); }}>Notice</Btn>

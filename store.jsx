@@ -1012,6 +1012,26 @@ function markUnpaid(ledgerId) {
   });
 }
 
+// Fully undo a payment marked by accident: clears the paid amount, any linked
+// transactions, and any reduced-rate settle, restoring the original charge.
+// Sets noAutoMatch so auto-reconcile doesn't immediately re-link the same
+// transactions; manually recording a payment or linking a transaction clears it.
+function unmarkPayment(ledgerId) {
+  Store.update(s => {
+    const r = s.rentLedger.find(x => x.id === ledgerId);
+    if (!r) return;
+    if (r.originalCharge != null) { r.charge = r.originalCharge; r.originalCharge = null; }
+    r.reducedCharge = false;
+    r.paid = 0; r.paidOn = null;
+    r.linkedTxId = null; r.linkedTxIds = [];
+    r.noAutoMatch = true;
+    const todayDay = parseInt(s.today.slice(-2));
+    if (r.month === s.today.slice(0,7) && todayDay > 11) r.status = 'vacate-due';
+    else if (r.month === s.today.slice(0,7)) r.status = todayDay > 5 ? 'late' : 'upcoming';
+    else r.status = r.month < s.today.slice(0,7) ? 'late' : 'upcoming';
+  });
+}
+
 // Auto-reconcile: when a Rental Income transaction is tagged to a property for a month,
 // mark that tenant's still-unpaid charge as paid and link it. Idempotent — only writes
 // when an unlinked, unpaid charge finds a matching transaction.
@@ -1020,7 +1040,7 @@ function autoReconcileRentForMonth(month) {
   if (!month) return;
   // Rows that could still absorb payments: unpaid AND unlinked, or auto-linked but
   // underpaid (a second payment for the month may have arrived since the first was linked).
-  const rows = (s.rentLedger || []).filter(r => r.month === month && !r.reducedCharge && (
+  const rows = (s.rentLedger || []).filter(r => r.month === month && !r.reducedCharge && !r.noAutoMatch && (
     ((r.paid || 0) === 0 && !r.linkedTxId) ||
     ((r.paid || 0) < r.charge && (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length)))
   ));
@@ -1667,6 +1687,7 @@ function linkLedgerToTransaction(ledgerId, txId) {
   Store.update(s => {
     const r = s.rentLedger.find(x => x.id === ledgerId);
     if (!r) return;
+    r.noAutoMatch = false;
     r.linkedTxIds = r.linkedTxIds || (r.linkedTxId ? [r.linkedTxId] : []);
     if (!r.linkedTxIds.includes(txId)) r.linkedTxIds.push(txId);
     r.linkedTxId = r.linkedTxIds[0];
@@ -2807,7 +2828,7 @@ Object.assign(window, {
   Store, useStore, TODAY,
   getProperty, getPropertyByAddr, getTenant, getTenantsForProperty, getActiveTenants,
   getLedgerForMonth, ensureLedgerForMonth, getLedgerForTenant, dedupeRentLedger, getTxForProperty, untaggedTransactions, getCurrentMonth,
-  markPaid, markUnpaid, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
+  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
