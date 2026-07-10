@@ -230,7 +230,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                       {r.status !== 'paid' && r.status !== 'overpaid' && (
                         <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); onMarkPaid(r); }}>Mark paid</Btn>
                       )}
-                      {(r.paid || 0) > 0 && confirmUnmark !== r.id && (
+                      {((r.paid || 0) > 0 || r.status === 'paid' || r.status === 'overpaid' || r.reducedCharge) && confirmUnmark !== r.id && (
                         <Btn sz="sm" kind="ghost" title="Undo this payment — resets to unpaid" onClick={(e) => { e.stopPropagation(); setConfirmUnmark(r.id); }}>Unmark</Btn>
                       )}
                       {confirmUnmark === r.id && (
