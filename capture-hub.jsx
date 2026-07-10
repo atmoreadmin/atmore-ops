@@ -363,6 +363,9 @@ function CapturePanel({ p }) {
   const offerStatus = offers.length ? 'captured' : (isRentalKind ? 'na' : 'empty');
 
   // ── Sale ──
+  // Show the live-calculated net profit (same math as the close-out dialog),
+  // not just the number stamped at save time.
+  const saleNetProfit = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : p.grossProfit;
   const saleFacts = [
     { k: 'Sale price', v: p.salesPrice != null ? fmtMoney(p.salesPrice) : null, mono: true },
     { k: 'Buyer DD deadline', v: p.buyerDDDate ? fmtDate(p.buyerDDDate) : null, mono: true },
@@ -371,7 +374,7 @@ function CapturePanel({ p }) {
     { k: 'Concessions', v: p.salesCredits != null ? fmtMoney(Math.abs(p.salesCredits)) : null, mono: true },
     { k: 'DD fee collected', v: p.saleDDCollected != null ? fmtMoney(Math.abs(p.saleDDCollected)) : null, mono: true },
     { k: 'Buyer earnest', v: p.saleEarnest != null ? fmtMoney(Math.abs(p.saleEarnest)) : null, mono: true },
-    { k: 'Net profit', v: p.grossProfit != null ? fmtMoney(p.grossProfit, {sign: true}) : null, mono: true, color: (p.grossProfit||0) >= 0 ? 'var(--sage)' : 'var(--brick)' },
+    { k: 'Net profit', v: saleNetProfit != null ? fmtMoney(saleNetProfit, {sign: true}) : null, mono: true, color: (saleNetProfit||0) >= 0 ? 'var(--sage)' : 'var(--brick)' },
   ];
   const saleStatus = p.salesPrice != null ? 'captured' : (isRentalKind ? 'na' : 'empty');
 

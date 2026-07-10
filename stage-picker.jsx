@@ -877,4 +877,19 @@ function UtilitiesPrompt({ property, targetCode, onContinue, onBack, onClose }) 
   );
 }
 
-Object.assign(window, { StagePicker, StagePip, MarkSoldDialog, MarkFailedDialog, ConvertRentalDialog, UnderContractDialog, FillStageFieldsDialog, UtilitiesPrompt, FeeItemsEditor, feeItemsTotal, cleanFeeItems, initFeeItems, FEE_PRESETS_PURCHASE, FEE_PRESETS_SALE });
+// Net profit computed live from the property's stored close-out fields —
+// exactly the cash-basis number shown as the bottom line of the MarkSoldDialog
+// live summary, so the Sale card always shows the number you see when you
+// click into the close-out.
+function computeCloseoutProfit(p) {
+  if (p.salesPrice == null) return p.grossProfit != null ? p.grossProfit : null;
+  const abs = v => { const x = parseFloat(v); return isNaN(x) ? 0 : Math.abs(x); };
+  const raw = v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; };
+  const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - abs(p.atmoreLoanPrincipal)) : 0;
+  const outOfPocketRehab = Math.max(0, raw(p.rehab) - abs(p.rehabDraws));
+  const otherFeesTotal = outOfPocketRehab + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
+  const cashNetProfit = abs(p.cashReceivedAtClose) + abs(p.saleDDCollected) - abs(p.cashToClose) - abs(p.acqDDFee) - otherFeesTotal;
+  return Math.round(cashNetProfit);
+}
+
+Object.assign(window, { computeCloseoutProfit, StagePicker, StagePip, MarkSoldDialog, MarkFailedDialog, ConvertRentalDialog, UnderContractDialog, FillStageFieldsDialog, UtilitiesPrompt, FeeItemsEditor, feeItemsTotal, cleanFeeItems, initFeeItems, FEE_PRESETS_PURCHASE, FEE_PRESETS_SALE });
