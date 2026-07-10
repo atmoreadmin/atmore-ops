@@ -190,7 +190,7 @@ function MilestoneTimeline({ p }) {
     { key: 'ucbuy', label: 'Under contract', sub: 'to buy', at: ucBuy, dd: p.ddDate || null, reached: reach.ucbuy },
     { key: 'acq',   label: 'Acquired',       sub: 'closed',  at: acquired, reached: reach.acq },
     { key: 'list',  label: 'Listed',         sub: 'on market', at: listed, reached: reach.list },
-    { key: 'ucsell',label: 'Under contract', sub: 'to sell', at: ucSell, dd: p.buyerDDDate || null, reached: reach.ucsell },
+    { key: 'ucsell',label: 'Under contract', sub: 'to sell', at: reach.ucsell ? ucSell : null, dd: reach.ucsell ? (p.buyerDDDate || null) : null, reached: reach.ucsell },
     { key: 'sold',  label: 'Sold',           sub: 'closed',  at: sold, reached: reach.sold },
   ];
   // Note: we no longer hide the strip when no dates exist — it renders as an
