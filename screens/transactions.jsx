@@ -49,6 +49,7 @@ function TransactionsScreen() {
   const [txFocus, setTxFocus] = useState(() => takeFocus('transactions'));
   const txFocusSet = txFocus ? new Set(liveFocusIds(txFocus)) : null;
   const [splitting, setSplitting] = useState(null);
+  const [reconciling, setReconciling] = useState(false);
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
@@ -157,6 +158,8 @@ function TransactionsScreen() {
 
   const categories = ['all', ...new Set(store.transactions.map(t => t.category).filter(Boolean))];
   const untaggedTotal = untaggedTransactions().length;
+  const unknownTags = unknownProjectTags();
+  const unknownTxCount = unknownTags.reduce((a, u) => a + u.count, 0);
 
   return (
     <div>
@@ -261,6 +264,17 @@ function TransactionsScreen() {
             </div>
             )}
           </Card>
+
+          {unknownTags.length > 0 && (
+            <Card>
+              <div className="card__body row gap-12 items-center wrap" style={{background: 'rgba(154,102,24,0.06)', borderLeft: '3px solid var(--ochre)'}}>
+                <span style={{fontWeight: 500}}>⚠ {unknownTxCount} transaction{unknownTxCount === 1 ? '' : 's'} tagged to {unknownTags.length} propert{unknownTags.length === 1 ? 'y' : 'ies'} not in your list</span>
+                <span className="small dim" style={{textWrap: 'pretty'}}>— short names, typos, or missing properties. Map each to a real property tag.</span>
+                <div className="grow"/>
+                <Btn sz="sm" kind="primary" onClick={() => setReconciling(true)}>Reconcile tags…</Btn>
+              </div>
+            </Card>
+          )}
 
           <Card className="pad-0">
             {selected.size > 0 && (
@@ -464,6 +478,7 @@ function TransactionsScreen() {
       </div>
       {selected.size > 0 && <BulkActionBar selectedIds={[...selected]} onClear={clearSelection}/>}
       {splitting && <SplitTransactionModal tx={splitting} onClose={() => setSplitting(null)}/>}
+      {reconciling && <ReconcileTagsModal onClose={() => setReconciling(false)}/>}
       {editing && <TransactionEditor tx={editing} onClose={() => setEditing(null)}/>}
       {adding && <TransactionEditor onClose={() => setAdding(false)}/>}
       {addingRule && <AutoTagRuleEditor onClose={() => setAddingRule(false)}/>}
@@ -645,6 +660,103 @@ function AutoTagRuleEditor({ rule, onClose }) {
   );
 }
 
-Object.assign(window, { AutoTagRuleEditor });
+// ────── Reconcile unrecognized property tags ──────
+const RECON_PAGE = 20;
+function ReconcileTagsModal({ onClose }) {
+  useStore();
+  const tags = unknownProjectTags();
+  const props = React.useMemo(() => sortedProperties(), []);
+  const [map, setMap] = useState(() => {
+    const m = {};
+    tags.forEach(u => { m[u.value] = u.suggestion ? u.suggestion.address : '__skip'; });
+    return m;
+  });
+  const [shown, setShown] = useState(RECON_PAGE);
+  const pick = React.useCallback((tag, v) => setMap(m => ({ ...m, [tag]: v })), []);
+  const suggested = tags.filter(u => u.suggestion && map[u.value] === u.suggestion.address);
+  const pending = tags.filter(u => (map[u.value] || '__skip') !== '__skip');
+  function applyList(list) {
+    // One store mutation for the whole batch — 148 separate Store.update calls would
+    // rebuild the transactions array (2,600+ rows) per tag and freeze the page.
+    const mapping = new Map();
+    list.forEach(u => {
+      const to = map[u.value];
+      if (!to || to === '__skip') return;
+      mapping.set(u.value, to === '__clear' ? '' : to);
+    });
+    if (mapping.size === 0) return;
+    Store.update(s => {
+      s.transactions = s.transactions.map(t => {
+        let changed = false;
+        const nt = { ...t };
+        if (mapping.has(nt.project)) { nt.project = mapping.get(nt.project); changed = true; }
+        if (nt.splits && nt.splits.some(sp => mapping.has(sp.project))) {
+          nt.splits = nt.splits.map(sp => mapping.has(sp.project) ? { ...sp, project: mapping.get(sp.project) } : sp);
+          changed = true;
+        }
+        return changed ? nt : t;
+      });
+    });
+  }
+  function applyAll() { applyList(pending); onClose(); }
+  function acceptSuggested() { applyList(suggested); }
+  if (tags.length === 0) return (
+    <Modal title="Reconcile property tags" onClose={onClose}>
+      <Empty icon="✓" title="All tags reconciled" sub="Every transaction points at a property in your list."/>
+      <div className="row mt-12"><div className="grow"/><Btn kind="primary" onClick={onClose}>Done</Btn></div>
+    </Modal>
+  );
+  return (
+    <Modal title="Reconcile property tags" onClose={onClose} wide>
+      <div className="small dim mb-12" style={{textWrap: 'pretty'}}>
+        These property tags don't match anything in your property list — usually a short name (“9223 Pebble Creek”), a typo, or a property that was never added. Pick the real property for each; the fix applies to every transaction using that tag (splits included). Suggested matches are pre-selected.
+      </div>
+      {suggested.length > 0 && (
+        <div className="row gap-10 items-center mb-12" style={{padding: '8px 12px', background: 'rgba(74,122,86,0.08)', borderRadius: 4}}>
+          <span className="small" style={{fontWeight: 500}}>{suggested.length} tag{suggested.length === 1 ? ' has' : 's have'} a confident match ({suggested.reduce((a, u) => a + u.count, 0)} transactions)</span>
+          <div className="grow"/>
+          <Btn sz="sm" kind="primary" onClick={acceptSuggested}>Accept all suggested</Btn>
+        </div>
+      )}
+      <div className="col gap-8" style={{maxHeight: '55vh', overflowY: 'auto'}}>
+        {tags.slice(0, shown).map(u => <ReconcileTagRow key={u.value} u={u} val={map[u.value] || '__skip'} props={props} onPick={pick}/>)}
+        {tags.length > shown && (
+          <Btn sz="sm" kind="ghost" onClick={() => setShown(n => n + RECON_PAGE)}>Show {Math.min(RECON_PAGE, tags.length - shown)} more · {tags.length - shown} remaining</Btn>
+        )}
+      </div>
+      <div className="row gap-8 items-center mt-12">
+        <span className="small dim">{pending.length} of {tags.length} tag{tags.length === 1 ? '' : 's'} mapped · {pending.reduce((a, u) => a + u.count, 0)} transactions affected</span>
+        <div className="grow"/>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn kind="primary" disabled={pending.length === 0} onClick={applyAll}>Apply {pending.length ? pending.length + ' mapping' + (pending.length === 1 ? '' : 's') : ''}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// One row of the reconcile list. Memoized so changing one row's select doesn't
+// re-render every other row's (potentially 200-option) dropdown.
+const ReconcileTagRow = React.memo(function ReconcileTagRow({ u, val, props, onPick }) {
+  return (
+    <div className="row gap-10 items-center" style={{padding: '8px 10px', background: 'var(--paper-3)', borderRadius: 4}}>
+      <div className="col" style={{flex: '1 1 40%', minWidth: 0}}>
+        <span style={{fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>“{u.value}”</span>
+        <span className="tiny dim">{u.count} transaction{u.count === 1 ? '' : 's'}{u.suggestion ? ' · suggested: ' + u.suggestion.address : ' · no close match'}</span>
+      </div>
+      <span className="dim">→</span>
+      <select className="select" value={val} onChange={e => onPick(u.value, e.target.value)} style={{flex: '1 1 50%', minWidth: 0}}>
+        <option value="__skip">Leave for now</option>
+        <option value="__clear">Clear tag (mark untagged)</option>
+        <option value="multiple">multiple · split</option>
+        {OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}
+        <optgroup label="Properties">
+          {props.map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
+        </optgroup>
+      </select>
+    </div>
+  );
+});
+
+Object.assign(window, { AutoTagRuleEditor, ReconcileTagsModal, ReconcileTagRow });
 
 window.TransactionsScreen = TransactionsScreen;

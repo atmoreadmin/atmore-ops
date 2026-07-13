@@ -429,6 +429,18 @@ const SyncEngine = {
     this._set('synced', 'Connected');
     if (this.autoOn()) this.openSync();
 
+    // Poll for manual Sheet edits while the app is open: if the Sheet's
+    // lastWriteAt moved and we have no local edits, pull it in.
+    setInterval(() => {
+      if (!Sync.isConfigured() || !this.autoOn()) return;
+      if (this.dirty || this.status === 'syncing' || this.status === 'remote-newer' || this.status === 'blocked') return;
+      Sync.meta().then(m => {
+        const sheetAt = m && m.lastWriteAt;
+        if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;
+        if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt && !this.dirty) this.pullNow();
+      }).catch(() => {});
+    }, 60000);
+
     // Catch the "closed before a push finished" case.
     window.addEventListener('beforeunload', (e) => {
       if (this.dirty && this.autoOn()) {
@@ -467,6 +479,19 @@ const SyncEngine = {
         this._set('blocked', `Save paused — this device has ${localN} propert${localN === 1 ? 'y' : 'ies'} but the Sheet has ${sheetN}. Click to resolve.`);
         return;
       }
+    }
+    // Manual-edit guard: if the Sheet was edited by hand since our last sync
+    // (its lastWriteAt moved), don't blind-overwrite it — surface a choice.
+    if (!force) {
+      try {
+        const m = await Sync.meta();
+        const sheetAt = m && m.lastWriteAt;
+        if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt) {
+          this.dirty = true;
+          this._set('remote-newer', 'Sheet was edited directly — choose which to keep');
+          return;
+        }
+      } catch (e) {}
     }
     this._set('syncing', 'Saving to Sheet…');
     try {

@@ -105,6 +105,15 @@ const ARRAY_COLS = new Set(['identifiedPropIds', 'closedPropIds', 'contingencies
 
 // ─── Entry points ───────────────────────────────────────────────────────────
 
+// Simple trigger: fires on MANUAL edits in the Sheet (not on the app's own
+// programmatic writes). Stamping lastWriteAt lets the app detect hand edits
+// and pull them in instead of overwriting them.
+function onEdit(e) {
+  try {
+    PropertiesService.getDocumentProperties().setProperty('lastWriteAt', new Date().toISOString());
+  } catch (err) {}
+}
+
 function doGet(e) {
   const action = (e.parameter && e.parameter.action) || 'ping';
   try {

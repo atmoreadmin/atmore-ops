@@ -660,6 +660,89 @@ function getTxForProperty(propId) {
 function untaggedTransactions() {
   return Store.state.transactions.filter(t => !t.category || !t.project);
 }
+
+// ── Property-tag reconciliation ──
+// A project tag is "known" if it's blank, a sentinel (multiple / extract / tenant:),
+// an overhead bucket, or exactly matches a property address (case-insensitive).
+function isKnownProjectTag(v) {
+  const pl = (v || '').toLowerCase().trim();
+  if (!pl) return true;
+  if (pl === 'multiple' || pl.startsWith('extract') || pl.startsWith('tenant:')) return true;
+  if (OVERHEAD_PROJECTS.some(o => o.toLowerCase() === pl)) return true;
+  return Store.state.properties.some(p => (p.address || '').toLowerCase().trim() === pl);
+}
+// Best-guess property for an unrecognized tag: exact prefix, else street number +
+// start of street name ("9223 Pebble Creek" → 9223 Pebble Creek Way).
+function suggestPropertyForTag(v) {
+  const pl = (v || '').toLowerCase().trim();
+  if (!pl) return null;
+  const props = Store.state.properties;
+  let hit = props.find(p => (p.address || '').toLowerCase().trim() === pl);
+  if (hit) return hit;
+  hit = props.find(p => (p.address || '').toLowerCase().startsWith(pl));
+  if (hit) return hit;
+  const [num, ...words] = pl.split(/\s+/);
+  if (num && words.length) {
+    const stem = words[0].slice(0, 4);
+    hit = props.find(p => {
+      const parts = (p.address || '').toLowerCase().split(/\s+/);
+      return parts[0] === num && parts[1] && parts[1].startsWith(stem);
+    });
+    if (hit) return hit;
+    // Wrong/typo'd street number: if the street NAME uniquely matches one
+    // property, suggest it anyway ("9233 Pebble Creek" → 9223 Pebble Creek Way).
+    if (stem.length >= 4) {
+      const nameHits = props.filter(p => {
+        const parts = (p.address || '').toLowerCase().split(/\s+/);
+        return parts[1] && parts[1].startsWith(stem);
+      });
+      if (nameHits.length === 1) return nameHits[0];
+    }
+  }
+  return null;
+}
+// Every distinct unrecognized property tag in use (direct or split slice), with
+// usage count + suggested real property. Sorted by usage. Uses a Set of known
+// tags (O(1) per check) and caches the result until transactions/properties change.
+let _unkCache = null;
+function unknownProjectTags() {
+  const s = Store.state;
+  if (_unkCache && _unkCache.tx === s.transactions && _unkCache.props === s.properties) return _unkCache.result;
+  const known = new Set(['multiple', ...OVERHEAD_PROJECTS.map(o => o.toLowerCase())]);
+  s.properties.forEach(p => known.add((p.address || '').toLowerCase().trim()));
+  const isKnown = v => {
+    const pl = (v || '').toLowerCase().trim();
+    return !pl || known.has(pl) || pl.startsWith('extract') || pl.startsWith('tenant:');
+  };
+  const counts = new Map();
+  for (const t of s.transactions) {
+    if (t.project && !isKnown(t.project)) counts.set(t.project, (counts.get(t.project) || 0) + 1);
+    if (t.splits) for (const sp of t.splits) {
+      if (sp.project && !isKnown(sp.project)) counts.set(sp.project, (counts.get(sp.project) || 0) + 1);
+    }
+  }
+  const result = [...counts.entries()]
+    .map(([value, count]) => ({ value, count, suggestion: suggestPropertyForTag(value) }))
+    .sort((a, b) => b.count - a.count);
+  _unkCache = { tx: s.transactions, props: s.properties, result };
+  return result;
+}
+// Rewrite every use of an unrecognized tag (direct + splits) to `to`. '' clears it.
+function remapProjectTag(from, to) {
+  Store.update(s => {
+    s.transactions = s.transactions.map(t => {
+      let changed = false;
+      const nt = { ...t };
+      if (nt.project === from) { nt.project = to; changed = true; }
+      if (nt.splits && nt.splits.some(sp => sp.project === from)) {
+        nt.splits = nt.splits.map(sp => sp.project === from ? { ...sp, project: to } : sp);
+        changed = true;
+      }
+      return changed ? nt : t;
+    });
+  });
+}
+Object.assign(window, { isKnownProjectTag, suggestPropertyForTag, unknownProjectTags, remapProjectTag });
 function getCurrentMonth() { return TODAY().slice(0,7); }
 
 // ────────── Checks & balances (reconciliation + data integrity) ──────────

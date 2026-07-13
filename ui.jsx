@@ -118,10 +118,10 @@ function Segmented({ value, options, onChange }) {
   );
 }
 
-function Modal({ title, children, onClose, right }) {
+function Modal({ title, children, onClose, right, wide }) {
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={wide ? {maxWidth: 720, width: '92vw'} : null}>
         <div className="modal__head">
           <h2>{title}</h2>
           <div className="row gap-8 items-center">
