@@ -657,7 +657,12 @@ function PaymentHistory({ tenantId }) {
     else byMonth[m].out += Math.abs(t.amount);
     byMonth[m].txns.push(t);
   });
-  const depositsHeld = tx.filter(isDep).reduce((a, t) => a + (t.amount || 0), 0);
+  // Deposits held: scoped to the current tenant's tenure when occupied, so an old
+  // refund (previous tenant's deposit, collected before records began) doesn't net
+  // against the new tenant's deposit. Vacant → all-time net.
+  const _curTen = prop ? (Store.state.tenants || []).find(t => t.propertyId === prop.id && t.status === 'active' && t.moveIn && t.moveIn <= TODAY()) : null;
+  const depTx = tx.filter(isDep).filter(t => !_curTen || (t.date || '') >= _curTen.moveIn);
+  const depositsHeld = depTx.reduce((a, t) => a + (t.amount || 0), 0);
   const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
 
   // Recurring monthly carrying costs (mortgage + tax/12 + insurance/12) blended
@@ -694,7 +699,7 @@ function PaymentHistory({ tenantId }) {
           {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates</div>}
         </div>
         <div className="row gap-12 small">
-          {depositsHeld !== 0 && <span><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
+          {depositsHeld !== 0 && <span title={_curTen ? 'Deposit transactions since ' + fmtDate(_curTen.moveIn, {full: true}) + ' (current tenant)' : 'All-time deposit collections minus refunds'}><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
           <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
           <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
           <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
