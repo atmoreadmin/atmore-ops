@@ -415,6 +415,7 @@ const SyncEngine = {
   lastSheetWriteAt: null,  // server clock string — for change detection
   lastSheetPropCount: null,// server's Properties row count — for the empty-overwrite guard
   dirty: false,
+  _gen: 0,          // bumps on every local change — detects edits made mid-push
   _subs: [],
   _pushTimer: null,
   _applyingRemote: false,
@@ -470,6 +471,7 @@ const SyncEngine = {
     if (this._applyingRemote) return;          // pulls shouldn't mark dirty
     if (!Sync.isConfigured()) return;          // stay local-only
     this.dirty = true;
+    this._gen++;
     if (!this.autoOn()) { this._set('dirty', 'Unsaved changes'); return; }
     this._set('dirty', 'Saving…');
     clearTimeout(this._pushTimer);
@@ -505,8 +507,20 @@ const SyncEngine = {
       } catch (e) {}
     }
     this._set('syncing', 'Saving to Sheet…');
+    const genAtPush = this._gen;   // snapshot: edits after this point need another push
     try {
       const res = await Sync.push(Store.state);
+      // If an edit landed while the write was in flight, it may not be in what we
+      // just sent — stay dirty and push again right away instead of losing it.
+      if (this._gen !== genAtPush) {
+        this.lastSyncedAt = new Date().toISOString();
+        if (res && res.lastWriteAt) this.lastSheetWriteAt = res.lastWriteAt;
+        Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
+        this._set('dirty', 'Saving…');
+        clearTimeout(this._pushTimer);
+        this._pushTimer = setTimeout(() => this.pushNow(), 400);
+        return;
+      }
       this.dirty = false;
       this.lastSyncedAt = new Date().toISOString();
       this.lastSheetPropCount = (Store.state.properties || []).length;  // Sheet now matches local
