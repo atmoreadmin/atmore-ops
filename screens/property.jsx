@@ -623,6 +623,7 @@ function PaymentHistory({ tenantId }) {
   const [open, setOpen] = useState(null);
   const [viewTx, setViewTx] = useState(null);
   const [viewSplit, setViewSplit] = useState(null);
+  const [splitTxn, setSplitTxn] = useState(null);
   const tenant = getTenant(tenantId);
   const prop = tenant ? getProperty(tenant.propertyId) : null;
   // Direct-tagged transactions PLUS this property's slice of any split transaction
@@ -743,6 +744,7 @@ function PaymentHistory({ tenantId }) {
                             {t.recurring && <Tag tone="ochre">recurring</Tag>}
                             {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
                             {isDep(t) && <Tag tone="blue">deposit · not income</Tag>}
+                            {src && !isSlice && !src.splits && <button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, flexShrink: 0}} title="Split this charge across properties" onClick={(e) => { e.stopPropagation(); setSplitTxn(src); }}>Split</button>}
                             {t.category && !isDep(t) && <Tag tone="ghost">{t.category}</Tag>}
                             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
                           </div>
@@ -759,6 +761,7 @@ function PaymentHistory({ tenantId }) {
       </table>
       {viewTx && <TransactionEditor tx={viewTx} onClose={() => setViewTx(null)}/>}
       {viewSplit && <SplitTransactionModal tx={viewSplit} onClose={() => setViewSplit(null)}/>}
+      {splitTxn && <SplitTransactionModal tx={splitTxn} onClose={() => setSplitTxn(null)}/>}
     </div>
   );
 }
