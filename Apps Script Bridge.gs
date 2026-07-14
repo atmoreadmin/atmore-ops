@@ -53,7 +53,7 @@ const SCHEMA = {
   ],
   RentLedger: [
     'id','tenantId','propertyId','month','charge','paid','paidOn','source',
-    'status','lateFeeWaived','linkedTxId',
+    'status','lateFeeWaived','linkedTxId','linkedTxIds','reducedCharge','noAutoMatch',
   ],
   Transactions: [
     'id','date','acct','desc','amount','payee','category','project','notes','importBatch',

@@ -158,6 +158,9 @@ const SHEET_SCHEMA = {
       { key: 'status',        label: 'Status',          type: 'enum', notes: 'paid / partial / late / vacate-due / not-due' },
       { key: 'lateFeeWaived', label: 'Late Fee Waived', type: 'bool' },
       { key: 'linkedTxId',    label: 'Linked Tx ID',    type: 'fk' },
+      { key: 'linkedTxIds',   label: 'Linked Tx IDs',   type: 'string', notes: 'comma-separated, all payments in the month' },
+      { key: 'reducedCharge', label: 'Reduced Charge',  type: 'bool' },
+      { key: 'noAutoMatch',   label: 'No Auto Match',   type: 'bool' },
     ],
   },
   Transactions: {

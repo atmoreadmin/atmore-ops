@@ -74,6 +74,7 @@ function serializeForSheet(state) {
         // Normalize for sheet
         if (v == null) { out[c.key] = null; continue; }
         if (c.type === 'array' && Array.isArray(v)) out[c.key] = v;
+        else if (c.key === 'linkedTxIds') out[c.key] = Array.isArray(v) ? v.join(',') : (v || '');
         else if (c.type === 'bool') out[c.key] = !!v;
         else out[c.key] = v;
       }
@@ -231,7 +232,16 @@ function deserializeFromSheet(pulledData) {
     return out;
   });
 
-  state.rentLedger = tabs.RentLedger || [];
+  state.rentLedger = (tabs.RentLedger || []).map(r => {
+    const out = { ...r };
+    // linkedTxIds round-trips as a comma-joined string; rebuild the array so the
+    // legacy-migration in validateRentLinks doesn't fire (and mark dirty) on every open.
+    if (typeof out.linkedTxIds === 'string') out.linkedTxIds = out.linkedTxIds ? out.linkedTxIds.split(',').map(x => x.trim()).filter(Boolean) : [];
+    else if (!Array.isArray(out.linkedTxIds)) out.linkedTxIds = out.linkedTxId ? [out.linkedTxId] : [];
+    out.reducedCharge = !!out.reducedCharge;
+    out.noAutoMatch = !!out.noAutoMatch;
+    return out;
+  });
   // The Sheet can carry duplicate / mixed-format ledger rows (same tenant+month posted
   // many times). Collapse them on the way in so a pull never re-introduces the repeats
   // the load-time migration just cleaned up.
