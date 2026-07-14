@@ -214,6 +214,8 @@ const Store = {
           { id:'c-refi-cashout',      label:'Refi Cash-Out',      kind:'income',  archived:false, isDefault:true },
           { id:'c-contractor',        label:'Contractor Payment', kind:'expense', archived:false, isDefault:true },
           { id:'c-supplies',          label:'Job Supplies',       kind:'expense', archived:false, isDefault:true },
+          { id:'c-rental-contractor', label:'Rental Contractor Payment', kind:'expense', archived:false, isDefault:true },
+          { id:'c-rental-supplies',   label:'Rental Job Supplies', kind:'expense', archived:false, isDefault:true },
           { id:'c-interest',          label:'Interest Payment',   kind:'expense', archived:false, isDefault:true },
           { id:'c-loan',              label:'Loan Repayment',     kind:'expense', archived:false, isDefault:true },
           { id:'c-hoa',               label:'HOA Expense',        kind:'expense', archived:false, isDefault:true },
@@ -222,6 +224,7 @@ const Store = {
           { id:'c-marketing',         label:'Marketing',          kind:'expense', archived:false, isDefault:true },
           { id:'c-insurance',         label:'Insurance',          kind:'expense', archived:false, isDefault:true },
           { id:'c-property-tax',      label:'Property Tax',       kind:'expense', archived:false, isDefault:true },
+          { id:'c-security-deposit',  label:'Security Deposit',   kind:null,      archived:false, isDefault:true },
           { id:'c-misc',              label:'Misc',               kind:null,      archived:false, isDefault:true },
         ],
         paymentSources: [
@@ -435,12 +438,32 @@ const Store = {
       if (touched) this.save();
     }
 
+    // Security deposits are refundable liabilities, not income — make sure the
+    // category exists on older saved states so deposits can be tagged as such.
+    if (this.state.lists && Array.isArray(this.state.lists.categories)) {
+      const ensureCat = (id, label, kind) => {
+        if (!this.state.lists.categories.some(c => (c.label || '').toLowerCase() === label.toLowerCase())) {
+          this.state.lists.categories.push({ id, label, kind, archived: false, isDefault: true });
+          this.save();
+        }
+      };
+      ensureCat('c-security-deposit', 'Security Deposit', null);
+      // Tenancy-phase repair categories (vs renovation-phase Contractor Payment / Job Supplies)
+      ensureCat('c-rental-contractor', 'Rental Contractor Payment', 'expense');
+      ensureCat('c-rental-supplies', 'Rental Job Supplies', 'expense');
+    }
+
     // several charges for the same tenant+month, plus a mix of "2026-01" and
     // "2026-01-01" month formats that the dedup logic couldn't see as equal — so the
     // same charge rendered over and over on the property ledger. Normalize months to
     // YYYY-MM and collapse to one row per tenant+month, keeping the most settled row
     // (paid / linked wins). Idempotent: a clean ledger is left untouched (no re-save).
     if (dedupeRentLedger(this.state)) this.save();
+
+    // A split transaction must not coexist with standalone copies of its own slices
+    // (an earlier split/import flow materialized per-property transactions AND kept
+    // the parent's splits — double-counting the same money). Drop the standalone dupes.
+    if (dedupeSplitMaterializations(this.state)) this.save();
   },
 
   save() {
@@ -491,6 +514,8 @@ const Store = {
           { id:'c-rental-income', label:'Rental Income', kind:'income', archived:false, isDefault:true },
           { id:'c-contractor',    label:'Contractor Payment', kind:'expense', archived:false, isDefault:true },
           { id:'c-supplies',      label:'Job Supplies',   kind:'expense', archived:false, isDefault:true },
+          { id:'c-rental-contractor', label:'Rental Contractor Payment', kind:'expense', archived:false, isDefault:true },
+          { id:'c-rental-supplies',   label:'Rental Job Supplies', kind:'expense', archived:false, isDefault:true },
           { id:'c-interest',      label:'Interest Payment', kind:'expense', archived:false, isDefault:true },
           { id:'c-hoa',           label:'HOA Expense',    kind:'expense', archived:false, isDefault:true },
           { id:'c-utilities',     label:'Utilities',      kind:'expense', archived:false, isDefault:true },
@@ -646,6 +671,26 @@ function dedupeRentLedger(state) {
   if (changed) state.rentLedger = [...byKey.values()];
   return changed;
 }
+// Remove standalone transactions that duplicate a slice of a split parent
+// (same date + description + amount + property tag). Returns true if changed.
+function dedupeSplitMaterializations(state) {
+  const txs = state.transactions || [];
+  const sliceKeys = new Set();
+  txs.forEach(p => {
+    if (!p.splits || !p.splits.length) return;
+    p.splits.forEach(sp => sliceKeys.add([p.date || '', (p.desc || '').trim().toLowerCase(), sp.amount, (sp.project || '').trim().toLowerCase()].join('|')));
+  });
+  if (!sliceKeys.size) return false;
+  const before = txs.length;
+  state.transactions = txs.filter(t => {
+    if (t.splits && t.splits.length) return true;
+    const k = [t.date || '', (t.desc || '').trim().toLowerCase(), t.amount, (t.project || '').trim().toLowerCase()].join('|');
+    return !sliceKeys.has(k);
+  });
+  return state.transactions.length !== before;
+}
+window.dedupeSplitMaterializations = dedupeSplitMaterializations;
+
 function getTxForProperty(propId) {
   const prop = getProperty(propId);
   if (!prop) return [];
@@ -747,7 +792,11 @@ function getCurrentMonth() { return TODAY().slice(0,7); }
 
 // ────────── Checks & balances (reconciliation + data integrity) ──────────
 // Categories that represent rehab spend (matches contractor + supplies tagging).
+// Renovation-phase spend — NOT counted as tenancy repairs on the rent roll.
 const REHAB_CATS = ['Contractor Payment', 'Job Supplies'];
+// Tenancy-phase repair spend — what "Repairs /mo" on the rent roll counts.
+const RENTAL_REPAIR_CATS = ['Rental Contractor Payment', 'Rental Job Supplies'];
+window.RENTAL_REPAIR_CATS = RENTAL_REPAIR_CATS;
 // Non-property "project" buckets a transaction can be tagged to (overhead that
 // isn't tied to a specific address). Valid everywhere a property tag is, but
 // never treated as a real property (so they don't show on the Properties tab

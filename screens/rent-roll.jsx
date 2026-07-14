@@ -45,7 +45,7 @@ function RentRollScreen() {
         </div>
         <Segmented
           value={view}
-          options={[{value:'current', label:'Current month'}, {value:'grid', label:'Year grid'}]}
+          options={[{value:'current', label:'Current month'}, {value:'grid', label:'Year grid'}, {value:'cashflow', label:'Cash flow'}]}
           onChange={setView}/>
       </div>
 
@@ -68,6 +68,11 @@ function RentRollScreen() {
             <div className="stat__sub">+ {store.tenants.filter(t => t.status==='prep').length} prepping · {store.tenants.filter(t => t.status==='vacant').length} vacant</div>
           </div>
           <div className="stat grow">
+            <div className="stat__label">Deposits held</div>
+            <div className="stat__value" style={{color: 'var(--blue-deep)'}}>{fmtMoney(store.tenants.filter(t => t.status === 'active').reduce((a, t) => a + (t.deposit || 0), 0))}</div>
+            <div className="stat__sub">refundable — not income</div>
+          </div>
+          <div className="stat grow">
             <div className="stat__label">Vacate notices due</div>
             <div className="stat__value" style={{color: statusCounts['vacate-due'] ? 'var(--brick)' : 'var(--ink-3)'}}>{statusCounts['vacate-due']||0}</div>
             <div className="stat__sub">past day 11 of the month</div>
@@ -84,6 +89,8 @@ function RentRollScreen() {
       )}
 
       {view === 'grid' && <YearGridView />}
+
+      {view === 'cashflow' && <CashFlowView />}
 
       {paidModal && (
         <MarkPaidModal ledgerEntry={paidModal} onClose={() => setPaidModal(null)}/>
@@ -344,6 +351,145 @@ function YearGridView() {
           <div className="grow"/>
           <span className="small dim">Hover a cell for tenant + month detail</span>
         </div>
+      </div>
+    </Card>
+  );
+}
+
+// ────── D: Cash flow view — per-rental net/mo, move-in aware ──────
+function CashFlowView() {
+  const store = useStore();
+  const today = TODAY();
+  const rentalCodes = new Set(getStatuses().filter(s => s.lane === 'rental').map(s => s.code));
+  const hoaMoFor = pid => (store.hoas || []).filter(h => h.propertyId === pid).reduce((a, h) => a + (h.monthly || 0), 0);
+  // Per-property aggregates from the ledger: all-time net (excl. security deposits)
+  // and repair/contractor spend over the trailing 12 months. Split-aware.
+  const cut = new Date(today + 'T12:00:00'); cut.setMonth(cut.getMonth() - 12);
+  const cutIso = cut.toISOString().slice(0, 10);
+  const isDepCat = c => /security deposit/i.test(c || '');
+  const agg = {};
+  (store.transactions || []).forEach(t => {
+    const slices = (t.splits && t.splits.length)
+      ? t.splits.map(sp => ({ project: sp.project, category: sp.category || t.category, amount: sp.amount }))
+      : [{ project: t.project, category: t.category, amount: t.amount }];
+    slices.forEach(sl => {
+      const k = (sl.project || '').toLowerCase().trim();
+      if (!k) return;
+      const a = agg[k] = agg[k] || { net: 0, in: 0, out: 0, repairs12: 0, slices: [] };
+      if (!isDepCat(sl.category)) {
+        a.net += sl.amount || 0;
+        if ((sl.amount || 0) >= 0) a.in += sl.amount || 0; else a.out += Math.abs(sl.amount || 0);
+        a.slices.push({ date: t.date || '', amount: sl.amount || 0, rehab: REHAB_CATS.includes(sl.category) });
+      }
+      if (RENTAL_REPAIR_CATS.includes(sl.category) && (t.date || '') >= cutIso) a.repairs12 += Math.abs(sl.amount || 0);
+    });
+  });
+  const rows = [];
+  store.properties.forEach(p => {
+    const actives = store.tenants.filter(t => t.propertyId === p.id && t.status === 'active');
+    const current = actives.find(t => !t.moveIn || t.moveIn <= today);
+    const upcoming = actives.filter(t => t.moveIn && t.moveIn > today).sort((a, b) => a.moveIn.localeCompare(b.moveIn))[0];
+    const t = current || upcoming;
+    if (!rentalCodes.has(p.statusCode) && !t) return;
+    const ld = p.loanDetail || {}, ptx = p.taxes || {}, pins = p.insurance || {};
+    const mortgage = ld.monthlyPayment || 0;
+    const taxMo = (ptx.annualAmount && !(ld.escrowedTaxes && mortgage > 0)) ? ptx.annualAmount / 12 : 0;
+    const insMo = (pins.premium && !(ld.escrowedInsurance && mortgage > 0)) ? pins.premium / 12 : 0;
+    const carry = mortgage + taxMo + insMo + hoaMoFor(p.id);
+    const rent = t ? (t.rent || 0) : 0;
+    const pending = !!(upcoming && !current);
+    const m2m = !!(current && (!current.leaseEnd || current.leaseEnd < today));
+    let lease;
+    if (!t) lease = { label: 'Vacant', tone: 'brick' };
+    else if (pending) lease = { label: 'Moves in ' + fmtDate(upcoming.moveIn, {full: true}), tone: 'ochre' };
+    else if (m2m) lease = { label: 'Month-to-month', tone: 'blue' };
+    else lease = { label: 'Leased thru ' + fmtDate(current.leaseEnd, {full: true}), tone: 'sage' };
+    const a = agg[(p.address || '').toLowerCase().trim()] || { net: 0, in: 0, out: 0, repairs12: 0, slices: [] };
+    // Tally scoped to the current tenant's tenure (from move-in onward).
+    // Renovation-phase spend (plain Contractor Payment / Job Supplies) is excluded —
+    // it belongs to the rehab, not the tenancy — but stays in the all-time figure.
+    let ten = null;
+    if (current && current.moveIn) {
+      ten = { in: 0, out: 0 };
+      a.slices.forEach(sl => { if (sl.date >= current.moveIn && !sl.rehab) { if (sl.amount >= 0) ten.in += sl.amount; else ten.out += Math.abs(sl.amount); } });
+      ten.net = ten.in - ten.out;
+    }
+    rows.push({ p, t, rent, carry, net: rent - carry, nowNet: pending || !t ? -carry : rent - carry, pending, m2m, lease,
+      deposit: t ? (t.deposit || 0) : 0, repairsMo: a.repairs12 / 12, allNet: a.net, allIn: a.in, allOut: a.out, ten,
+      sinceMoveIn: current && current.moveIn ? fmtDate(current.moveIn, {full: true}) : null });
+  });
+  rows.sort((a, b) => b.net - a.net);
+  const nowNet = rows.reduce((a, r) => a + r.nowNet, 0);
+  const projNet = rows.reduce((a, r) => a + r.net, 0);
+  const m2mCount = rows.filter(r => r.m2m).length;
+  const pendingCount = rows.filter(r => r.pending).length;
+  const netCell = v => <span className="mono" style={{color: v >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 500}}>{fmtMoney(v)}</span>;
+  return (
+    <Card>
+      <div className="row" style={{padding: '4px 0', borderBottom: '1px solid var(--rule)'}}>
+        <div className="stat grow">
+          <div className="stat__label">Cashflowing now / mo</div>
+          <div className="stat__value" style={{color: nowNet >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(nowNet)}</div>
+          <div className="stat__sub">rent in minus carrying costs, occupied units only</div>
+        </div>
+        <div className="stat grow">
+          <div className="stat__label">After pending move-ins</div>
+          <div className="stat__value" style={{color: projNet >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(projNet)}</div>
+          <div className="stat__sub">{pendingCount ? pendingCount + ' move-in' + (pendingCount === 1 ? '' : 's') + ' scheduled' : 'no move-ins scheduled'}</div>
+        </div>
+        <div className="stat grow">
+          <div className="stat__label">Month-to-month</div>
+          <div className="stat__value">{m2mCount}</div>
+          <div className="stat__sub">of {rows.filter(r => r.t).length} occupied · can vacate on 30 days’ notice</div>
+        </div>
+      </div>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>Property</th><th>Tenant</th><th>Lease</th>
+            <th className="num">Deposit held</th>
+            <th className="num">Rent /mo</th><th className="num">Carrying /mo</th>
+            <th className="num" title="Rental Contractor Payment + Rental Job Supplies, trailing 12-month monthly average. Plain Contractor Payment / Job Supplies = renovation phase, not counted.">Repairs /mo</th>
+            <th className="num">Net /mo</th>
+            <th className="num" title="Occupied: income/expenses since the current tenant's move-in (all-time net below). Vacant: all-time.">Tally</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.p.id} onClick={() => nav('/property/' + r.p.id)}>
+              <td><span className="addr" style={{fontSize: 13}}>{r.p.address}</span></td>
+              <td className="small">{r.t ? r.t.name : <span className="dim">—</span>}</td>
+              <td><Tag tone={r.lease.tone}>{r.lease.label}</Tag></td>
+              <td className="num mono small" style={{color: r.deposit ? 'var(--blue-deep)' : 'var(--ink-3)'}}>{r.deposit ? fmtMoney(r.deposit) : '—'}</td>
+              <td className="num mono small">{r.rent ? fmtMoney(r.rent) : '—'}</td>
+              <td className="num mono small" style={{color: r.carry ? 'var(--brick)' : 'var(--ink-3)'}}>{r.carry ? fmtMoney(-r.carry) : '—'}</td>
+              <td className="num mono small" style={{color: r.repairsMo ? 'var(--ochre)' : 'var(--ink-3)'}}>{r.repairsMo >= 1 ? fmtMoney(-r.repairsMo) : '—'}</td>
+              <td className="num">{netCell(r.pending ? r.net : r.nowNet)}{r.pending && <div className="tiny dim">now {fmtMoney(-r.carry)}</div>}</td>
+              <td className="num">
+                {r.ten ? (<>
+                  {netCell(r.ten.net)}
+                  <div className="tiny mono" style={{whiteSpace: 'nowrap'}}>
+                    <span style={{color: 'var(--sage)'}}>+{fmtMoney(r.ten.in)}</span>
+                    <span className="dim"> / </span>
+                    <span style={{color: 'var(--brick)'}}>−{fmtMoney(r.ten.out)}</span>
+                  </div>
+                  <div className="tiny dim">since {r.sinceMoveIn} · all-time {fmtMoney(r.allNet)}</div>
+                </>) : (<>
+                  {netCell(r.allNet)}
+                  <div className="tiny mono" style={{whiteSpace: 'nowrap'}}>
+                    <span style={{color: 'var(--sage)'}}>+{fmtMoney(r.allIn)}</span>
+                    <span className="dim"> / </span>
+                    <span style={{color: 'var(--brick)'}}>−{fmtMoney(r.allOut)}</span>
+                  </div>
+                  <div className="tiny dim">all-time</div>
+                </>)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="tiny dim" style={{padding: '10px 14px', borderTop: '1px solid var(--rule-soft)'}}>
+        Carrying = mortgage payment + property tax and insurance (÷12, unless escrowed in the mortgage) + HOA dues. Repairs /mo = spend tagged “Rental Contractor Payment” or “Rental Job Supplies”, averaged over the last 12 months — plain Contractor Payment / Job Supplies is renovation-phase and not counted (not part of Net /mo). Tally: for occupied units, income (green) / expenses (red) since the current tenant’s move-in — renovation-phase spend (plain Contractor Payment / Job Supplies) excluded from the tenancy tally but included in the all-time net beneath; vacant units show all-time. Security deposits excluded. Pending move-ins show the net once the tenant is in; totals above show both.
       </div>
     </Card>
   );

@@ -802,6 +802,7 @@ function TransactionEditor({ tx, onClose }) {
   const [payee, setPayee] = useState(tx?.payee || '');
   const [category, setCategory] = useState(tx?.category || '');
   const [project, setProject] = useState(tx?.project || '');
+  const [notes, setNotes] = useState(tx?.notes || '');
   const [addingProp, setAddingProp] = useState(false);
 
   const absAmount = Math.abs(parseFloat(amount) || 0);
@@ -809,7 +810,7 @@ function TransactionEditor({ tx, onClose }) {
   const signedAmount = direction === 'out' ? -absAmount : absAmount;
 
   function save() {
-    const payload = { date, acct, desc, amount: signedAmount, payee, category, project };
+    const payload = { date, acct, desc, amount: signedAmount, payee, category, project, notes };
     if (editing) {
       tagTransaction(tx.id, payload);
     } else {
@@ -889,6 +890,13 @@ function TransactionEditor({ tx, onClose }) {
               <option value="__add__">+ Add new property…</option>
             </select>
           </div>
+        </div>
+
+        <div>
+          <div className="up dim mb-4">Notes (optional)</div>
+          <textarea className="input" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
+            placeholder="e.g. reimbursed by tenant, receipt in Drive, half is for the shed repair…"
+            style={{width: '100%', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5}}></textarea>
         </div>
 
         {editing && tx.importBatch && (

@@ -173,6 +173,7 @@ const SHEET_SCHEMA = {
       { key: 'payee',       label: 'Payee',       type: 'string' },
       { key: 'category',    label: 'Category',    type: 'enum' },
       { key: 'project',     label: 'Property',    type: 'string', notes: 'Address (lookup against Properties) or "multiple"' },
+      { key: 'notes',       label: 'Notes',       type: 'string' },
       { key: 'importBatch', label: 'Import Batch',type: 'string' },
     ],
   },

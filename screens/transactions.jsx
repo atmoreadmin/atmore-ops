@@ -347,7 +347,7 @@ function TransactionsScreen() {
                       <td><input type="checkbox" checked={isSel} onChange={() => toggleRow(t.id)}/></td>
                       <td className="mono small">{fmtDate(t.date)}</td>
                       {showCol('acct') && <td className="mono small dim">{t.acct}</td>}
-                      <td className="small" style={{maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</td>
+                      <td className="small" style={{maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.notes && <span className="tiny" title={t.notes} style={{marginLeft: 6, color: 'var(--blue)', cursor: 'help'}}>✎ note</span>}</td>
                       {showCol('payee') && <td className="small dim">{t.payee || '—'}</td>}
                       <td className="num mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</td>
                       {showCol('category') && <td>

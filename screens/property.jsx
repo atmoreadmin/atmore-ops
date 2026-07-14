@@ -621,17 +621,21 @@ function MonthlyCarryingCosts({ p, rent }) {
 
 function PaymentHistory({ tenantId }) {
   const [open, setOpen] = useState(null);
+  const [viewTx, setViewTx] = useState(null);
+  const [viewSplit, setViewSplit] = useState(null);
   const tenant = getTenant(tenantId);
   const prop = tenant ? getProperty(tenant.propertyId) : null;
   // Direct-tagged transactions PLUS this property's slice of any split transaction
   // (a split parent is tagged project:'multiple', so its slices are otherwise missed).
-  const directTx = prop ? getTxForProperty(prop.id) : [];
+  // Parents that HAVE splits are excluded here — their slices below carry the amounts,
+  // otherwise a split shows twice (full original + each slice).
+  const directTx = (prop ? getTxForProperty(prop.id) : []).filter(t => !(t.splits && t.splits.length));
   const addrLower = ((prop && prop.address) || '').toLowerCase().trim();
   const splitTx = prop ? (Store.state.transactions || []).flatMap(t => {
     if (!t.splits || !t.splits.length) return [];
     return t.splits
       .filter(sp => (sp.project || '').toLowerCase().trim() === addrLower)
-      .map((sp, i) => ({ id: t.id + '-s' + i, date: t.date, desc: t.desc, category: sp.category || t.category, amount: sp.amount }));
+      .map((sp, i) => ({ id: t.id + '-s' + i, srcId: t.id, date: t.date, desc: t.desc, category: sp.category || t.category, amount: sp.amount }));
   }) : [];
   const tx = [...directTx, ...splitTx];
   if (tx.length === 0) return null;
@@ -640,16 +644,20 @@ function PaymentHistory({ tenantId }) {
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const fmtM = ym => { const [y, m] = ym.split('-'); return (MON[parseInt(m, 10) - 1] || ym) + ' ' + y; };
 
-  // Group the property's transactions by month into money in (income) vs money out (charges).
+  // Group by month into money in vs out. Security deposits are refundable
+  // liabilities, NOT income — they're excluded from in/out and tracked separately.
+  const isDep = t => /security deposit/i.test(t.category || '');
   const byMonth = {};
   tx.forEach(t => {
     if (!t.date) return;
     const m = t.date.slice(0, 7);
     if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, txns: [] };
-    if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
+    if (isDep(t)) { /* excluded from cash flow */ }
+    else if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
     else byMonth[m].out += Math.abs(t.amount);
     byMonth[m].txns.push(t);
   });
+  const depositsHeld = tx.filter(isDep).reduce((a, t) => a + (t.amount || 0), 0);
   const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
 
   // Recurring monthly carrying costs (mortgage + tax/12 + insurance/12) blended
@@ -686,6 +694,7 @@ function PaymentHistory({ tenantId }) {
           {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates</div>}
         </div>
         <div className="row gap-12 small">
+          {depositsHeld !== 0 && <span><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
           <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
           <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
           <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
@@ -717,15 +726,23 @@ function PaymentHistory({ tenantId }) {
                   <tr>
                     <td colSpan={4} style={{padding: 0, background: 'var(--paper-3)'}}>
                       <div style={{padding: '4px 12px 8px 26px'}}>
-                        {rows.map(t => (
-                          <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
+                        {rows.map(t => {
+                          const src = t.recurring ? null : (Store.state.transactions || []).find(x => x.id === (t.srcId || t.id));
+                          const isSlice = !!t.srcId;
+                          return (
+                          <div key={t.id} className="row gap-10 items-center" title={isSlice ? 'Click to view the full split' : src ? 'Click to view this charge' : undefined}
+                            onClick={src ? (e) => { e.stopPropagation(); if (isSlice) setViewSplit(src); else setViewTx(src); } : undefined}
+                            style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: src ? 'pointer' : 'default'}}>
                             <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{t.recurring ? '—' : fmtDate(t.date)}</span>
-                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit'}}>{t.desc}</span>
+                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}</span>
                             {t.recurring && <Tag tone="ochre">recurring</Tag>}
-                            {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                            {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
+                            {isDep(t) && <Tag tone="blue">deposit · not income</Tag>}
+                            {t.category && !isDep(t) && <Tag tone="ghost">{t.category}</Tag>}
                             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </td>
                   </tr>
@@ -735,6 +752,8 @@ function PaymentHistory({ tenantId }) {
           })}
         </tbody>
       </table>
+      {viewTx && <TransactionEditor tx={viewTx} onClose={() => setViewTx(null)}/>}
+      {viewSplit && <SplitTransactionModal tx={viewSplit} onClose={() => setViewSplit(null)}/>}
     </div>
   );
 }

@@ -240,6 +240,13 @@ function deserializeFromSheet(pulledData) {
   // Transactions — splits are no longer a synced tab; keep any local splits by id.
   const localTx = {};
   (Store.state.transactions || []).forEach(t => { localTx[t.id] = t; });
+  // Wipe guard: an EMPTY Transactions tab (wrong sheet, botched copy, cleared tab)
+  // must not erase a populated local ledger. Keep local; the next push restores the tab.
+  const _sheetTxRows = Array.isArray(tabs.Transactions) ? tabs.Transactions : [];
+  if (_sheetTxRows.length === 0 && (Store.state.transactions || []).length > 25) {
+    state.transactions = Store.state.transactions;
+    if (window.SyncEngine) SyncEngine.dirty = true;  // push local ledger back to the Sheet
+  } else {
   state.transactions = (tabs.Transactions || []).map(tx => {
     const out = { ...tx };
     if (splitsByTx) {
@@ -250,6 +257,10 @@ function deserializeFromSheet(pulledData) {
     }
     return out;
   });
+  }
+
+  // A pull can re-introduce standalone copies of split slices — drop them here too.
+  if (typeof dedupeSplitMaterializations === 'function') dedupeSplitMaterializations(state);
 
   // HOAs were rebuilt from the flat hoa1/hoa2 columns during the Properties pass.
   state.hoas = rebuiltHoas;
