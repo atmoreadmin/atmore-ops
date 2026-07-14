@@ -524,7 +524,10 @@ const SyncEngine = {
       this.dirty = false;
       this.lastSyncedAt = new Date().toISOString();
       this.lastSheetPropCount = (Store.state.properties || []).length;  // Sheet now matches local
-      if (res && res.wroteAt) this.lastSheetWriteAt = res.wroteAt;
+      // Record the sheet's new timestamp so our own write isn't later mistaken for
+      // an outside edit. Old bridge versions don't return lastWriteAt — ask meta.
+      if (res && res.lastWriteAt) this.lastSheetWriteAt = res.lastWriteAt;
+      else { try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; } catch (e) {} }
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
       this._set('synced', 'All changes saved');
     } catch (e) {

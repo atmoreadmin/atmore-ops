@@ -131,8 +131,10 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
     if (action === 'write') {
-      write_(body.payload);
-      return json({ ok: true, wroteAt: new Date().toISOString() });
+      const stampedAt = write_(body.payload);
+      // Return the EXACT stamped lastWriteAt so the app can record it — otherwise
+      // its next meta check mistakes our own write for an outside edit.
+      return json({ ok: true, wroteAt: stampedAt, lastWriteAt: stampedAt });
     }
     if (action === 'ping') return json({ ok: true });
     return json({ ok: false, error: 'Unknown action: ' + action }, 400);
@@ -255,7 +257,9 @@ function write_(payload) {
   });
   // Stamp last-modified
   const props = PropertiesService.getDocumentProperties();
-  props.setProperty('lastWriteAt', new Date().toISOString());
+  const stampedAt = new Date().toISOString();
+  props.setProperty('lastWriteAt', stampedAt);
+  return stampedAt;
 }
 
 // ─── Meta ───────────────────────────────────────────────────────────────────
