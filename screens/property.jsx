@@ -636,7 +636,7 @@ function PaymentHistory({ tenantId }) {
     if (!t.splits || !t.splits.length) return [];
     return t.splits
       .filter(sp => (sp.project || '').toLowerCase().trim() === addrLower)
-      .map((sp, i) => ({ id: t.id + '-s' + i, srcId: t.id, date: t.date, desc: t.desc, category: sp.category || t.category, amount: sp.amount }));
+      .map((sp, i) => ({ id: t.id + '-s' + i, srcId: t.id, date: t.date, desc: t.desc, payee: t.payee, category: sp.category || t.category, amount: sp.amount }));
   }) : [];
   const tx = [...directTx, ...splitTx];
   if (tx.length === 0) return null;
@@ -719,7 +719,7 @@ function PaymentHistory({ tenantId }) {
           {months.map(m => {
             const net = m.in - m.out;
             const isOpen = open === m.month;
-            const rows = [...m.txns].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+            const rows = [...m.txns].sort((a, b) => (a.recurring ? 1 : 0) - (b.recurring ? 1 : 0) || (a.category || '\uffff').localeCompare(b.category || '\uffff') || (a.payee || '\uffff').localeCompare(b.payee || '\uffff') || (b.date || '').localeCompare(a.date || ''));
             return (
               <React.Fragment key={m.month}>
                 <tr onClick={() => setOpen(isOpen ? null : m.month)} style={{cursor: 'pointer'}}>
@@ -740,7 +740,7 @@ function PaymentHistory({ tenantId }) {
                             onClick={src ? (e) => { e.stopPropagation(); if (isSlice) setViewSplit(src); else setViewTx(src); } : undefined}
                             style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: src ? 'pointer' : 'default'}}>
                             <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{t.recurring ? '—' : fmtDate(t.date)}</span>
-                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}</span>
+                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}{t.payee && <span className="dim" style={{fontStyle: 'normal'}}>{' · ' + t.payee}</span>}</span>
                             {t.recurring && <Tag tone="ochre">recurring</Tag>}
                             {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
                             {isDep(t) && <Tag tone="blue">deposit · not income</Tag>}

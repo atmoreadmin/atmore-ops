@@ -62,6 +62,7 @@ function RentalsReport() {
   const store = useStore();
   const [payout, setPayout] = useState(loadPayout);
   const [editSplit, setEditSplit] = useState(false);
+  const [openProp, setOpenProp] = useState(null);
   const cur = getCurrentMonth();
   const [from, setFrom] = useState(cur);
   const [to, setTo] = useState(cur);
@@ -80,18 +81,20 @@ function RentalsReport() {
   const catKind = {};
   (store.lists?.categories || []).forEach(c => { catKind[c.label] = c.kind; });
   const expByProp = {};
+  const linesByProp = {};
   (store.transactions || []).forEach(t => {
     if (!t.date) return;
     const mo = t.date.slice(0, 7);
     if (mo < lo || mo > hi) return;
     const parts = (t.splits && t.splits.length)
-      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || t.category || '', project: s.project || t.project || '' }))
+      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || t.category || '', project: s.project || t.project || '', split: true }))
       : [{ amount: t.amount || 0, category: t.category || '', project: t.project || '' }];
     parts.forEach(pt => {
       const prop = getPropertyByAddr(pt.project);
       if (!prop) return;
       const kind = catKind[pt.category];
       const isExp = kind === 'expense' ? true : kind === 'income' ? false : pt.amount < 0;
+      (linesByProp[prop.id] = linesByProp[prop.id] || []).push({ ...pt, date: t.date, desc: t.desc, payee: t.payee, isExp });
       if (!isExp) return;
       expByProp[prop.id] = (expByProp[prop.id] || 0) + Math.abs(pt.amount);
     });
@@ -99,13 +102,15 @@ function RentalsReport() {
 
   const rows = store.properties.filter(isRental).map(p => {
     const active = getTenantsForProperty(p.id).filter(t => t.status === 'active' && (t.rent || 0) > 0);
-    const rent = months.reduce((a, m) => a + active.reduce((s, t) => s + getRentForMonth(t, m), 0), 0);
+    const scheduled = months.reduce((a, m) => a + active.reduce((s, t) => s + getRentForMonth(t, m), 0), 0);
+    // True rent received: actual payments recorded in the rent ledger for these months.
+    const rent = (store.rentLedger || []).reduce((a, r) => a + ((r.propertyId === p.id && r.month >= lo && r.month <= hi) ? (r.paid || 0) : 0), 0);
     const c = rentalCarry(p);
     const cost = expByProp[p.id] || 0; // actual logged expenses tagged to this property
     const carry = c.mort * N + (c.escI ? 0 : c.insMo * N) + (c.escT ? 0 : c.taxMo * N); // modeled mortgage + insurance + taxes
     const reno = !rentalLane.includes(p.statusCode); // in a pipeline stage = still being renovated
     return {
-      p, rent, escI: c.escI, escT: c.escT, reno, nTenants: active.length,
+      p, rent, scheduled, escI: c.escI, escT: c.escT, reno, nTenants: active.length,
       mort: c.mort * N, insMo: c.insMo * N, taxMo: c.taxMo * N, cost,
       net: rent - carry - cost,
     };
@@ -144,7 +149,7 @@ function RentalsReport() {
     flat.push({ property: 'TOTAL', status: '', rent: round2(T.rent), mortgage: round2(T.mort), insurance: round2(T.ins), taxes: round2(T.tax), monthlyCost: round2(T.cost), netCashFlow: round2(T.net) });
     downloadCSV('rental-cash-flow_' + lo + '_' + hi + '.csv', flat, [
       { key: 'property', label: 'Property' }, { key: 'status', label: 'Status' },
-      { key: 'rent', label: 'Rent' }, { key: 'mortgage', label: 'Mortgage' },
+      { key: 'rent', label: 'Rent received' }, { key: 'mortgage', label: 'Mortgage' },
       { key: 'insurance', label: 'Insurance' }, { key: 'taxes', label: 'Taxes' },
       { key: 'monthlyCost', label: 'Cost' }, { key: 'netCashFlow', label: 'Net cash flow' },
     ]);
@@ -170,7 +175,7 @@ function RentalsReport() {
           {(from !== cur || to !== cur) &&
             <Btn sz="sm" kind="ghost" onClick={() => { setFrom(cur); setTo(cur); }}>This month</Btn>}
           <div className="grow" />
-          <span className="tiny dim">Totals over the range. Net = rent minus modeled mortgage, insurance &amp; taxes, minus the actual logged expenses (Cost) tagged to each property.</span>
+          <span className="tiny dim">Totals over the range. Net = actual rent received minus modeled mortgage, insurance &amp; taxes, minus the actual logged expenses (Cost) tagged to each property.</span>
         </div>
       </Card>
 
@@ -183,7 +188,7 @@ function RentalsReport() {
             <div className="stat__sub">{nRented} rented · {nReno} in renovation</div>
           </div>
           <div className="stat grow">
-            <div className="stat__label">Gross rent · {rangeShort}</div>
+            <div className="stat__label">Rent received · {rangeShort}</div>
             <div className="stat__value">{fmtMoney(T.rent)}</div>
             <div className="stat__sub">{fmtMoney(T.rent / N)} / mo</div>
           </div>
@@ -208,7 +213,7 @@ function RentalsReport() {
             <tr>
               <th>Property</th>
               <th style={{ width: 150 }}>Status</th>
-              <th className="num" style={{ width: 110 }}>Rent</th>
+              <th className="num" style={{ width: 110 }} title="Actual rent received (from the rent ledger) in this range">Rent received</th>
               <th className="num" style={{ width: 110 }}>Mortgage</th>
               <th className="num" style={{ width: 120 }}>Insurance</th>
               <th className="num" style={{ width: 110 }}>Taxes</th>
@@ -217,22 +222,59 @@ function RentalsReport() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => (
-              <tr key={r.p.id} onClick={() => nav('/property/' + r.p.id)} style={{ cursor: 'pointer' }}>
-                <td><span className="addr">{r.p.address}</span></td>
+            {rows.map(r => {
+              const isOpen = openProp === r.p.id;
+              const pLines = (linesByProp[r.p.id] || []).sort((a, b) => (a.isExp ? 1 : 0) - (b.isExp ? 1 : 0) || (b.date || '').localeCompare(a.date || ''));
+              const inSum = pLines.filter(l => !l.isExp).reduce((a, l) => a + Math.abs(l.amount), 0);
+              return (
+              <React.Fragment key={r.p.id}>
+              <tr onClick={() => setOpenProp(isOpen ? null : r.p.id)} style={{ cursor: 'pointer' }} title={isOpen ? 'Hide transactions' : pLines.length ? 'Show ' + pLines.length + ' transaction' + (pLines.length === 1 ? '' : 's') + ' in this range' : 'No logged transactions in this range'}>
+                <td><span style={{ display: 'inline-block', width: 14, color: 'var(--ink-3)' }}>{isOpen ? '▾' : '▸'}</span><span className="addr">{r.p.address}</span></td>
                 <td>
                   {r.reno
                     ? <Tag tone="ochre">In renovation</Tag>
                     : <span className="row gap-6 items-center"><StatusBadge code={r.p.statusCode} full /></span>}
                 </td>
-                <td className="num mono">{r.rent ? fmtMoney(r.rent) : <span className="dim">$0</span>}</td>
+                <td className="num mono" title={r.scheduled !== r.rent ? 'Scheduled: ' + fmtMoney(r.scheduled) : undefined}>{r.rent ? fmtMoney(r.rent) : <span className="dim">$0</span>}{r.scheduled > r.rent + 0.5 && <div className="tiny dim">of {fmtMoney(r.scheduled)}</div>}</td>
                 <td className="num mono">{r.mort ? fmtMoney(r.mort) : <span className="dim">—</span>}</td>
                 <td className="num mono"><EscCell amt={r.insMo} esc={r.escI} /></td>
                 <td className="num mono"><EscCell amt={r.taxMo} esc={r.escT} /></td>
                 <td className="num mono">{fmtMoney(r.cost)}</td>
                 <td className="num mono" style={{ color: r.net >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 600 }}>{fmtMoney(r.net, { sign: true })}</td>
               </tr>
-            ))}
+              {isOpen && (
+                <tr>
+                  <td colSpan={8} style={{ padding: 0, background: 'var(--paper-3)' }}>
+                    <div style={{ padding: '6px 12px 10px 26px' }}>
+                      <div className="row between items-center" style={{ padding: '4px 0' }}>
+                        <span className="tiny up dim">Logged transactions · {rangeLong}</span>
+                        <a className="small" style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); nav('/property/' + r.p.id); }}>Open property →</a>
+                      </div>
+                      {pLines.length === 0
+                        ? <div className="small dim" style={{ padding: '6px 0' }}>No transactions tagged to this property in this range.</div>
+                        : pLines.map((l, i) => (
+                          <div key={i} className="row gap-10 items-center" style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)' }}>
+                            <span className="mono small dim" style={{ width: 64, flexShrink: 0 }}>{fmtDate(l.date)}</span>
+                            <span className="small grow" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.desc}{l.payee && <span className="dim">{' · ' + l.payee}</span>}</span>
+                            {l.split && <Tag tone="blue">split</Tag>}
+                            <Tag tone="ghost">{l.category || 'Uncategorized'}</Tag>
+                            <Tag tone={l.isExp ? 'brick' : 'sage'}>{l.isExp ? 'charge' : 'deposit'}</Tag>
+                            <span className="mono small" style={{ width: 92, textAlign: 'right', flexShrink: 0, color: l.isExp ? 'var(--brick)' : 'var(--sage)' }}>{fmtMoney(l.isExp ? -Math.abs(l.amount) : Math.abs(l.amount))}</span>
+                          </div>
+                        ))}
+                      {pLines.length > 0 && (
+                        <div className="row gap-12 small" style={{ padding: '6px 0 0', borderTop: '1px solid var(--rule-soft)', justifyContent: 'flex-end' }}>
+                          <span><span className="dim">Deposits:</span> <span className="mono" style={{ color: 'var(--sage)' }}>{fmtMoney(inSum)}</span></span>
+                          <span><span className="dim">Charges:</span> <span className="mono" style={{ color: 'var(--brick)' }}>{fmtMoney(-r.cost)}</span></span>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
           <tfoot>
             <tr style={{ borderTop: '2px solid var(--rule)', fontWeight: 600 }}>
@@ -248,7 +290,7 @@ function RentalsReport() {
           </tfoot>
         </table>
         <div className="card__body small dim" style={{ lineHeight: 1.6 }}>
-          Figures are totals over the selected range. <strong>Net cash flow = Rent − Mortgage − Insurance − Taxes − Cost</strong>, where Mortgage, Insurance and Taxes are the modeled monthly figures (insurance and taxes are annual amounts prorated monthly) and <strong>Cost</strong> is the actual logged expenses tagged to each property. Amounts marked <span className="mono tiny">esc</span> are escrowed
+          Figures are totals over the selected range. <strong>Net cash flow = Rent received − Mortgage − Insurance − Taxes − Cost</strong>, where <strong>Rent received</strong> is actual payments recorded in the rent ledger (a dim “of $X” shows the scheduled rent when less was collected), Mortgage, Insurance and Taxes are the modeled monthly figures (insurance and taxes are annual amounts prorated monthly) and <strong>Cost</strong> is the actual logged expenses tagged to each property. Amounts marked <span className="mono tiny">esc</span> are escrowed
           inside the mortgage payment, so they aren't added again.
         </div>
       </Card>
@@ -318,8 +360,8 @@ function PnlReport() {
   (store.transactions || []).forEach(t => {
     if (!t.date || t.date < from || t.date > to) return;
     const parts = (t.splits && t.splits.length)
-      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || '', project: s.project || '' }))
-      : [{ amount: t.amount || 0, category: t.category || '', project: t.project || '' }];
+      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
+      : [{ amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
     parts.forEach(p => {
       if (scope === 'rentals' && !isRentalProp(getPropertyByAddr(p.project))) return;
       lines.push(p);
@@ -327,13 +369,14 @@ function PnlReport() {
   });
 
   const income = {}, expense = {};
+  const incLines = {}, expLines = {};
   let unattributedRental = 0;
   lines.forEach(l => {
     const label = l.category || 'Uncategorized';
     const kind = catKind[l.category];
     const isInc = kind === 'income' ? true : kind === 'expense' ? false : (l.amount >= 0);
-    if (isInc) income[label] = (income[label] || 0) + l.amount;
-    else expense[label] = (expense[label] || 0) + Math.abs(l.amount);
+    if (isInc) { income[label] = (income[label] || 0) + l.amount; (incLines[label] = incLines[label] || []).push(l); }
+    else { expense[label] = (expense[label] || 0) + Math.abs(l.amount); (expLines[label] = expLines[label] || []).push(l); }
   });
   // Heads-up: rental income that isn't tagged to a specific property is invisible in rentals scope.
   if (scope === 'rentals') {
@@ -416,8 +459,8 @@ function PnlReport() {
       </Card>
 
       <div className="grid g-2 gap-16">
-        <PnlSection title="Income" rows={incRows} total={totalInc} tone="var(--sage)" sign={1} />
-        <PnlSection title="Expenses" rows={expRows} total={totalExp} tone="var(--brick)" sign={-1} />
+        <PnlSection title="Income" rows={incRows} total={totalInc} tone="var(--sage)" sign={1} linesByCat={incLines} />
+        <PnlSection title="Expenses" rows={expRows} total={totalExp} tone="var(--brick)" sign={-1} linesByCat={expLines} />
       </div>
 
       <Card className="mt-16">
@@ -440,7 +483,8 @@ function PnlReport() {
   );
 }
 
-function PnlSection({ title, rows, total, tone, sign }) {
+function PnlSection({ title, rows, total, tone, sign, linesByCat }) {
+  const [open, setOpen] = useState(null);
   return (
     <Card>
       <CardHead title={title} />
@@ -449,12 +493,35 @@ function PnlSection({ title, rows, total, tone, sign }) {
         : (
           <table className="tbl">
             <tbody>
-              {rows.map(([cat, v]) => (
-                <tr key={cat}>
-                  <td>{cat === 'Uncategorized' ? <span className="dim">Uncategorized</span> : <Tag tone="ghost">{cat}</Tag>}</td>
+              {rows.map(([cat, v]) => {
+                const isOpen = open === cat;
+                const catLines = (linesByCat && linesByCat[cat]) || [];
+                return (
+                <React.Fragment key={cat}>
+                <tr onClick={() => setOpen(isOpen ? null : cat)} style={{ cursor: 'pointer' }} title={isOpen ? 'Hide transactions' : 'Show ' + catLines.length + ' transaction' + (catLines.length === 1 ? '' : 's')}>
+                  <td><span style={{ display: 'inline-block', width: 14, color: 'var(--ink-3)' }}>{isOpen ? '▾' : '▸'}</span>{cat === 'Uncategorized' ? <span className="dim">Uncategorized</span> : <Tag tone="ghost">{cat}</Tag>}<span className="tiny dim" style={{ marginLeft: 6 }}>{catLines.length}</span></td>
                   <td className="num mono" style={{ width: 140 }}>{fmtMoney(sign * v, { sign: true })}</td>
                 </tr>
-              ))}
+                {isOpen && (
+                  <tr>
+                    <td colSpan={2} style={{ padding: 0, background: 'var(--paper-3)' }}>
+                      <div style={{ padding: '4px 12px 8px 26px', maxHeight: 320, overflowY: 'auto' }}>
+                        {[...catLines].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((l, i) => (
+                          <div key={i} className="row gap-10 items-center" style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)' }}>
+                            <span className="mono small dim" style={{ width: 64, flexShrink: 0 }}>{fmtDate(l.date)}</span>
+                            <span className="small grow" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.desc}{l.payee && <span className="dim">{' · ' + l.payee}</span>}</span>
+                            {l.split && <Tag tone="blue">split</Tag>}
+                            {l.project && l.project !== 'multiple' && <span className="tiny dim" style={{ flexShrink: 0, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.project}</span>}
+                            <span className="mono small" style={{ width: 92, textAlign: 'right', flexShrink: 0, color: l.amount < 0 ? 'var(--brick)' : 'var(--sage)' }}>{fmtMoney(l.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
             </tbody>
             <tfoot>
               <tr style={{ borderTop: '2px solid var(--rule)', fontWeight: 600 }}>

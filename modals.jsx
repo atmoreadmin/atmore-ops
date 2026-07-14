@@ -905,10 +905,10 @@ function TransactionEditor({ tx, onClose }) {
 
         <div className="row gap-8 mt-8 items-center">
           {editing && <Btn kind="danger" onClick={doDelete}>Delete</Btn>}
-          {(!desc || !amountValid) && <span className="tiny dim">{!desc && !amountValid ? 'Add a description and amount to save' : !desc ? 'Add a description to save' : 'Enter an amount to save'}</span>}
+          {(!desc || !amountValid || !category || !project) && <span className="tiny dim">{'Add ' + [!desc && 'a description', !amountValid && 'an amount', !category && 'a category', !project && 'a property'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1') + ' to save'}</span>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!desc || !amountValid}
+          <Btn kind="primary" disabled={!desc || !amountValid || !category || !project}
             onClick={save}>{editing ? 'Save' : 'Add transaction'}</Btn>
         </div>
       </div>
