@@ -315,6 +315,7 @@ function TransactionsScreen() {
                   style={{background: 'transparent', border: 'none', color: 'var(--blue-deep)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5}}>Clear</button>
               </div>
             )}
+            <div style={{overflowX: 'auto'}}>
             <table className="tbl">
               <thead>
                 <tr>
@@ -328,7 +329,7 @@ function TransactionsScreen() {
                   <Th k="amount" label="Amount" num/>
                   {showCol('category') && <Th k="category" label="Category"/>}
                   {showCol('project') && <Th k="project" label="Property"/>}
-                  <th style={{width: 130}}></th>
+                  <th style={{width: 110}}></th>
                 </tr>
               </thead>
               <tbody>
@@ -389,6 +390,7 @@ function TransactionsScreen() {
                 })}
               </tbody>
             </table>
+            </div>
             {rows.length === 0 && (txFocus
               ? <div className="card__body"><Empty icon="✓" title="Nothing left to review" sub="Every flagged transaction has been corrected. Use “Show all transactions” to return to the full ledger."/></div>
               : <div className="card__body"><Empty title="No transactions match" sub="Try clearing filters."/></div>)}
