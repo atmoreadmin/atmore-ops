@@ -40,10 +40,11 @@ function TransactionsScreen() {
   const [search, setSearch] = useState('');
   const [acctFilter, setAcctFilter] = useState('all');
   const [catFilter, setCatFilter] = useState('all');
+  const [bucketFilter, setBucketFilter] = useState('all');
   const [onlyUntagged, setOnlyUntagged] = useState(false);
   const [page, setPage] = useState(0);
   // Jump back to the first page whenever the result set changes underneath us.
-  React.useEffect(() => { setPage(0); }, [search, acctFilter, catFilter, onlyUntagged, showSelectedOnly, txFocus, sortKey, sortDir]);
+  React.useEffect(() => { setPage(0); }, [search, acctFilter, catFilter, bucketFilter, onlyUntagged, showSelectedOnly, txFocus, sortKey, sortDir]);
   const [selected, setSelected] = useState(new Set());
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [txFocus, setTxFocus] = useState(() => takeFocus('transactions'));
@@ -87,6 +88,7 @@ function TransactionsScreen() {
     if (txFocusSet) return txFocusSet.has(t.id);
     if (acctFilter !== 'all' && String(t.acct) !== String(acctFilter)) return false;
     if (catFilter !== 'all' && t.category !== catFilter) return false;
+    if (bucketFilter !== 'all' && (bucketFilter === 'none' ? !!t.bucket : t.bucket !== bucketFilter)) return false;
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
     if (search) {
@@ -227,6 +229,13 @@ function TransactionsScreen() {
               <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
                 {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
               </select>
+              <select className="select" value={bucketFilter} onChange={e => setBucketFilter(e.target.value)} title="Bucket">
+                <option value="all">All buckets</option>
+                <option value="Properties">Properties</option>
+                <option value="Rentals">Rentals</option>
+                <option value="Office">Office</option>
+                <option value="none">No bucket</option>
+              </select>
               <Tag tone={onlyUntagged ? 'solid-brick' : 'ghost'} style={{cursor: 'pointer'}}>
                 <span onClick={() => setOnlyUntagged(v => !v)}>
                   {onlyUntagged ? '✓ ' : ''}Untagged only ({untaggedTotal})
@@ -351,9 +360,12 @@ function TransactionsScreen() {
                       {showCol('payee') && <td className="small dim">{t.payee || '—'}</td>}
                       <td className="num mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</td>
                       {showCol('category') && <td>
+                        <div className="row gap-4 items-center">
                         {isSplit ? <Tag tone="blue">{t.splits.length} splits</Tag>
                           : t.category ? <Tag tone="ghost">{t.category}</Tag>
                           : <Tag tone="ochre" title={`Suggestion: ${suggestion.category}`}>{suggestion.category ? `?  ${suggestion.category}` : '?  unknown'}</Tag>}
+                        {t.bucket && <span className="tiny dim" title="Bucket">{t.bucket}</span>}
+                        </div>
                       </td>}
                       {showCol('project') && <td>
                         {isSplit ? (
@@ -495,6 +507,7 @@ function BulkActionBar({ selectedIds, onClear }) {
   const [showProj, setShowProj] = useState(false);
   const [cat, setCat] = useState('');
   const [proj, setProj] = useState('');
+  const [bucket, setBucket] = useState('');
   const [payee, setPayee] = useState('');
   // Distinct existing payees → datalist suggestions for quick reuse.
   const knownPayees = [...new Set(store.transactions.map(t => t.payee).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -533,6 +546,16 @@ function BulkActionBar({ selectedIds, onClear }) {
         {sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}
       </select>
       {proj && <button onClick={() => { bulkTagTransactions(selectedIds, {project: proj}); setProj(''); }}
+        style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
+
+      <select className="select" style={{background: 'var(--ink-2)', color: 'white', borderColor: 'var(--ink-3)'}}
+        value={bucket} onChange={e => setBucket(e.target.value)}>
+        <option value="">Set bucket…</option>
+        <option value="Properties">Properties</option>
+        <option value="Rentals">Rentals</option>
+        <option value="Office">Office</option>
+      </select>
+      {bucket && <button onClick={() => { bulkTagTransactions(selectedIds, {bucket}); setBucket(''); }}
         style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
 
       <input list="bulk-payee-options" value={payee} onChange={e => setPayee(e.target.value)}

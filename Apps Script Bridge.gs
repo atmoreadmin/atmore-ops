@@ -56,7 +56,7 @@ const SCHEMA = {
     'status','lateFeeWaived','linkedTxId','linkedTxIds','reducedCharge','noAutoMatch',
   ],
   Transactions: [
-    'id','date','acct','desc','amount','payee','category','project','notes','importBatch',
+    'id','date','acct','desc','amount','payee','category','project','bucket','notes','importBatch',
   ],
   Contractors: [
     'id','name','phone','email','specialty','entityType','w9OnFile','w9Date',

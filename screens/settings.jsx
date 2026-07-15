@@ -91,7 +91,7 @@ function ListEditor({ def, showArchived, setShowArchived }) {
   const items = (store.lists?.[def.key] || [])
     .filter(x => showArchived || !x.archived)
     .slice()
-    .sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { sensitivity: 'base' }));
+    .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''), undefined, { sensitivity: 'base' }));
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState('');
   const [newKind, setNewKind] = useState(def.hasKind ? 'expense' : null);

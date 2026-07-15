@@ -360,23 +360,25 @@ function PnlReport() {
   (store.transactions || []).forEach(t => {
     if (!t.date || t.date < from || t.date > to) return;
     const parts = (t.splits && t.splits.length)
-      ? t.splits.map(s => ({ amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
-      : [{ amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
+      ? t.splits.map(s => ({ srcId: t.id, bucket: t.bucket, amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
+      : [{ srcId: t.id, bucket: t.bucket, amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
     parts.forEach(p => {
       if (scope === 'rentals' && !isRentalProp(getPropertyByAddr(p.project))) return;
       lines.push(p);
     });
   });
 
-  const income = {}, expense = {};
-  const incLines = {}, expLines = {};
+  const BUCKET_ORDER = ['Properties', 'Rentals', 'Office', 'Unassigned'];
+  const inc = {}, exp = {};       // bucket -> { category: amount }
+  const incL = {}, expL = {};     // bucket -> { category: [lines] }
   let unattributedRental = 0;
   lines.forEach(l => {
     const label = l.category || 'Uncategorized';
+    const b = BUCKET_ORDER.includes(l.bucket) ? l.bucket : 'Unassigned';
     const kind = catKind[l.category];
     const isInc = kind === 'income' ? true : kind === 'expense' ? false : (l.amount >= 0);
-    if (isInc) { income[label] = (income[label] || 0) + l.amount; (incLines[label] = incLines[label] || []).push(l); }
-    else { expense[label] = (expense[label] || 0) + Math.abs(l.amount); (expLines[label] = expLines[label] || []).push(l); }
+    if (isInc) { (inc[b] = inc[b] || {})[label] = (inc[b][label] || 0) + l.amount; ((incL[b] = incL[b] || {})[label] = incL[b][label] || []).push(l); }
+    else { (exp[b] = exp[b] || {})[label] = (exp[b][label] || 0) + Math.abs(l.amount); ((expL[b] = expL[b] || {})[label] = expL[b][label] || []).push(l); }
   });
   // Heads-up: rental income that isn't tagged to a specific property is invisible in rentals scope.
   if (scope === 'rentals') {
@@ -392,23 +394,29 @@ function PnlReport() {
     });
   }
 
-  const incRows = Object.entries(income).sort((a, b) => b[1] - a[1]);
-  const expRows = Object.entries(expense).sort((a, b) => b[1] - a[1]);
-  const totalInc = incRows.reduce((a, r) => a + r[1], 0);
-  const totalExp = expRows.reduce((a, r) => a + r[1], 0);
+  const mkGroups = (agg, ln) => BUCKET_ORDER.filter(b => agg[b]).map(b => ({
+    bucket: b,
+    rows: Object.entries(agg[b]).sort((x, y) => y[1] - x[1]),
+    subtotal: Object.values(agg[b]).reduce((a, v) => a + v, 0),
+    linesByCat: ln[b] || {},
+  }));
+  const incGroups = mkGroups(inc, incL);
+  const expGroups = mkGroups(exp, expL);
+  const totalInc = incGroups.reduce((a, g) => a + g.subtotal, 0);
+  const totalExp = expGroups.reduce((a, g) => a + g.subtotal, 0);
   const net = totalInc - totalExp;
   const pct = totalInc + totalExp > 0 ? (totalInc / (totalInc + totalExp)) * 100 : 50;
 
   function exportCsv() {
     const flat = [
-      ...incRows.map(([c, v]) => ({ section: 'Income', category: c, amount: round2(v) })),
-      { section: 'Income', category: 'Total income', amount: round2(totalInc) },
-      ...expRows.map(([c, v]) => ({ section: 'Expense', category: c, amount: round2(-v) })),
-      { section: 'Expense', category: 'Total expenses', amount: round2(-totalExp) },
-      { section: 'Net', category: 'Net profit / loss', amount: round2(net) },
+      ...incGroups.flatMap(g => g.rows.map(([c, v]) => ({ section: 'Income', bucket: g.bucket, category: c, amount: round2(v) }))),
+      { section: 'Income', bucket: '', category: 'Total income', amount: round2(totalInc) },
+      ...expGroups.flatMap(g => g.rows.map(([c, v]) => ({ section: 'Expense', bucket: g.bucket, category: c, amount: round2(-v) }))),
+      { section: 'Expense', bucket: '', category: 'Total expenses', amount: round2(-totalExp) },
+      { section: 'Net', bucket: '', category: 'Net profit / loss', amount: round2(net) },
     ];
     downloadCSV(`p-and-l_${from}_${to}.csv`, flat, [
-      { key: 'section', label: 'Section' }, { key: 'category', label: 'Category' }, { key: 'amount', label: 'Amount' },
+      { key: 'section', label: 'Section' }, { key: 'bucket', label: 'Bucket' }, { key: 'category', label: 'Category' }, { key: 'amount', label: 'Amount' },
     ]);
   }
 
@@ -437,12 +445,12 @@ function PnlReport() {
           <div className="stat grow">
             <div className="stat__label">Income</div>
             <div className="stat__value" style={{ color: 'var(--sage)' }}>{fmtMoney(totalInc)}</div>
-            <div className="stat__sub">{incRows.length} categor{incRows.length === 1 ? 'y' : 'ies'}</div>
+            <div className="stat__sub">{incGroups.reduce((a, g) => a + g.rows.length, 0)} categor{incGroups.reduce((a, g) => a + g.rows.length, 0) === 1 ? 'y' : 'ies'}</div>
           </div>
           <div className="stat grow">
             <div className="stat__label">Expenses</div>
             <div className="stat__value" style={{ color: 'var(--brick)' }}>{fmtMoney(totalExp)}</div>
-            <div className="stat__sub">{expRows.length} categor{expRows.length === 1 ? 'y' : 'ies'}</div>
+            <div className="stat__sub">{expGroups.reduce((a, g) => a + g.rows.length, 0)} categor{expGroups.reduce((a, g) => a + g.rows.length, 0) === 1 ? 'y' : 'ies'}</div>
           </div>
           <div className="stat grow" style={{ borderLeft: '2px solid var(--rule)' }}>
             <div className="stat__label">Net {net >= 0 ? 'profit' : 'loss'}</div>
@@ -459,8 +467,8 @@ function PnlReport() {
       </Card>
 
       <div className="grid g-2 gap-16">
-        <PnlSection title="Income" rows={incRows} total={totalInc} tone="var(--sage)" sign={1} linesByCat={incLines} />
-        <PnlSection title="Expenses" rows={expRows} total={totalExp} tone="var(--brick)" sign={-1} linesByCat={expLines} />
+        <PnlSection title="Income" groups={incGroups} total={totalInc} tone="var(--sage)" sign={1} />
+        <PnlSection title="Expenses" groups={expGroups} total={totalExp} tone="var(--brick)" sign={-1} />
       </div>
 
       <Card className="mt-16">
@@ -483,22 +491,37 @@ function PnlReport() {
   );
 }
 
-function PnlSection({ title, rows, total, tone, sign, linesByCat }) {
+function PnlSection({ title, groups, total, tone, sign }) {
   const [open, setOpen] = useState(null);
+  const [editTx, setEditTx] = useState(null);
+  const [splitTx, setSplitTx] = useState(null);
+  const openLine = l => {
+    const src = (Store.state.transactions || []).find(x => x.id === l.srcId);
+    if (!src) return;
+    if (src.splits && src.splits.length) setSplitTx(src); else setEditTx(src);
+  };
+  const empty = !groups || groups.length === 0;
   return (
     <Card>
       <CardHead title={title} />
-      {rows.length === 0
+      {empty
         ? <div className="card__body small dim">No {title.toLowerCase()} in this range.</div>
         : (
           <table className="tbl">
             <tbody>
-              {rows.map(([cat, v]) => {
-                const isOpen = open === cat;
-                const catLines = (linesByCat && linesByCat[cat]) || [];
+              {groups.map(g => (
+                <React.Fragment key={g.bucket}>
+                <tr style={{ background: 'var(--paper-3)' }}>
+                  <td className="up dim" style={{ fontSize: 11, letterSpacing: '0.06em' }}>{g.bucket}</td>
+                  <td className="num mono dim" style={{ width: 140, fontSize: 12 }}>{fmtMoney(sign * g.subtotal, { sign: true })}</td>
+                </tr>
+                {g.rows.map(([cat, v]) => {
+                const key = g.bucket + '|' + cat;
+                const isOpen = open === key;
+                const catLines = (g.linesByCat && g.linesByCat[cat]) || [];
                 return (
-                <React.Fragment key={cat}>
-                <tr onClick={() => setOpen(isOpen ? null : cat)} style={{ cursor: 'pointer' }} title={isOpen ? 'Hide transactions' : 'Show ' + catLines.length + ' transaction' + (catLines.length === 1 ? '' : 's')}>
+                <React.Fragment key={key}>
+                <tr onClick={() => setOpen(isOpen ? null : key)} style={{ cursor: 'pointer' }} title={isOpen ? 'Hide transactions' : 'Show ' + catLines.length + ' transaction' + (catLines.length === 1 ? '' : 's')}>
                   <td><span style={{ display: 'inline-block', width: 14, color: 'var(--ink-3)' }}>{isOpen ? '▾' : '▸'}</span>{cat === 'Uncategorized' ? <span className="dim">Uncategorized</span> : <Tag tone="ghost">{cat}</Tag>}<span className="tiny dim" style={{ marginLeft: 6 }}>{catLines.length}</span></td>
                   <td className="num mono" style={{ width: 140 }}>{fmtMoney(sign * v, { sign: true })}</td>
                 </tr>
@@ -507,9 +530,9 @@ function PnlSection({ title, rows, total, tone, sign, linesByCat }) {
                     <td colSpan={2} style={{ padding: 0, background: 'var(--paper-3)' }}>
                       <div style={{ padding: '4px 12px 8px 26px', maxHeight: 320, overflowY: 'auto' }}>
                         {[...catLines].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((l, i) => (
-                          <div key={i} className="row gap-10 items-center" style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)' }}>
+                          <div key={i} className="row gap-10 items-center" title={l.srcId ? (l.split ? 'Click to edit the split' : 'Click to edit this transaction') : undefined} onClick={l.srcId ? () => openLine(l) : undefined} style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: l.srcId ? 'pointer' : 'default' }}>
                             <span className="mono small dim" style={{ width: 64, flexShrink: 0 }}>{fmtDate(l.date)}</span>
-                            <span className="small grow" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.desc}{l.payee && <span className="dim">{' · ' + l.payee}</span>}</span>
+                            <span className="small grow" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: l.srcId ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3 }}>{l.desc}{l.payee && <span className="dim">{' · ' + l.payee}</span>}</span>
                             {l.split && <Tag tone="blue">split</Tag>}
                             {l.project && l.project !== 'multiple' && <span className="tiny dim" style={{ flexShrink: 0, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.project}</span>}
                             <span className="mono small" style={{ width: 92, textAlign: 'right', flexShrink: 0, color: l.amount < 0 ? 'var(--brick)' : 'var(--sage)' }}>{fmtMoney(l.amount)}</span>
@@ -521,7 +544,9 @@ function PnlSection({ title, rows, total, tone, sign, linesByCat }) {
                 )}
                 </React.Fragment>
                 );
-              })}
+                })}
+                </React.Fragment>
+              ))}
             </tbody>
             <tfoot>
               <tr style={{ borderTop: '2px solid var(--rule)', fontWeight: 600 }}>
@@ -531,6 +556,8 @@ function PnlSection({ title, rows, total, tone, sign, linesByCat }) {
             </tfoot>
           </table>
         )}
+      {editTx && <TransactionEditor tx={editTx} onClose={() => setEditTx(null)} />}
+      {splitTx && <SplitTransactionModal tx={splitTx} onClose={() => setSplitTx(null)} />}
     </Card>
   );
 }

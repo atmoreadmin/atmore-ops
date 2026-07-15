@@ -803,6 +803,7 @@ function TransactionEditor({ tx, onClose }) {
   const [category, setCategory] = useState(tx?.category || '');
   const [project, setProject] = useState(tx?.project || '');
   const [notes, setNotes] = useState(tx?.notes || '');
+  const [bucket, setBucket] = useState(tx?.bucket || '');
   const [addingProp, setAddingProp] = useState(false);
 
   const absAmount = Math.abs(parseFloat(amount) || 0);
@@ -810,7 +811,7 @@ function TransactionEditor({ tx, onClose }) {
   const signedAmount = direction === 'out' ? -absAmount : absAmount;
 
   function save() {
-    const payload = { date, acct, desc, amount: signedAmount, payee, category, project, notes };
+    const payload = { date, acct, desc, amount: signedAmount, payee, category, project, notes, bucket };
     if (editing) {
       tagTransaction(tx.id, payload);
     } else {
@@ -893,6 +894,13 @@ function TransactionEditor({ tx, onClose }) {
         </div>
 
         <div>
+          <div className="up dim mb-4">Bucket</div>
+          <Segmented value={bucket}
+            options={[{value:'Properties', label:'Properties'}, {value:'Rentals', label:'Rentals'}, {value:'Office', label:'Office'}]}
+            onChange={setBucket}/>
+        </div>
+
+        <div>
           <div className="up dim mb-4">Notes (optional)</div>
           <textarea className="input" value={notes} onChange={e => setNotes(e.target.value)} rows={2}
             placeholder="e.g. reimbursed by tenant, receipt in Drive, half is for the shed repair…"
@@ -905,10 +913,10 @@ function TransactionEditor({ tx, onClose }) {
 
         <div className="row gap-8 mt-8 items-center">
           {editing && <Btn kind="danger" onClick={doDelete}>Delete</Btn>}
-          {(!desc || !amountValid || !category || !project) && <span className="tiny dim">{'Add ' + [!desc && 'a description', !amountValid && 'an amount', !category && 'a category', !project && 'a property'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1') + ' to save'}</span>}
+          {(!desc || !amountValid || !category || !project || !bucket) && <span className="tiny dim">{'Add ' + [!desc && 'a description', !amountValid && 'an amount', !category && 'a category', !project && 'a property', !bucket && 'a bucket'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1') + ' to save'}</span>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!desc || !amountValid || !category || !project}
+          <Btn kind="primary" disabled={!desc || !amountValid || !category || !project || !bucket}
             onClick={save}>{editing ? 'Save' : 'Add transaction'}</Btn>
         </div>
       </div>
