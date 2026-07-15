@@ -47,12 +47,14 @@ function PropertyEditor({ property, onClose }) {
   const [tDue, setTDue] = useState(tx.dueDate || '');
   const [tEscrowed, setTEscrowed] = useState(!!tx.escrowed);
   const [tParcel, setTParcel] = useState(tx.taxId || '');
+  const [financingType, setFinancingType] = useState(p.financingType || '');
 
   const [section, setSection] = useState('basics');
 
   function save() {
     const patch = {
       type, assigned, loanType, lockbox, vestingLLC, driveUrl, notes,
+      financingType: financingType || null,
       signingDate: signingDate || null,
       closingTime: signingTime || null,
       insurance: (iCarrier || iPolicy || iPremium || iRenewal || iAgentName || iAgentPhone) ? {
@@ -86,6 +88,7 @@ function PropertyEditor({ property, onClose }) {
   const SECTIONS = [
     {id:'basics',    label:'Basics'},
     {id:'mortgage',  label:'Mortgage'},
+    {id:'financing', label:'Financing'},
     {id:'insurance', label:'Insurance'},
     {id:'taxutil',   label:'Taxes & utilities'},
   ];
@@ -171,6 +174,21 @@ function PropertyEditor({ property, onClose }) {
                   <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowI} onChange={e => setLEscrowI(e.target.checked)}/> Insurance escrowed by lender</label>
                 </div>
               </Field>
+            </div>
+          )}
+
+          {section === 'financing' && (
+            <div className="col gap-12">
+              <div className="up dim">Financing</div>
+              <Field label="Loan structure">
+                <select className="input" value={financingType} onChange={e => setFinancingType(e.target.value)} style={{width: 220}}>
+                  <option value="">—</option>
+                  <option value="DSCR">DSCR</option>
+                  <option value="Cash">Cash</option>
+                  <option value="Bridge">Bridge</option>
+                </select>
+              </Field>
+              <div className="tiny dim" style={{lineHeight: 1.5}}>How this property is financed — DSCR loan, bought with cash, or on a bridge loan.</div>
             </div>
           )}
 

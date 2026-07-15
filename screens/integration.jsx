@@ -34,6 +34,7 @@ const SHEET_SCHEMA = {
       { key: 'zip',             label: 'Zip',                type: 'string' },
       { key: 'assigned',        label: 'Assigned Person',    type: 'string' },
       { key: 'loanType',        label: 'Loan Type',          type: 'enum' },
+      { key: 'financingType',   label: 'Financing',          type: 'enum', notes: 'DSCR / Cash / Bridge' },
       { key: 'lockbox',         label: 'Lockbox Code',       type: 'string' },
       { key: 'ddDate',          label: 'DD Date',            type: 'date' },
       { key: 'signingDate',     label: 'Signing Date',       type: 'date' },

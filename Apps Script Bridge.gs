@@ -32,7 +32,7 @@
 const SCHEMA = {
   Properties: [
     'id','address','type','status','statusCode','city','county','state','zip',
-    'assigned','loanType','lockbox','ddDate','signingDate','purchaseDate',
+    'assigned','loanType','financingType','lockbox','ddDate','signingDate','purchaseDate',
     'purchasePrice','acqEarnest','purchaseFees','purchaseCredits','purchaseLoan','acqExchangeFunds','acqDDFee',
     'rehab','rehabFunds','rehabDraws','saleCreditsReceived','saleAttorney','interest','interestCredit','otherFees','cashToClose','cashReceivedAtClose','salesDate','listPrice','salesPrice','grossProfit',
     'vestingLLC','driveUrl','failedReason','notes','attorney','attorneyContact','closingTime',

@@ -647,13 +647,18 @@ function PaymentHistory({ tenantId }) {
 
   // Group by month into money in vs out. Security deposits are refundable
   // liabilities, NOT income — they're excluded from in/out and tracked separately.
+  // Renovation/financing-phase categories are also excluded from In/Out/Net:
+  // this card tracks RENTAL cash flow only.
   const isDep = t => /security deposit/i.test(t.category || '');
+  const NON_RENTAL = new Set(['contractor payment', 'job supplies', 'refi cash-out', 'loan repayment', 'interest payment']);
+  const isNonRental = t => NON_RENTAL.has((t.category || '').toLowerCase().trim());
   const byMonth = {};
   tx.forEach(t => {
     if (!t.date) return;
     const m = t.date.slice(0, 7);
-    if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, txns: [] };
+    if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, otherNet: 0, txns: [] };
     if (isDep(t)) { /* excluded from cash flow */ }
+    else if (isNonRental(t)) byMonth[m].otherNet += (t.amount || 0);
     else if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
     else byMonth[m].out += Math.abs(t.amount);
     byMonth[m].txns.push(t);
@@ -691,18 +696,20 @@ function PaymentHistory({ tenantId }) {
   }
   const totalIn = months.reduce((a, m) => a + m.in, 0);
   const totalOut = months.reduce((a, m) => a + m.out, 0);
+  const totalOther = months.reduce((a, m) => a + m.otherNet, 0);
 
   return (
     <div>
       <div className="row between items-center mb-8">
         <div className="col" style={{gap: 2}}>
           <div className="up dim">Monthly cash flow · {months.length} months</div>
-          {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates</div>}
+          {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates · rental activity only</div>}
         </div>
         <div className="row gap-12 small">
           {depositsHeld !== 0 && <span title={_curTen ? 'Deposit transactions since ' + fmtDate(_curTen.moveIn, {full: true}) + ' (current tenant)' : 'All-time deposit collections minus refunds'}><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
-          <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
-          <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
+          {totalOther !== 0 && <span title="Contractor Payment, Job Supplies, Refi Cash-Out, Loan Repayment, Interest Payment — renovation/financing activity, not counted in In/Out/Net"><span className="dim">Non-rental:</span> <span className="mono dim">{fmtMoney(totalOther)}</span></span>}
+          <span title="Rental income and deposits received (renovation/financing excluded)"><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
+          <span title="Rental charges only — renovation/financing excluded"><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
           <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
         </div>
       </div>
@@ -720,6 +727,8 @@ function PaymentHistory({ tenantId }) {
             const net = m.in - m.out;
             const isOpen = open === m.month;
             const rows = [...m.txns].sort((a, b) => (a.recurring ? 1 : 0) - (b.recurring ? 1 : 0) || (a.category || '\uffff').localeCompare(b.category || '\uffff') || (a.payee || '\uffff').localeCompare(b.payee || '\uffff') || (b.date || '').localeCompare(a.date || ''));
+            const rentalRows = rows.filter(t => !isNonRental(t));
+            const otherRows = rows.filter(t => isNonRental(t));
             return (
               <React.Fragment key={m.month}>
                 <tr onClick={() => setOpen(isOpen ? null : m.month)} style={{cursor: 'pointer'}}>
@@ -732,7 +741,8 @@ function PaymentHistory({ tenantId }) {
                   <tr>
                     <td colSpan={4} style={{padding: 0, background: 'var(--paper-3)'}}>
                       <div style={{padding: '4px 12px 8px 26px'}}>
-                        {rows.map(t => {
+                        {otherRows.length > 0 && rentalRows.length > 0 && <div className="tiny up dim" style={{padding: '6px 0 2px'}}>Rental</div>}
+                        {rentalRows.map(t => {
                           const src = t.recurring ? null : (Store.state.transactions || []).find(x => x.id === (t.srcId || t.id));
                           const isSlice = !!t.srcId;
                           return (
@@ -750,6 +760,27 @@ function PaymentHistory({ tenantId }) {
                           </div>
                           );
                         })}
+                        {otherRows.length > 0 && (
+                          <React.Fragment>
+                            <div className="tiny up dim" style={{padding: '10px 0 2px'}}>Renovation / financing — not counted in cash flow</div>
+                            {otherRows.map(t => {
+                              const src = t.recurring ? null : (Store.state.transactions || []).find(x => x.id === (t.srcId || t.id));
+                              const isSlice = !!t.srcId;
+                              return (
+                              <div key={t.id} className="row gap-10 items-center" title={isSlice ? 'Click to view the full split' : src ? 'Click to view this charge' : undefined}
+                                onClick={src ? (e) => { e.stopPropagation(); if (isSlice) setViewSplit(src); else setViewTx(src); } : undefined}
+                                style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: src ? 'pointer' : 'default', opacity: 0.65}}>
+                                <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{fmtDate(t.date)}</span>
+                                <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+                                {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
+                                {src && !isSlice && !src.splits && <button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, flexShrink: 0}} title="Split this charge across properties" onClick={(e) => { e.stopPropagation(); setSplitTxn(src); }}>Split</button>}
+                                {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                                <span className="mono small dim" style={{width: 92, textAlign: 'right', flexShrink: 0}}>{fmtMoney(t.amount)}</span>
+                              </div>
+                              );
+                            })}
+                          </React.Fragment>
+                        )}
                       </div>
                     </td>
                   </tr>
