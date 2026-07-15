@@ -6,6 +6,8 @@ function TaxBinderScreen() {
   const store = useStore();
   const [year, setYear] = useState(parseInt(TODAY().slice(0,4)));
   const [soldSort, setSoldSort] = useState({ key: 'salesDate', dir: 'desc' });
+  const [soldYear, setSoldYear] = useState(null);   // null = follow the binder year
+  const [soldGroup, setSoldGroup] = useState('all'); // all | Flip | Wholesale | Other
   const yearStr = String(year);
 
   // Rent collected — sum paid amount where paidOn falls in the year
@@ -35,11 +37,18 @@ function TaxBinderScreen() {
     totalIncome += t.amount;
   });
 
-  // Sold properties — those with a sales date in the year
-  const soldThisYear = store.properties.filter(p =>
-    p.salesDate && p.salesDate.startsWith(yearStr) ||
-    p.stageHistory?.some(h => h.to === 'I' && h.at && h.at.startsWith(yearStr))
-  );
+  // Sold properties — grouped Flips / Wholesale / Other, filterable by sale year
+  const soldOf = p => p.salesDate || (p.stageHistory || []).find(h => h.to === 'I' && h.at)?.at || '';
+  const soldYearStr = String(soldYear ?? year);
+  const soldYears = [...new Set(store.properties.map(p => soldOf(p).slice(0,4)).filter(Boolean))].sort().reverse();
+  const groupOf = p => {
+    const t = String(p.type || '').toLowerCase();
+    return t.includes('flip') ? 'Flip' : t.includes('wholesale') ? 'Wholesale' : 'Other';
+  };
+  const soldAll = store.properties.filter(p => soldOf(p).startsWith(soldYearStr));
+  const soldThisYear = soldGroup === 'all' ? soldAll : soldAll.filter(p => groupOf(p) === soldGroup);
+  const groupCounts = { Flip: 0, Wholesale: 0, Other: 0 };
+  soldAll.forEach(p => { groupCounts[groupOf(p)]++; });
 
   // 1099s issued for year
   const ten99s = store.contractors
@@ -200,9 +209,23 @@ function TaxBinderScreen() {
       </Card>
 
       <Card className="mb-16">
-        <CardHead title={`Properties sold in ${year}`} right={<Tag tone="ghost">{soldThisYear.length}</Tag>}/>
+        <CardHead title={`Properties sold in ${soldYearStr}`} right={
+          <div className="row gap-8 items-center">
+            <div className="row gap-4">
+              {['all','Flip','Wholesale','Other'].map(g => (
+                <button key={g} className={'btn btn--sm ' + (soldGroup === g ? 'btn--primary' : 'btn--ghost')} onClick={() => setSoldGroup(g)}>
+                  {g === 'all' ? 'All · ' + soldAll.length : g + (g === 'Flip' ? 's' : '') + ' · ' + groupCounts[g]}
+                </button>
+              ))}
+            </div>
+            <select className="select" value={soldYearStr} onChange={e => setSoldYear(parseInt(e.target.value))} style={{width: 90}} title="Sale year">
+              {!soldYears.includes(soldYearStr) && <option value={soldYearStr}>{soldYearStr}</option>}
+              {soldYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+        }/>
         {soldThisYear.length === 0 ? (
-          <div className="card__body"><Empty title="No properties sold this year"/></div>
+          <div className="card__body"><Empty title={soldGroup === 'all' ? 'No properties sold this year' : 'No ' + soldGroup.toLowerCase() + ' sales in ' + soldYearStr}/></div>
         ) : (
           <table className="tbl">
             <thead>
@@ -253,7 +276,7 @@ function TaxBinderScreen() {
                 const ex1031Out = Math.abs(p.exchangeFunds || 0);     // 1031 funds rolled out at sale
                 return (
                   <tr key={p.id} onClick={() => nav('/property/'+p.id)}>
-                    <td><span className="addr">{p.address}</span><div className="addr-sub">{p.type}</div></td>
+                    <td><span className="addr">{p.address}</span><div className="addr-sub">{p.type}{soldGroup === 'all' && <Tag tone="ghost" style={{marginLeft: 6}}>{groupOf(p)}</Tag>}</div></td>
                     <td className="mono small dim">{fmtDate(p.salesDate, {full: true})}</td>
                     <td className="num mono">{fmtMoney(p.salesPrice || 0)}</td>
                     <td className="num mono dim">{fmtMoney(cost)}</td>
@@ -264,6 +287,28 @@ function TaxBinderScreen() {
                   </tr>
                 );
               })}
+              {(() => {
+                const tot = soldThisYear.reduce((a, p) => {
+                  const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
+                  const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+                  const gross = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
+                  a.price += p.salesPrice || 0; a.cost += cost; a.profit += gross;
+                  a.in1031 += Math.abs(p.acqExchangeFunds || 0); a.out1031 += Math.abs(p.exchangeFunds || 0);
+                  return a;
+                }, { price: 0, cost: 0, profit: 0, in1031: 0, out1031: 0 });
+                return (
+                  <tr style={{borderTop: '2px solid var(--rule)', fontWeight: 600, background: 'var(--paper-3)'}}>
+                    <td>Total · {soldThisYear.length} propert{soldThisYear.length === 1 ? 'y' : 'ies'}</td>
+                    <td></td>
+                    <td className="num mono">{fmtMoney(tot.price)}</td>
+                    <td className="num mono dim">{fmtMoney(tot.cost)}</td>
+                    <td className="num mono" style={{color: tot.profit > 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(tot.profit, {sign: true})}</td>
+                    <td className="num mono dim">{tot.in1031 ? fmtMoney(tot.in1031) : '—'}</td>
+                    <td className="num mono dim">{tot.out1031 ? fmtMoney(tot.out1031) : '—'}</td>
+                    <td></td>
+                  </tr>
+                );
+              })()}
             </tbody>
           </table>
         )}

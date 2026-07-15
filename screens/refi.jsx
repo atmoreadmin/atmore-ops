@@ -190,7 +190,7 @@ function RefiCard({ refi, onClick, today }) {
 
 function RefiEditor({ refi, adding, kProps, onClose }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [propertyId, setPropertyId] = useState(refi?.propertyId || (kProps && kProps[0]?.id) || '');
+  const [propertyId, setPropertyId] = useState(refi?.propertyId || (kProps && kProps[0]?.id) || Store.state.properties[0]?.id || '');
   const [status, setStatus] = useState(refi?.status || 'applied');
   const [lender, setLender] = useState(refi?.lender || '');
   const [applicationDate, setApplicationDate] = useState(refi?.applicationDate || TODAY());
@@ -210,7 +210,8 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
           <div className="up dim mb-4">Property</div>
           {adding ? (
             <select className="select" value={propertyId} onChange={e => setPropertyId(e.target.value)} style={{width: '100%'}}>
-              {(kProps || []).map(p => <option key={p.id} value={p.id}>{p.address}</option>)}
+              <optgroup label="K-Rentals">{(kProps || []).map(p => <option key={p.id} value={p.id}>{p.address}</option>)}</optgroup>
+              <optgroup label="Other properties">{(Store.state.properties || []).filter(p => p.statusCode !== 'K').map(p => <option key={p.id} value={p.id}>{p.address}</option>)}</optgroup>
             </select>
           ) : (
             <div className="serif" style={{fontSize: 18, fontWeight: 500}}>{getProperty(propertyId)?.address}</div>
