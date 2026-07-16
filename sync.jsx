@@ -163,6 +163,15 @@ function deserializeFromSheet(pulledData) {
     for (const k of Object.keys(local)) {
       if (!(k in out)) out[k] = local[k];
     }
+    // Close-out HUD money figures are sticky: a stale app build pushes blank
+    // cells for columns it doesn't know, and "blank wins" was erasing recorded
+    // figures (cashReceivedAtClose etc.) — silently corrupting net profit.
+    // If the Sheet says blank but this device has a value, keep ours. These
+    // are legitimately cleared only via the close-out dialog, which pushes
+    // the full row itself.
+    for (const k of ['cashReceivedAtClose', 'cashToClose', 'grossProfit', 'saleDDCollected', 'acqDDFee']) {
+      if (out[k] == null && local[k] != null) out[k] = local[k];
+    }
     // Stage history isn't synced anymore — keep local, or seed one entry for a fresh import.
     // Stage history — synced tab authoritative; else keep local; else seed one entry.
     if (stageByP) {
