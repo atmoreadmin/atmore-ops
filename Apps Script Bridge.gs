@@ -105,6 +105,14 @@ const ARRAY_COLS = new Set(['identifiedPropIds', 'closedPropIds', 'contingencies
 
 // ─── Entry points ───────────────────────────────────────────────────────────
 
+// Minimum app build allowed to WRITE. A stale cached build (old tab, old
+// service-worker copy) doesn't know newer columns — its full-sheet push
+// overwrites them with blanks. Bump this when the schema changes; older
+// clients get an OUTDATED_BUILD rejection and show "refresh to update"
+// instead of corrupting the Sheet. Builds that predate version stamping
+// send no appBuild at all (= 0) and are rejected too.
+var MIN_APP_BUILD = 2;
+
 // Simple trigger: fires on MANUAL edits in the Sheet (not on the app's own
 // programmatic writes). Stamping lastWriteAt lets the app detect hand edits
 // and pull them in instead of overwriting them.
@@ -131,6 +139,9 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const action = body.action;
     if (action === 'write') {
+      if ((Number(body.appBuild) || 0) < MIN_APP_BUILD) {
+        return json({ ok: false, error: 'OUTDATED_BUILD', minAppBuild: MIN_APP_BUILD });
+      }
       const stampedAt = write_(body.payload);
       // Return the EXACT stamped lastWriteAt so the app can record it — otherwise
       // its next meta check mistakes our own write for an outside edit.
@@ -276,6 +287,7 @@ function meta_() {
     workbookId: ss.getId(),
     workbookName: ss.getName(),
     lastWriteAt: PropertiesService.getDocumentProperties().getProperty('lastWriteAt'),
+    minAppBuild: MIN_APP_BUILD,
     counts: counts,
   };
 }

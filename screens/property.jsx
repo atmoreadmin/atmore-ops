@@ -34,11 +34,11 @@ function heroStat(p, tenants) {
   if (code === 'G' || code === 'H') {
     const base = p.salesPrice != null ? p.salesPrice : p.listPrice;
     if (base != null) return { label: 'Projected net', value: base - costBasis, tone: (base - costBasis) >= 0 ? 'sage' : 'brick', sign: true, sub: 'price − basis' };
-    return { label: 'Cost basis', value: costBasis };
+    return { value: null };
   }
   if (code === 'E' || code === 'F') {
     if (p.listPrice != null) return { label: 'List price', value: p.listPrice };
-    return { label: 'Cost basis', value: costBasis };
+    return { value: null };
   }
   return { label: 'Purchase price', value: p.purchasePrice != null ? purchase : null };
 }
@@ -670,6 +670,11 @@ function PaymentHistory({ tenantId }) {
   const depTx = tx.filter(isDep).filter(t => !_curTen || (t.date || '') >= _curTen.moveIn);
   const depositsHeld = depTx.reduce((a, t) => a + (t.amount || 0), 0);
   const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
+  // Rented vs not: a month counts as rented if any tenant's lease (move-in →
+  // move-out, or open-ended) covers it.
+  const leaseTenants = (Store.state.tenants || []).filter(t => t.propertyId === prop.id && t.moveIn);
+  const isRentedMonth = ym => leaseTenants.some(t => t.moveIn.slice(0, 7) <= ym && (!t.moveOut || t.moveOut.slice(0, 7) >= ym));
+  months.forEach(m => { m.rented = isRentedMonth(m.month); });
 
   // Recurring monthly carrying costs (mortgage + tax/12 + insurance/12) blended
   // into each month so the per-month net reflects true cash flow, not just logged
@@ -697,6 +702,11 @@ function PaymentHistory({ tenantId }) {
   const totalIn = months.reduce((a, m) => a + m.in, 0);
   const totalOut = months.reduce((a, m) => a + m.out, 0);
   const totalOther = months.reduce((a, m) => a + m.otherNet, 0);
+  const groupOf = flag => { const list = months.filter(m => m.rented === flag); return { list, in: list.reduce((a, m) => a + m.in, 0), out: list.reduce((a, m) => a + m.out, 0) }; };
+  const cfSections = [
+    { key: 'rented', label: 'Rented', g: groupOf(true) },
+    { key: 'vacant', label: 'Not rented', g: groupOf(false) },
+  ].filter(s => s.g.list.length > 0);
 
   return (
     <div>
@@ -723,7 +733,17 @@ function PaymentHistory({ tenantId }) {
           </tr>
         </thead>
         <tbody>
-          {months.map(m => {
+          {cfSections.map(s => (
+          <React.Fragment key={s.key}>
+          {cfSections.length > 1 && (
+            <tr style={{background: 'var(--paper-3)'}} title={s.key === 'rented' ? 'Months covered by a tenant lease (move-in to move-out)' : 'Months with no lease in place — vacancy / turnover carrying costs'}>
+              <td className="up" style={{fontSize: 10.5, color: s.key === 'rented' ? 'var(--sage)' : 'var(--brick)'}}>{s.label} · {s.g.list.length} mo</td>
+              <td className="num mono small" style={{color: s.g.in > 0 ? 'var(--sage)' : 'var(--ink-3)'}}>{s.g.in > 0 ? fmtMoney(s.g.in) : '—'}</td>
+              <td className="num mono small" style={{color: s.g.out > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{s.g.out > 0 ? fmtMoney(-s.g.out) : '—'}</td>
+              <td className="num mono small" style={{color: (s.g.in - s.g.out) >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 600}}>{fmtMoney(s.g.in - s.g.out)}</td>
+            </tr>
+          )}
+          {s.g.list.map(m => {
             const net = m.in - m.out;
             const isOpen = open === m.month;
             const rows = [...m.txns].sort((a, b) => (a.recurring ? 1 : 0) - (b.recurring ? 1 : 0) || (a.category || '\uffff').localeCompare(b.category || '\uffff') || (a.payee || '\uffff').localeCompare(b.payee || '\uffff') || (b.date || '').localeCompare(a.date || ''));
@@ -788,6 +808,8 @@ function PaymentHistory({ tenantId }) {
               </React.Fragment>
             );
           })}
+          </React.Fragment>
+          ))}
         </tbody>
       </table>
       {viewTx && <TransactionEditor tx={viewTx} onClose={() => setViewTx(null)}/>}

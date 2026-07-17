@@ -55,13 +55,19 @@ const Sync = {
       redirect: 'follow',
       // text/plain avoids the CORS preflight that 'application/json' would trigger
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'write', payload }),
+      body: JSON.stringify({ action: 'write', appBuild: APP_BUILD, payload }),
     });
     const data = await res.json();
     if (data.ok === false) throw new Error(data.error || 'Push failed');
     return data;
   },
 };
+
+// Build stamp sent with every write. The bridge rejects writes from builds
+// below its MIN_APP_BUILD — the stale-cached-build corruption fix. Bump BOTH
+// together whenever the sheet schema changes.
+const APP_BUILD = 2;
+window.APP_BUILD = APP_BUILD;
 
 // Convert app state → { tabs: { TabName: [rows] } } matching the Apps Script schema
 function serializeForSheet(state) {
@@ -464,8 +470,9 @@ const SyncEngine = {
     // lastWriteAt moved and we have no local edits, pull it in.
     setInterval(() => {
       if (!Sync.isConfigured() || !this.autoOn()) return;
-      if (this.dirty || this.status === 'syncing' || this.status === 'remote-newer' || this.status === 'blocked') return;
+      if (this.dirty || this.status === 'syncing' || this.status === 'remote-newer' || this.status === 'blocked' || this.status === 'stale') return;
       Sync.meta().then(m => {
+        if (m && m.minAppBuild > APP_BUILD) { this._set('stale', 'A newer version of the app is available — refresh this page to keep saving.'); return; }
         const sheetAt = m && m.lastWriteAt;
         if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;
         if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt && !this.dirty) this.pullNow();
@@ -550,6 +557,11 @@ const SyncEngine = {
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
       this._set('synced', 'All changes saved');
     } catch (e) {
+      if (String(e.message).indexOf('OUTDATED_BUILD') >= 0) {
+        this.dirty = true;   // edits are kept locally; they save after the refresh
+        this._set('stale', 'This device is running an outdated version — refresh the page to save.');
+        return;
+      }
       this._set('error', 'Save failed — retrying…');
       clearTimeout(this._pushTimer);
       this._pushTimer = setTimeout(() => this.pushNow(), 15000);  // retry on reconnect
@@ -587,6 +599,7 @@ const SyncEngine = {
     this._set('syncing', 'Checking Sheet…');
     try {
       const m = await Sync.meta();
+      if (m && m.minAppBuild > APP_BUILD) { this._set('stale', 'A newer version of the app is available — refresh this page to keep saving.'); return; }
       const sheetAt = m && m.lastWriteAt ? m.lastWriteAt : null;
       const totalRows = m && m.counts ? Object.values(m.counts).reduce((a, n) => a + (n || 0), 0) : 0;
       if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;

@@ -28,6 +28,7 @@ const SYNC_VIS = {
   'offline':     { dot: 'var(--ink-3)', label: 'Offline',        spin: false },
   'error':       { dot: 'var(--brick)', label: 'Sync error',     spin: false },
   'blocked':     { dot: 'var(--brick)', label: 'Save paused',    spin: false },
+  'stale':       { dot: 'var(--brick)', label: 'Update required',spin: false },
 };
 
 function relTime(iso) {
@@ -63,6 +64,10 @@ function SyncIndicator() {
         return;
       }
     }
+    if (st === 'stale') {
+      alert('This device is running an outdated version of the app, so saving is paused — old versions can silently erase newer data (like close-out figures).\n\nTo update: hard-refresh this page.\n  Windows: Ctrl+Shift+R\n  Mac: Cmd+Shift+R\n\nYour edits on this device are kept and will save after the refresh.');
+      return;
+    }
     if (st === 'error' || st === 'offline') { SyncEngine.openSync(); return; }
     if (st === 'blocked') {
       const localN = (Store.state.properties || []).length;
@@ -81,6 +86,7 @@ function SyncIndicator() {
     : st === 'synced' ? 'All changes saved to the Google Sheet · click for sync settings'
     : st === 'remote-newer' ? 'The Sheet was updated on another device — click to load it'
     : st === 'blocked' ? 'Saving paused: this device has far fewer properties than the Sheet — click to resolve'
+    : st === 'stale' ? 'Outdated app version — hard-refresh this page to update and resume saving'
     : SyncEngine.message;
 
   return (
@@ -89,7 +95,7 @@ function SyncIndicator() {
         display: 'inline-flex', alignItems: 'center', gap: 7,
         padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
         background: st === 'local-only' ? 'transparent' : 'var(--paper-2)',
-        border: '1px solid ' + (st === 'error' || st === 'blocked' ? 'var(--brick)' : st === 'remote-newer' || st === 'dirty' ? 'var(--ochre)' : 'var(--rule)'),
+        border: '1px solid ' + (st === 'error' || st === 'blocked' || st === 'stale' ? 'var(--brick)' : st === 'remote-newer' || st === 'dirty' ? 'var(--ochre)' : 'var(--rule)'),
         color: 'var(--ink-2)', fontFamily: 'inherit', fontSize: 12,
       }}>
       <span style={{

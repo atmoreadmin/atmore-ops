@@ -13,6 +13,26 @@ function RentRollScreen() {
   reconcileRentAcrossMonths();
   const monthLedger = getLedgerForMonth(month);
 
+  // Vacant rentals: any property in the rental lane (i.e. not Coming Soon / pipeline)
+  // with no active tenant and no ledger row this month still belongs on the roll —
+  // its carrying charges don't stop when it's empty.
+  const rentalLaneCodes = new Set(getStatuses().filter(s => s.lane === 'rental').map(s => s.code));
+  const archiveCodes = new Set(getStatuses().filter(s => s.lane === 'archive').map(s => s.code));
+  const ledgerPropIds = new Set(monthLedger.map(r => r.propertyId));
+  const hoaMoRR = pid => (store.hoas || []).filter(h => h.propertyId === pid).reduce((a, h) => a + (h.monthly || 0), 0);
+  let vacantRows = store.properties
+    .filter(p => (p.type === 'Rental' || rentalLaneCodes.has(p.statusCode)) && p.statusCode !== 'A' && !archiveCodes.has(p.statusCode) && !ledgerPropIds.has(p.id) && !store.tenants.some(t => t.propertyId === p.id && t.status === 'active'))
+    .map(p => {
+      const ld = p.loanDetail || {}, ptx = p.taxes || {}, pins = p.insurance || {};
+      const mortgage = ld.monthlyPayment || 0;
+      const taxMo = (ptx.annualAmount && !(ld.escrowedTaxes && mortgage > 0)) ? ptx.annualAmount / 12 : 0;
+      const insMo = (pins.premium && !(ld.escrowedInsurance && mortgage > 0)) ? pins.premium / 12 : 0;
+      const carry = mortgage + taxMo + insMo + hoaMoRR(p.id);
+      return { p, carry };
+    });
+  if (search) vacantRows = vacantRows.filter(v => (v.p.address || '').toLowerCase().includes(search.toLowerCase()));
+  if (statusFilter !== 'all' && statusFilter !== 'vacant') vacantRows = [];
+
   // Filter
   let rows = monthLedger.slice();
   rows = rows.filter(r => {
@@ -81,7 +101,7 @@ function RentRollScreen() {
       </Card>
 
       {view === 'current' && (
-        <CurrentMonthView rows={rows} monthLedger={monthLedger}
+        <CurrentMonthView rows={rows} monthLedger={monthLedger} vacantRows={vacantRows}
           statusFilter={statusFilter} setStatusFilter={setStatusFilter}
           search={search} setSearch={setSearch}
           onMarkPaid={setPaidModal} onNotice={setNoticeModal}
@@ -103,7 +123,7 @@ function RentRollScreen() {
 }
 
 // ────── A: Current month view (dense table) ──────
-function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, search, setSearch, onMarkPaid, onNotice, statusCounts }) {
+function CurrentMonthView({ rows, monthLedger, vacantRows, statusFilter, setStatusFilter, search, setSearch, onMarkPaid, onNotice, statusCounts }) {
   const month = getCurrentMonth();
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
@@ -152,6 +172,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
               {value: 'late', label: `Late (${statusCounts['late']||0})`},
               {value: 'partial', label: `Partial (${statusCounts['partial']||0})`},
               {value: 'paid', label: `Paid (${(statusCounts['paid']||0) + (statusCounts['overpaid']||0)})`},
+              {value: 'vacant', label: `Vacant (${vacantRows.length})`},
             ]}
             onChange={setStatusFilter}/>
           <div className="grow"/>
@@ -188,7 +209,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {rows.length === 0 && vacantRows.length === 0 ? (
               <tr><td colSpan="10"><Empty title="No tenants match" sub="Try clearing filters."/></td></tr>
             ) : rows.map(r => {
               const t = getTenant(r.tenantId);
@@ -254,6 +275,24 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                 </tr>
               );
             })}
+            {vacantRows.map(({ p, carry }) => (
+              <tr key={'v' + p.id} onClick={() => nav('/property/' + p.id)} style={{cursor: 'pointer'}}>
+                <td></td>
+                <td><div className="dim" style={{fontSize: 13}}>Vacant</div><div className="addr-sub">no active lease</div></td>
+                <td><span className="addr" style={{fontSize: 13}}>{p.address}</span></td>
+                <td className="mono small dim">—</td>
+                <td className="num mono" style={{color: carry ? 'var(--brick)' : 'var(--ink-3)'}}>
+                  {carry ? <div><div>{fmtMoney(-carry)}</div><div className="tiny dim" style={{fontWeight: 400}}>carrying /mo</div></div> : '—'}
+                </td>
+                <td className="num mono dim">—</td>
+                <td className="num mono dim">—</td>
+                <td><Tag tone="ghost">—</Tag></td>
+                <td><Tag tone="brick">Vacant</Tag></td>
+                <td>
+                  <Btn sz="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); nav('/property/' + p.id); }}>+ Add tenant</Btn>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </Card>
