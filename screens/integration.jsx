@@ -609,6 +609,7 @@ function IntegrationScreen({ embedded } = {}) {
     <Segmented value={view}
       options={[
         {value:'sync', label:'Sync'},
+        {value:'sharepoint', label:'SharePoint'},
         {value:'schema', label:'Schema'},
         {value:'export', label:'Export workbook'},
         {value:'strategy', label:'Strategy'},
@@ -634,6 +635,7 @@ function IntegrationScreen({ embedded } = {}) {
       )}
 
       {view === 'sync' && <SyncView/>}
+      {view === 'sharepoint' && <SharePointView/>}
       {view === 'schema' && <SchemaView/>}
       {view === 'export' && <ExportView onExport={exportWorkbook} exporting={exporting}/>}
       {view === 'strategy' && <StrategyView/>}
