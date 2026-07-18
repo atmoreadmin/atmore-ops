@@ -408,6 +408,10 @@ function deserializeFromSheet(pulledData) {
       system: r.system === true || r.system === 'true' || r.system === 'TRUE' || r.system === 1 || r.system === '1',
       tone:   r.tone ? String(r.tone).trim() : null,
     })).filter(s => s.code);
+    // SharePoint returns list items in arbitrary order — restore the canonical
+    // lane order (pipeline → rental → archive), codes alphabetical within lane.
+    const laneRank = { pipeline: 0, rental: 1, archive: 2 };
+    state.statuses.sort((a, b) => (laneRank[a.lane] ?? 3) - (laneRank[b.lane] ?? 3) || a.code.localeCompare(b.code));
   }
   if (!Array.isArray(state.statuses) || !state.statuses.length) {
     state.statuses = (Store.state.statuses && Store.state.statuses.length)

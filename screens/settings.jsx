@@ -116,7 +116,7 @@ function ListEditor({ def, showArchived, setShowArchived }) {
             {def.hasKind && <th style={{width: 110}}>Kind</th>}
             <th style={{width: 120}}>Usage</th>
             <th style={{width: 100}}>Default</th>
-            <th style={{width: 220}}></th>
+            <th style={{width: 280}}></th>
           </tr>
         </thead>
         <tbody>
@@ -157,8 +157,42 @@ function ListEditor({ def, showArchived, setShowArchived }) {
 
 function ListRow({ listKey, item, hasKind }) {
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [reassignTo, setReassignTo] = useState('');
   const [label, setLabel] = useState(item.label);
   const usage = countUsage(listKey, item.label);
+
+  if (deleting) {
+    const targets = (Store.state.lists?.[listKey] || []).filter(x => x.id !== item.id && !x.archived);
+    const needsReassign = usage > 0;
+    const ready = !needsReassign || reassignTo;
+    return (
+      <tr style={{background: 'var(--brick-soft)'}}>
+        <td colSpan={hasKind ? 5 : 4}>
+          <div className="col gap-8" style={{padding: '4px 0'}}>
+            <div className="small" style={{lineHeight: 1.5}}>
+              {needsReassign
+                ? <>Delete <strong>{item.label}</strong> and retag its <strong>{usage}</strong> record{usage === 1 ? '' : 's'} as:</>
+                : <>Delete <strong>{item.label}</strong>? Nothing is tagged with it.</>}
+            </div>
+            <div className="row gap-8 items-center wrap">
+              {needsReassign && (
+                <select className="select" value={reassignTo} onChange={e => setReassignTo(e.target.value)} style={{minWidth: 220}}>
+                  <option value="">— pick a replacement —</option>
+                  {targets.map(t => <option key={t.id} value={t.label}>{t.label}</option>)}
+                </select>
+              )}
+              <Btn sz="sm" kind="primary" disabled={!ready}
+                onClick={() => { deleteListItem(listKey, item.id, needsReassign ? reassignTo : null); setDeleting(false); }}>
+                Delete{needsReassign ? ' & retag' : ''}
+              </Btn>
+              <Btn sz="sm" kind="ghost" onClick={() => { setDeleting(false); setReassignTo(''); }}>Cancel</Btn>
+            </div>
+          </div>
+        </td>
+      </tr>
+    );
+  }
 
   if (editing) {
     return (
@@ -211,6 +245,7 @@ function ListRow({ listKey, item, hasKind }) {
             if (!item.archived && usage > 0 && !confirm(`"${item.label}" is used on ${usage} records. Archive it anyway? (Historical data keeps the label.)`)) return;
             archiveListItem(listKey, item.id);
           }}>{item.archived ? 'Restore' : 'Archive'}</Btn>
+          {!item.isDefault && <Btn sz="sm" kind="ghost" onClick={() => setDeleting(true)}>Delete</Btn>}
         </div>
       </td>
     </tr>

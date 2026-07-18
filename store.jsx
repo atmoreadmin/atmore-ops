@@ -2512,6 +2512,16 @@ function archiveListItem(listKey, id) {
     if (item) item.archived = !item.archived;
   });
 }
+// Delete a list item, optionally reassigning every record tagged with it to
+// another label first (reuses the rename propagation, then removes the item).
+function deleteListItem(listKey, id, reassignLabel) {
+  const item = (Store.state.lists?.[listKey] || []).find(x => x.id === id);
+  if (!item) return;
+  if (reassignLabel) renameListItem(listKey, id, reassignLabel);
+  Store.update(s => {
+    s.lists[listKey] = s.lists[listKey].filter(x => x.id !== id);
+  });
+}
 function updateListItemKind(listKey, id, kind) {
   Store.update(s => {
     const item = s.lists[listKey].find(x => x.id === id);
@@ -2545,7 +2555,7 @@ function countUsage(listKey, label) {
 }
 
 Object.assign(window, {
-  getList, addListItem, renameListItem, archiveListItem, updateListItemKind, countUsage,
+  getList, addListItem, renameListItem, archiveListItem, deleteListItem, updateListItemKind, countUsage,
 });
 
 // ─── Bank accounts (referenced by transactions via acct = account id) ───
