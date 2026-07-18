@@ -325,7 +325,7 @@ const SHEET_SCHEMA = {
   WebAccounts: {
     description: 'Vendor / portal logins (Adobe, Amazon, bank & HOA portals, etc.). Imported from your old Web Accounts sheet.',
     pk: 'id',
-    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '' })),
+    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '', updatedAt: w.updatedAt || null })),
     columns: [
       { key: 'id',       label: 'ID',           type: 'string', required: true },
       { key: 'org',      label: 'Organization', type: 'string', required: true },
@@ -361,6 +361,7 @@ const SHEET_SCHEMA = {
       lastDone: r.lastDone || '',
       checklist: JSON.stringify(r.checklist || []),
       notes: r.notes || '',
+      updatedAt: r.updatedAt || null,
     })),
     columns: [
       { key: 'id',         label: 'ID',          type: 'string', required: true },
@@ -387,7 +388,7 @@ const SHEET_SCHEMA = {
     rowSource: (s) => (s.maintenance || []).map(m => ({
       id: m.id, propertyId: m.propertyId || '', date: m.date || '',
       category: m.category || '', description: m.description || '',
-      vendor: m.vendor || '', cost: m.cost ?? null, status: m.status || 'open',
+      vendor: m.vendor || '', cost: m.cost ?? null, status: m.status || 'open', updatedAt: m.updatedAt || null,
     })),
     columns: [
       { key: 'id',          label: 'ID',          type: 'string', required: true },

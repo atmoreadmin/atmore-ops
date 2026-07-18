@@ -103,6 +103,13 @@ const SCHEMA = {
 // Foreign keys are stored as comma-joined arrays
 const ARRAY_COLS = new Set(['identifiedPropIds', 'closedPropIds', 'contingencies']);
 
+// Every tab carries a per-row updatedAt stamp (ISO timestamp, written by the
+// app whenever a row changes). write_() merges row-by-row on it: newer wins.
+Object.keys(SCHEMA).forEach(function (t) { if (SCHEMA[t].indexOf('updatedAt') === -1) SCHEMA[t].push('updatedAt'); });
+// Deletion records: without these, a per-row merge would resurrect deleted
+// rows from whichever side still had them. { coll: tab name, id, at }.
+SCHEMA.Tombstones = ['coll', 'id', 'at'];
+
 // ─── Entry points ───────────────────────────────────────────────────────────
 
 // Minimum app build allowed to WRITE. A stale cached build (old tab, old
@@ -111,7 +118,7 @@ const ARRAY_COLS = new Set(['identifiedPropIds', 'closedPropIds', 'contingencies
 // clients get an OUTDATED_BUILD rejection and show "refresh to update"
 // instead of corrupting the Sheet. Builds that predate version stamping
 // send no appBuild at all (= 0) and are rejected too.
-var MIN_APP_BUILD = 2;
+var MIN_APP_BUILD = 3;
 
 // Simple trigger: fires on MANUAL edits in the Sheet (not on the app's own
 // programmatic writes). Stamping lastWriteAt lets the app detect hand edits
@@ -228,7 +235,7 @@ function read_() {
         const key = headers[j];
         let v = values[i][j];
         if (v === '' || v == null) { row[key] = null; continue; }
-        if (v instanceof Date) v = v.toISOString().slice(0, 10);
+        if (v instanceof Date) v = (key === 'updatedAt') ? v.toISOString() : v.toISOString().slice(0, 10);
         if (ARRAY_COLS.has(key) && typeof v === 'string') v = v.split(',').filter(Boolean);
         if (typeof v === 'string' && (v === 'TRUE' || v === 'FALSE')) v = v === 'TRUE';
         row[key] = v;
@@ -243,29 +250,156 @@ function read_() {
 
 // ─── Write ──────────────────────────────────────────────────────────────────
 
-function write_(payload) {
-  const ss = SpreadsheetApp.getActive();
-  Object.entries(SCHEMA).forEach(([tabName, headers]) => {
-    let sheet = ss.getSheetByName(tabName);
-    if (!sheet) sheet = ss.insertSheet(tabName);
+// Close-out figures the server refuses to blank. If an incoming row has an
+// empty value for one of these but the Sheet already holds a value for that
+// same property id, the existing value is kept. This protects against any
+// client pushing a stale local snapshot (device that hasn't pulled recent
+// edits) — the build gate can't catch that, only this can.
+var PROTECTED_FIELDS = { Properties: ['cashToClose', 'cashReceivedAtClose', 'grossProfit', 'acqDDFee', 'saleDDCollected'] };
 
-    const sourceRows = (payload.tabs && payload.tabs[tabName]) || [];
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+// Root tabs merged row-by-row on id + updatedAt (newer wins).
+var MERGE_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts'];
+// Child tabs have no own stamps — each parent id's rows follow whichever side
+// won that parent, so a property/transaction and its sub-rows stay consistent.
+var CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
 
-    if (sourceRows.length === 0) return;
+function readTabRows_(sheet) {
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = {};
+    let has = false;
+    for (let j = 0; j < headers.length; j++) {
+      let v = values[i][j];
+      if (v === '' || v == null) { row[headers[j]] = null; continue; }
+      if (v instanceof Date) v = (headers[j] === 'updatedAt') ? v.toISOString() : v.toISOString().slice(0, 10);
+      row[headers[j]] = v;
+      has = true;
+    }
+    if (has) rows.push(row);
+  }
+  return rows;
+}
 
-    const grid = sourceRows.map(row => headers.map(h => {
+function writeTab_(sheet, headers, rows) {
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  if (!rows.length) return;
+  // Timestamp columns must stay text — a date-coerced cell reads back with the
+  // time truncated, which would flatten same-day merge ordering.
+  headers.forEach(function (h, i) {
+    if (h === 'updatedAt' || h === 'at') sheet.getRange(2, i + 1, rows.length, 1).setNumberFormat('@');
+  });
+  const grid = rows.map(function (row) {
+    return headers.map(function (h) {
       let v = row[h];
       if (v == null) return '';
       if (Array.isArray(v)) return v.join(',');
       if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
       return v;
-    }));
-    sheet.getRange(2, 1, grid.length, headers.length).setValues(grid);
+    });
   });
+  sheet.getRange(2, 1, grid.length, headers.length).setValues(grid);
+}
+
+function write_(payload) {
+  const ss = SpreadsheetApp.getActive();
+  const tabs = (payload && payload.tabs) || {};
+  const sheets = {};
+  const existingRows = {};
+  Object.keys(SCHEMA).forEach(function (tabName) {
+    let sheet = ss.getSheetByName(tabName);
+    if (!sheet) sheet = ss.insertSheet(tabName);
+    sheets[tabName] = sheet;
+    existingRows[tabName] = readTabRows_(sheet);
+  });
+
+  // 1. Tombstones — union of Sheet + incoming, newest stamp per row, 60-day retention.
+  const tombs = {};
+  (existingRows.Tombstones || []).concat(tabs.Tombstones || []).forEach(function (t) {
+    if (!t || t.id == null) return;
+    const k = (t.coll || '') + '|' + String(t.id);
+    if (!tombs[k] || String(t.at || '') > String(tombs[k].at || '')) tombs[k] = { coll: t.coll || '', id: String(t.id), at: t.at || '' };
+  });
+  const cutoff = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+  Object.keys(tombs).forEach(function (k) { if (tombs[k].at && tombs[k].at < cutoff) delete tombs[k]; });
+  function tombFor(tab, id) { return tombs[tab + '|' + id]; }
+
+  // 2. Row-by-row merge for id-keyed tabs. Every save used to replace the whole
+  //    Sheet ("last save wins") — a device with a stale local snapshot could
+  //    silently erase every other device's newer edits. Now each row keeps
+  //    whichever version has the newer updatedAt stamp.
+  const out = {};
+  const winners = {};
+  MERGE_TABS.forEach(function (tabName) {
+    if (!SCHEMA[tabName]) return;
+    const inc = tabs[tabName] || [];
+    const ex = existingRows[tabName] || [];
+    const exBy = {};
+    ex.forEach(function (r) { if (r.id != null) exBy[String(r.id)] = r; });
+    const seen = {};
+    const rows = [];
+    const win = {};
+    inc.forEach(function (r) {
+      if (r.id == null) { rows.push(r); return; }
+      const id = String(r.id);
+      seen[id] = true;
+      const e = exBy[id];
+      const inAt = String(r.updatedAt || '');
+      const t = tombFor(tabName, id);
+      if (t && String(t.at || '') >= inAt) { win[id] = 'dead'; return; }      // deleted elsewhere, sender hadn't seen it
+      if (e && String(e.updatedAt || '') > inAt) { rows.push(e); win[id] = 'ex'; return; }  // Sheet row is newer — keep it
+      // Incoming wins (newer or tie) — but never blank a protected close-out figure.
+      const prot = PROTECTED_FIELDS[tabName];
+      if (prot && e) prot.forEach(function (f) { if ((r[f] == null || r[f] === '') && e[f] != null && e[f] !== '') r[f] = e[f]; });
+      rows.push(r);
+      win[id] = 'in';
+    });
+    ex.forEach(function (e) {
+      if (e.id == null || seen[String(e.id)]) return;
+      const id = String(e.id);
+      const t = tombFor(tabName, id);
+      if (t && String(t.at || '') >= String(e.updatedAt || '')) { win[id] = 'dead'; return; }
+      rows.push(e);                            // sender's snapshot predates this row — keep it
+      win[id] = 'ex';
+    });
+    out[tabName] = rows;
+    winners[tabName] = win;
+  });
+
+  // 3. Child tabs follow the parent row's winner.
+  Object.keys(CHILD_TABS).forEach(function (tabName) {
+    if (!SCHEMA[tabName]) return;
+    const parent = CHILD_TABS[tabName][0];
+    const fk = CHILD_TABS[tabName][1];
+    const win = winners[parent] || {};
+    const keep = function (side) {
+      return function (r) {
+        const w = win[String(r[fk])];
+        if (w === 'dead') return false;
+        if (w == null) return side === 'in';
+        return w === side;
+      };
+    };
+    out[tabName] = (tabs[tabName] || []).filter(keep('in')).concat((existingRows[tabName] || []).filter(keep('ex')));
+  });
+
+  // 4. Config tabs (Lists, Statuses, AutoTagRules, CompletedEvents, …): full
+  //    replace, as before — low-volume settings where last save winning is fine.
+  Object.keys(SCHEMA).forEach(function (tabName) {
+    if (out[tabName]) return;
+    if (tabName === 'Tombstones') { out[tabName] = Object.keys(tombs).map(function (k) { return tombs[k]; }); return; }
+    out[tabName] = tabs[tabName] || [];
+  });
+
+  Object.keys(SCHEMA).forEach(function (tabName) {
+    writeTab_(sheets[tabName], SCHEMA[tabName], out[tabName]);
+  });
+
   // Stamp last-modified
   const props = PropertiesService.getDocumentProperties();
   const stampedAt = new Date().toISOString();

@@ -66,8 +66,13 @@ const Sync = {
 // Build stamp sent with every write. The bridge rejects writes from builds
 // below its MIN_APP_BUILD — the stale-cached-build corruption fix. Bump BOTH
 // together whenever the sheet schema changes.
-const APP_BUILD = 2;
+const APP_BUILD = 3;
 window.APP_BUILD = APP_BUILD;
+
+// Sheet tab → state collection for tabs merged row-by-row on updatedAt.
+// Child tabs (splits, fee items, histories…) live ON these parent objects, so
+// stamping the parent covers them; the bridge keeps children with the parent.
+const MERGED_COLLECTIONS = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'reminders', Maintenance: 'maintenance', WebAccounts: 'webAccounts' };
 
 // Convert app state → { tabs: { TabName: [rows] } } matching the Apps Script schema
 function serializeForSheet(state) {
@@ -84,10 +89,14 @@ function serializeForSheet(state) {
         else if (c.type === 'bool') out[c.key] = !!v;
         else out[c.key] = v;
       }
+      out.updatedAt = r.updatedAt || null;   // per-row merge stamp (see SyncEngine._stampChanges)
       return out;
     });
     tabs[tabName] = rows;
   }
+  // Deletion records — the bridge merges per-row, so without these a deleted
+  // row would resurrect from the Sheet's copy.
+  tabs.Tombstones = (state.tombstones || []).map(t => ({ coll: t.coll || '', id: String(t.id), at: t.at || '' }));
   return { _v: 1, sentAt: new Date().toISOString(), tabs };
 }
 
@@ -97,6 +106,10 @@ function deserializeFromSheet(pulledData) {
   const tabs = pulledData.tabs;
   const state = JSON.parse(JSON.stringify(window.SEED));  // start from seed shape
   state.uiState = Store.state.uiState || { selectedPropertyId: null, propertyTab: 'summary' };
+  // Deletion records ride along so this device honors deletes made elsewhere.
+  state.tombstones = Array.isArray(tabs.Tombstones)
+    ? tabs.Tombstones.filter(t => t && t.id != null).map(t => ({ coll: t.coll || '', id: String(t.id), at: t.at || '' }))
+    : (Store.state.tombstones || []);
   // The maintenance log stays local-only (not a Sheet tab); carry it across a pull
   // so a remote refresh never wipes it. Tasks DO sync — see the Tasks tab below.
   // Tasks/reminders now sync via the Tasks tab. Fail-safe: if the tab is absent
@@ -113,6 +126,7 @@ function deserializeFromSheet(pulledData) {
         lastDone: r.lastDone || null,
         notes: r.notes || '',
         checklist: (() => { try { const a = JSON.parse(r.checklist || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
+        updatedAt: r.updatedAt || null,
       }))
     : (Store.state.reminders || []);
   // ── Child-tab helpers ──────────────────────────────────────────────────
@@ -134,7 +148,7 @@ function deserializeFromSheet(pulledData) {
         id: m.id, propertyId: m.propertyId || '', date: m.date || '',
         category: m.category || '', description: m.description || '',
         vendor: m.vendor || '', cost: (m.cost === '' || m.cost == null) ? null : m.cost,
-        status: m.status || 'open',
+        status: m.status || 'open', updatedAt: m.updatedAt || null,
       }))
     : (Store.state.maintenance || []);
 
@@ -354,6 +368,7 @@ function deserializeFromSheet(pulledData) {
       : (o.contingencies ? String(o.contingencies).split(',').map(x => x.trim()).filter(Boolean) : []),
     driveUrl: o.driveUrl || '',
     notes: o.notes,
+    updatedAt: o.updatedAt || null,
   }));
 
   // Lists — one consolidated tab split back into the managed lists + accounts + team.
@@ -381,7 +396,7 @@ function deserializeFromSheet(pulledData) {
 
   // Web accounts (vendor / portal logins)
   state.webAccounts = Array.isArray(tabs.WebAccounts)
-    ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '' }))
+    ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '', updatedAt: r.updatedAt || null }))
     : (Store.state.webAccounts || []);
 
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.
@@ -448,17 +463,66 @@ const SyncEngine = {
 
   autoOn() { return Sync.isConfigured() && (Sync.config.autoSync !== false); },
 
+  // ── Per-row change stamping ─────────────────────────────────────────────
+  // The bridge merges the Sheet row-by-row on updatedAt (newer wins), so a
+  // device with a stale local snapshot can only overwrite rows it actually
+  // edited more recently — not blanket-replace everyone else's work. Before
+  // each save we diff every merged collection against its last-known
+  // signature: changed/new rows get stamped, vanished rows get a tombstone.
+  _rowSigs: null,
+  _sigOf(row) { return JSON.stringify(row, (k, v) => k === 'updatedAt' ? undefined : v); },
+  // HOAs sync as columns ON the Properties tab but live in their own local
+  // collection — fold them into the property's signature so editing an HOA
+  // stamps the property row (otherwise the change could lose a merge).
+  _rowSigFor(tab, row) {
+    let sig = this._sigOf(row);
+    if (tab === 'Properties') sig += '|' + JSON.stringify((Store.state.hoas || []).filter(h => h.propertyId === row.id));
+    return sig;
+  },
+  _initSigs() {
+    this._rowSigs = {};
+    for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
+      const m = new Map();
+      (Store.state[coll] || []).forEach(r => { if (r && r.id != null) m.set(String(r.id), this._rowSigFor(tab, r)); });
+      this._rowSigs[tab] = m;
+    }
+  },
+  _stampChanges() {
+    if (this._applyingRemote) return;
+    if (!this._rowSigs) { this._initSigs(); return; }   // first save after load: baseline only
+    const now = new Date().toISOString();
+    const tombs = (Store.state.tombstones = Store.state.tombstones || []);
+    for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
+      const m = this._rowSigs[tab] || (this._rowSigs[tab] = new Map());
+      const liveIds = new Set();
+      (Store.state[coll] || []).forEach(r => {
+        if (!r || r.id == null) return;
+        const id = String(r.id);
+        liveIds.add(id);
+        const sig = this._rowSigFor(tab, r);
+        if (m.get(id) !== sig) { r.updatedAt = now; m.set(id, sig); }
+      });
+      for (const id of [...m.keys()]) {
+        if (!liveIds.has(id)) { m.delete(id); tombs.push({ coll: tab, id, at: now }); }
+      }
+    }
+    // Retention matches the bridge's 60 days.
+    const cutoff = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+    if (tombs.some(t => (t.at || '') < cutoff)) Store.state.tombstones = tombs.filter(t => (t.at || '') >= cutoff);
+  },
+
   start() {
     if (this._started) return;
     this._started = true;
     const c = Sync.loadConfig();
     this.lastSyncedAt = c.lastSyncedAt || null;
     this.lastSheetWriteAt = c.lastSheetWriteAt || null;
+    this._initSigs();   // baseline row signatures — loading must not stamp anything
 
     // Hook persistence: every local save marks us dirty + schedules a push.
     if (!Store.__syncHooked) {
       const origSave = Store.save.bind(Store);
-      Store.save = () => { origSave(); SyncEngine._onLocalChange(); };
+      Store.save = () => { SyncEngine._stampChanges(); origSave(); SyncEngine._onLocalChange(); };
       Store.__syncHooked = true;
     }
 
@@ -519,17 +583,15 @@ const SyncEngine = {
         return;
       }
     }
-    // Manual-edit guard: if the Sheet was edited by hand since our last sync
-    // (its lastWriteAt moved), don't blind-overwrite it — surface a choice.
+    // If the Sheet moved since we last saw it (another device or a hand edit),
+    // the bridge merges per-row — push ours, then pull the merged result so
+    // this device also adopts the other side's newer rows.
+    let pullMergedAfter = false;
     if (!force) {
       try {
         const m = await Sync.meta();
         const sheetAt = m && m.lastWriteAt;
-        if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt) {
-          this.dirty = true;
-          this._set('remote-newer', 'Sheet was edited directly — choose which to keep');
-          return;
-        }
+        if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt) pullMergedAfter = true;
       } catch (e) {}
     }
     this._set('syncing', 'Saving to Sheet…');
@@ -555,6 +617,7 @@ const SyncEngine = {
       if (res && res.lastWriteAt) this.lastSheetWriteAt = res.lastWriteAt;
       else { try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; } catch (e) {} }
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
+      if (pullMergedAfter) { await this.pullNow(); return; }   // adopt the merged result
       this._set('synced', 'All changes saved');
     } catch (e) {
       if (String(e.message).indexOf('OUTDATED_BUILD') >= 0) {
@@ -582,6 +645,7 @@ const SyncEngine = {
       Store.save();
       Store.notify();
       this._applyingRemote = false;
+      this._initSigs();   // pulled rows are the new baseline — must not restamp as local edits
       this.dirty = false;
       this.lastSyncedAt = new Date().toISOString();
       try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties; } catch (e) {}
@@ -621,7 +685,7 @@ const SyncEngine = {
       if (sheetChanged && !this.dirty) {
         await this.pullNow();                 // someone updated the Sheet elsewhere
       } else if (sheetChanged && this.dirty) {
-        this._set('remote-newer', 'Sheet has newer data — choose which to keep');
+        await this.pushNow();                 // bridge merges per-row; pushNow pulls the result
       } else if (this.dirty) {
         await this.pushNow();                 // we have edits the Sheet doesn't
       } else {
