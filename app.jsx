@@ -68,6 +68,12 @@ function SyncIndicator() {
       alert('This device is running an outdated version of the app, so saving is paused — old versions can silently erase newer data (like close-out figures).\n\nTo update: hard-refresh this page.\n  Windows: Ctrl+Shift+R\n  Mac: Cmd+Shift+R\n\nYour edits on this device are kept and will save after the refresh.');
       return;
     }
+    if ((st === 'error' || st === 'offline') && window.SPSync && SPSync.liveOn()) {
+      // Re-authenticate interactively, then resume: retry the pending save if
+      // there is one, otherwise refresh from SharePoint.
+      SP.signIn().then(() => (SyncEngine.dirty ? SPSync.flush() : SPSync.pull())).catch(() => {});
+      return;
+    }
     if (st === 'error' || st === 'offline') { SyncEngine.openSync(); return; }
     if (st === 'blocked') {
       const localN = (Store.state.properties || []).length;
@@ -114,6 +120,7 @@ const NAV = [
   { sep: true },
   { path: '/properties',   label: 'Properties' },
   { path: '/rent',         label: 'Rent Roll' },
+  { path: '/rental-pnl',   label: 'Rental P&L' },
   { sep: true },
   { path: '/transactions', label: 'Transactions' },
   { path: '/contractors',  label: 'Contractors' },
@@ -192,6 +199,8 @@ function App() {
     screen = <CalendarScreen />;
   } else if (top === 'rent') {
     screen = <RentRollScreen />;
+  } else if (top === 'rental-pnl') {
+    screen = <RentalPnlScreen />;
   } else if (top === 'pipeline') {
     screen = <PipelineScreen />;
   } else if (top === 'properties') {

@@ -733,11 +733,14 @@ function PaymentHistory({ tenantId }) {
           </tr>
         </thead>
         <tbody>
-          {cfSections.map(s => (
+          {cfSections.map((s, si) => (
           <React.Fragment key={s.key}>
+          {cfSections.length > 1 && si > 0 && (
+            <tr aria-hidden="true"><td colSpan={4} style={{padding: 0, height: 18, background: 'var(--paper-3)', borderBottom: '2px solid var(--rule)'}}></td></tr>
+          )}
           {cfSections.length > 1 && (
-            <tr style={{background: 'var(--paper-3)'}} title={s.key === 'rented' ? 'Months covered by a tenant lease (move-in to move-out)' : 'Months with no lease in place — vacancy / turnover carrying costs'}>
-              <td className="up" style={{fontSize: 10.5, color: s.key === 'rented' ? 'var(--sage)' : 'var(--brick)'}}>{s.label} · {s.g.list.length} mo</td>
+            <tr style={{background: 'var(--paper-3)', borderTop: '2px solid var(--rule)'}} title={s.key === 'rented' ? 'Months covered by a tenant lease (move-in to move-out)' : 'Months with no lease in place — vacancy / turnover carrying costs'}>
+              <td className="up" style={{fontSize: 10.5, fontWeight: 700, paddingTop: 9, paddingBottom: 9, color: s.key === 'rented' ? 'var(--sage)' : 'var(--brick)'}}>{s.label} · {s.g.list.length} mo</td>
               <td className="num mono small" style={{color: s.g.in > 0 ? 'var(--sage)' : 'var(--ink-3)'}}>{s.g.in > 0 ? fmtMoney(s.g.in) : '—'}</td>
               <td className="num mono small" style={{color: s.g.out > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{s.g.out > 0 ? fmtMoney(-s.g.out) : '—'}</td>
               <td className="num mono small" style={{color: (s.g.in - s.g.out) >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 600}}>{fmtMoney(s.g.in - s.g.out)}</td>

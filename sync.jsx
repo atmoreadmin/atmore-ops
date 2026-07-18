@@ -514,6 +514,9 @@ const SyncEngine = {
   start() {
     if (this._started) return;
     this._started = true;
+    // SharePoint live mode: SPSync (sharepoint.jsx) owns persistence + status;
+    // the Sheet engine stands down entirely (manual export stays available).
+    if (window.SPSync && SPSync.liveOn()) { SPSync.start(); return; }
     const c = Sync.loadConfig();
     this.lastSyncedAt = c.lastSyncedAt || null;
     this.lastSheetWriteAt = c.lastSheetWriteAt || null;
