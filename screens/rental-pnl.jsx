@@ -193,8 +193,8 @@ function RentalPnlScreen() {
   const [open, setOpen] = useState(null);
   const [editCarry, setEditCarry] = useState(null);
 
-  const props = (Store.state.properties || []).filter(isRentalPnlProperty)
-    .sort((a, b) => (a.address || '').localeCompare(b.address || ''));
+  const props = useMemo(() => (Store.state.properties || []).filter(isRentalPnlProperty)
+    .sort((a, b) => (a.address || '').localeCompare(b.address || '')), [Store.state.properties]);
 
   // Years with any rental activity or ownership
   const years = useMemo(() => {
@@ -204,7 +204,7 @@ function RentalPnlScreen() {
     return [...ys].sort((a, b) => b - a).slice(0, 6);
   }, [Store.state.transactions, Store.state.properties]);
 
-  const rows = props.map(p => ({ p, data: pnlPropertyYear(p, year) })).filter(r => r.data.hasActivity);
+  const rows = useMemo(() => props.map(p => ({ p, data: pnlPropertyYear(p, year) })).filter(r => r.data.hasActivity), [props, Store.state.transactions, year]);
   const activeRows = rows.filter(r => !r.p.salesDate);
   const soldRows = rows.filter(r => r.p.salesDate);
 

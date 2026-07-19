@@ -92,6 +92,8 @@ function RentalsReport() {
     parts.forEach(pt => {
       const prop = getPropertyByAddr(pt.project);
       if (!prop) return;
+      // Rental P&L rule: only Rental-prefixed categories count as rental expenses.
+      if (!/^rental/i.test((pt.category || '').trim())) return;
       const kind = catKind[pt.category];
       const isExp = kind === 'expense' ? true : kind === 'income' ? false : pt.amount < 0;
       (linesByProp[prop.id] = linesByProp[prop.id] || []).push({ ...pt, date: t.date, desc: t.desc, payee: t.payee, isExp });
@@ -363,7 +365,7 @@ function PnlReport() {
       ? t.splits.map(s => ({ srcId: t.id, bucket: t.bucket, amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
       : [{ srcId: t.id, bucket: t.bucket, amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
     parts.forEach(p => {
-      if (scope === 'rentals' && !isRentalProp(getPropertyByAddr(p.project))) return;
+      if (scope === 'rentals' && (!isRentalProp(getPropertyByAddr(p.project)) || !/^rental/i.test((p.category || '').trim()))) return;
       lines.push(p);
     });
   });
@@ -482,7 +484,7 @@ function PnlReport() {
         Figures come from your logged transactions (splits counted individually) over the selected range.
         Categories are sorted into income and expense by their list setting; uncategorized lines are grouped by amount.
         {scope === 'rentals' && (
-          <> <strong>Rentals only</strong> counts transactions tagged to a property in the Rental status.
+          <> <strong>Rentals only</strong> counts Rental-prefixed categories tagged to a property in the Rental status — same rule as the Rental P&L page.
             {unattributedRental > 0 && <> {fmtMoney(unattributedRental)} of income in this range isn't tagged to a specific rental, so it isn't shown here — switch to <em>Whole business</em> to include it.</>}
           </>
         )}

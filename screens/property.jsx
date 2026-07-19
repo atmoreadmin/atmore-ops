@@ -649,9 +649,11 @@ function PaymentHistory({ tenantId }) {
   // liabilities, NOT income — they're excluded from in/out and tracked separately.
   // Renovation/financing-phase categories are also excluded from In/Out/Net:
   // this card tracks RENTAL cash flow only.
+  // this card tracks RENTAL cash flow only — same rule as the Rental P&L page:
+  // only categories starting with "Rental" count; everything else (reno,
+  // financing, construction) is shown separately as Non-rental.
   const isDep = t => /security deposit/i.test(t.category || '');
-  const NON_RENTAL = new Set(['contractor payment', 'job supplies', 'refi cash-out', 'loan repayment', 'interest payment']);
-  const isNonRental = t => NON_RENTAL.has((t.category || '').toLowerCase().trim());
+  const isNonRental = t => !isDep(t) && !/^rental/i.test((t.category || '').trim()) && !t.recurring;
   const byMonth = {};
   tx.forEach(t => {
     if (!t.date) return;
@@ -717,7 +719,7 @@ function PaymentHistory({ tenantId }) {
         </div>
         <div className="row gap-12 small">
           {depositsHeld !== 0 && <span title={_curTen ? 'Deposit transactions since ' + fmtDate(_curTen.moveIn, {full: true}) + ' (current tenant)' : 'All-time deposit collections minus refunds'}><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
-          {totalOther !== 0 && <span title="Contractor Payment, Job Supplies, Refi Cash-Out, Loan Repayment, Interest Payment — renovation/financing activity, not counted in In/Out/Net"><span className="dim">Non-rental:</span> <span className="mono dim">{fmtMoney(totalOther)}</span></span>}
+          {totalOther !== 0 && <span title="Anything not in a Rental-prefixed category — renovation, construction and financing activity, not counted in In/Out/Net"><span className="dim">Non-rental:</span> <span className="mono dim">{fmtMoney(totalOther)}</span></span>}
           <span title="Rental income and deposits received (renovation/financing excluded)"><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
           <span title="Rental charges only — renovation/financing excluded"><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
           <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
