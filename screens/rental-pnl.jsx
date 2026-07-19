@@ -192,6 +192,7 @@ function RentalPnlScreen() {
   const [year, setYear] = useState(parseInt(TODAY().slice(0, 4)));
   const [open, setOpen] = useState(null);
   const [editCarry, setEditCarry] = useState(null);
+  const [genOpen, setGenOpen] = useState(false);
 
   const props = useMemo(() => (Store.state.properties || []).filter(isRentalPnlProperty)
     .sort((a, b) => (a.address || '').localeCompare(b.address || '')), [Store.state.properties]);
@@ -298,14 +299,28 @@ function RentalPnlScreen() {
                 );
               })}
               {genTx.length > 0 && (
-                <tr style={{background: 'var(--paper-3)'}}>
-                  <td style={{paddingLeft: 20, fontStyle: 'italic'}}>Rentals (general) <span className="dim small">· not tied to one address</span></td>
+                <tr style={{background: 'var(--paper-3)', cursor: 'pointer'}} onClick={() => setGenOpen(o => !o)} title="Click to see the transactions">
+                  <td style={{paddingLeft: 20, fontStyle: 'italic'}}><span style={{display: 'inline-block', width: 14, color: 'var(--ink-3)', fontStyle: 'normal'}}>{genOpen ? '▾' : '▸'}</span>Rentals (general) <span className="dim small">· not tied to one address</span></td>
                   <td className="num">{pnlMoney(genIn)}</td>
                   <td className="num">{genExp ? <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(-genExp)}</span> : pnlMoney(0)}</td>
                   <td className="num">{pnlMoney(0)}</td>
                   <td className="num"><span className="mono small" style={{fontWeight: 600, color: (genIn - genExp) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(genIn - genExp)}</span></td>
                   <td></td>
                 </tr>
+              )}
+              {genTx.length > 0 && genOpen && (
+                <tr><td colSpan={6} style={{padding: 0, background: 'var(--paper-3)'}}>
+                  <div style={{padding: '4px 14px 10px 34px'}}>
+                    {[...genTx].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(t => (
+                      <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
+                        <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+                        <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+                        {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                        <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </td></tr>
               )}
               <tr style={{borderTop: '2px solid var(--rule)', background: 'var(--paper-2)'}}>
                 <td style={{fontWeight: 700, paddingLeft: 20}}>Total · {year}</td>
