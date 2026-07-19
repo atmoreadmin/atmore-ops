@@ -205,6 +205,8 @@ function RentalPnlScreen() {
   }, [Store.state.transactions, Store.state.properties]);
 
   const rows = props.map(p => ({ p, data: pnlPropertyYear(p, year) })).filter(r => r.data.hasActivity);
+  const activeRows = rows.filter(r => !r.p.salesDate);
+  const soldRows = rows.filter(r => r.p.salesDate);
 
   // "Rentals (general)" bucket — overhead rental charges not tied to one address
   const genTx = (Store.state.transactions || []).filter(t =>
@@ -256,7 +258,7 @@ function RentalPnlScreen() {
           <table className="tbl">
             <thead><tr><th>Property</th><th className="num">Rent in</th><th className="num">Rental charges</th><th className="num">Carrying</th><th className="num">Net</th><th style={{width: 90}}></th></tr></thead>
             <tbody>
-              {rows.map(r => {
+              {activeRows.map(r => {
                 const isOpen = open === r.p.id;
                 return (
                   <React.Fragment key={r.p.id}>
@@ -265,6 +267,28 @@ function RentalPnlScreen() {
                       <td className="num">{pnlMoney(r.data.in)}</td>
                       <td className="num">{r.data.exp ? <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(-r.data.exp)}</span> : pnlMoney(0)}</td>
                       <td className="num" title="Mortgage + HOA + taxes + insurance (manual monthly amounts)">{r.data.carry ? <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(-r.data.carry)}</span> : pnlMoney(0)}</td>
+                      <td className="num"><span className="mono small" style={{fontWeight: 600, color: r.data.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(r.data.net)}</span></td>
+                      <td className="text-r"><button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, whiteSpace: 'nowrap'}} title="Edit monthly mortgage / HOA / tax / insurance"
+                        onClick={e => { e.stopPropagation(); setEditCarry(r.p.id); }}>✎ carrying</button></td>
+                    </tr>
+                    {isOpen && <tr><td colSpan={6} style={{padding: 0}}><PnlMonthDetail r={r}/></td></tr>}
+                  </React.Fragment>
+                );
+              })}
+              {soldRows.length > 0 && (
+                <tr style={{background: 'var(--paper-3)', borderTop: '2px solid var(--rule)'}}>
+                  <td colSpan={6} className="up" style={{fontSize: 10.5, fontWeight: 700, paddingTop: 9, paddingBottom: 9, color: 'var(--ink-2)'}}>Sold this year · carrying stops at sale month</td>
+                </tr>
+              )}
+              {soldRows.map(r => {
+                const isOpen = open === r.p.id;
+                return (
+                  <React.Fragment key={r.p.id}>
+                    <tr onClick={() => setOpen(isOpen ? null : r.p.id)} style={{cursor: 'pointer', opacity: 0.85}}>
+                      <td><span style={{display: 'inline-block', width: 14, color: 'var(--ink-3)'}}>{isOpen ? '▾' : '▸'}</span><a onClick={e => { e.stopPropagation(); nav('/property/' + r.p.id); }} style={{fontWeight: 500}}>{r.p.address}</a><Tag tone="ghost" style={{marginLeft: 8}}>Sold {fmtDate(r.p.salesDate)}</Tag>{r.p.type && String(r.p.type).includes('1031') && <Tag tone="ghost" style={{marginLeft: 6}}>1031</Tag>}</td>
+                      <td className="num">{pnlMoney(r.data.in)}</td>
+                      <td className="num">{r.data.exp ? <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(-r.data.exp)}</span> : pnlMoney(0)}</td>
+                      <td className="num" title="Carrying counted only through the sale month">{r.data.carry ? <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(-r.data.carry)}</span> : pnlMoney(0)}</td>
                       <td className="num"><span className="mono small" style={{fontWeight: 600, color: r.data.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(r.data.net)}</span></td>
                       <td className="text-r"><button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, whiteSpace: 'nowrap'}} title="Edit monthly mortgage / HOA / tax / insurance"
                         onClick={e => { e.stopPropagation(); setEditCarry(r.p.id); }}>✎ carrying</button></td>
@@ -301,9 +325,26 @@ function RentalPnlScreen() {
             <table className="tbl" style={{minWidth: 900}}>
               <thead><tr><th>Property</th>{PNL_MON.map((m, i) => <th key={m} className="num" style={{opacity: i + 1 > curMonth ? 0.4 : 1}}>{m}</th>)}<th className="num" style={{borderLeft: '2px solid var(--rule)'}}>Total</th></tr></thead>
               <tbody>
-                {rows.map(r => (
+                {activeRows.map(r => (
                   <tr key={r.p.id}>
                     <td style={{whiteSpace: 'nowrap'}}><a onClick={() => nav('/property/' + r.p.id)} style={{fontWeight: 500}}>{r.p.address}</a></td>
+                    {r.data.months.map(m => (
+                      <td key={m.ym} className="num" title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)}` : undefined}>
+                        {m.future || (!m.owned && !m.txCount) ? <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>
+                          : <span className="mono" style={{fontSize: 11.5, color: m.net > 0 ? 'var(--sage)' : m.net < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{fmtMoney(m.net)}</span>}
+                      </td>
+                    ))}
+                    <td className="num" style={{borderLeft: '2px solid var(--rule)'}}><span className="mono small" style={{fontWeight: 600, color: r.data.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(r.data.net)}</span></td>
+                  </tr>
+                ))}
+                {soldRows.length > 0 && (
+                  <tr style={{background: 'var(--paper-3)', borderTop: '2px solid var(--rule)'}}>
+                    <td colSpan={14} className="up" style={{fontSize: 10.5, fontWeight: 700, paddingTop: 9, paddingBottom: 9, color: 'var(--ink-2)'}}>Sold this year</td>
+                  </tr>
+                )}
+                {soldRows.map(r => (
+                  <tr key={r.p.id} style={{opacity: 0.85}}>
+                    <td style={{whiteSpace: 'nowrap'}}><a onClick={() => nav('/property/' + r.p.id)} style={{fontWeight: 500}}>{r.p.address}</a><Tag tone="ghost" style={{marginLeft: 8}}>Sold {fmtDate(r.p.salesDate)}</Tag></td>
                     {r.data.months.map(m => (
                       <td key={m.ym} className="num" title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)}` : undefined}>
                         {m.future || (!m.owned && !m.txCount) ? <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>

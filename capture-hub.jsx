@@ -399,6 +399,17 @@ function CapturePanel({ p }) {
   ] : [];
   const exStatus = linked.length ? 'captured' : (is1031 ? 'empty' : 'na');
 
+  // ── Refi ──
+  const refis = ((typeof window !== 'undefined' && window.Store && Store.state.refis) || []).filter(r => r.propertyId === p.id);
+  const activeRefi = refis.find(r => r.status !== 'done') || refis[0];
+  const refiFacts = activeRefi ? [
+    { k: 'Lender', v: activeRefi.lender || null },
+    { k: 'Stage', v: REFI_STAGE_LABEL[activeRefi.status] || activeRefi.status },
+    { k: 'Cash-out', v: activeRefi.cashOut != null ? fmtMoney(activeRefi.cashOut) : null, mono: true, color: 'var(--sage)' },
+    { k: 'Target close', v: activeRefi.targetClose ? fmtDate(activeRefi.targetClose) : null, mono: true },
+  ] : [];
+  const refiStatus = refis.length ? (refis.every(r => r.status === 'done') ? 'captured' : 'partial') : (code === 'K' ? 'empty' : 'na');
+
   // map current stage → which card to spotlight
   const currentCard =
     ['A','B','C'].includes(code) ? 'acq' :
@@ -435,6 +446,10 @@ function CapturePanel({ p }) {
       <EventCard index="6" title="1031 exchange" blurb="Linking relinquished & replacement property"
         status={exStatus} current={false} facts={exFacts}
         actionLabel={linked.length ? 'View 1031 link →' : 'Set up 1031 link →'} onAction={() => nav('/property/' + p.id + '/exch')}/>
+
+      <EventCard index="7" title="Refinance" blurb="New loan on a property you keep — lender, appraisal, cash-out"
+        status={refiStatus} current={false} facts={refiFacts}
+        actionLabel={refis.length ? 'View refi →' : 'Start refi →'} onAction={() => nav('/property/' + p.id + '/refi')}/>
 
       {dialog === 'acq'    && <AcquisitionDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
       {dialog === 'list'   && <ListingDialog key={p.id} property={p} onClose={() => setDialog(null)}/>}
