@@ -345,8 +345,12 @@ const SPSync = {
     const tabs = {};
     this._items = {}; this._childItems = {};
     const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
+    const bigLists = [];
     for (const tabName of allTabs) {
       const items = await this._fetchList(tabName);
+      // Tripwire: warn well before SharePoint's 5,000-item list view threshold
+      // so there's time to partition (e.g. archive old Transactions by year).
+      if (items.length >= 4000) bigLists.push(tabName + ' (' + items.length.toLocaleString() + ')');
       tabs[tabName] = items.map(it => this._rowFromItem(tabName, it));
       const idx = new Map();
       items.forEach((it, i) => { const rid = (it.fields || {}).RecID; if (rid != null) idx.set(String(rid), it.id); });
@@ -382,7 +386,8 @@ const SPSync = {
     this._baseline();
     SyncEngine.dirty = false;
     SyncEngine.lastSyncedAt = new Date().toISOString();
-    this._set('synced', 'Loaded from SharePoint');
+    if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
+    else this._set('synced', 'Loaded from SharePoint');
   },
 
   _baseline(state) {
@@ -446,7 +451,13 @@ const SPSync = {
           (res.responses || []).forEach(x => {
             const op = slice[Number(x.id) - 1]; if (!op) return;
             if (x.status === 429 || x.status === 503) { next.push(op); return; }
-            if (x.status >= 400) throw new Error(op.tab + ' ' + op.method + ' failed: ' + JSON.stringify(x.body && x.body.error && x.body.error.message || x.status));
+            if (x.status >= 400) {
+              console.error('SP sync op failed', { status: x.status, error: x.body && x.body.error, sent: op.body });
+              const err = (x.body && x.body.error) || {};
+              const detail = [err.code, err.message, err.innerError && err.innerError.code].filter(Boolean).join(' / ');
+              const sent = op.body ? ' — fields sent: ' + Object.keys(op.body.fields || op.body).join(', ') : '';
+              throw new Error(op.tab + ' ' + op.method + ' failed (' + x.status + '): ' + (detail || 'unknown') + sent);
+            }
             const m = this._sigs[op.tab]; const idx = this._items[op.tab];
             if (op.del) { idx.delete(op.recId); m.delete(op.recId); return; }
             if (op.method === 'POST' && x.body && x.body.id) idx.set(op.recId, x.body.id);
@@ -534,10 +545,10 @@ const SPSync = {
       // One-time schema catch-up: lists provisioned by an older build may lack
       // columns this build writes (e.g. updatedAt). provision() is idempotent
       // and only adds what's missing.
-      if (SP.config.schemaVer !== 2) {
+      if (SP.config.schemaVer !== 3) {
         this._set('syncing', 'Updating list columns…');
         await SP.provision(() => {});
-        SP.saveConfig({ schemaVer: 2 });
+        SP.saveConfig({ schemaVer: 3 });
       }
       await this.pull();
     } catch (e) {
