@@ -2676,7 +2676,7 @@ function buildCalendarEvents(fromIso, toIso) {
     const prop = getProperty(r.propertyId);
     push({
       key: 'task:' + r.id, cat: 'task', date: r.dueDate, taskId: r.id,
-      title: r.title, sub: prop ? prop.address : '', propertyId: r.propertyId,
+      title: r.title, sub: prop ? prop.address : 'General', propertyId: r.propertyId,
       priority: r.priority || 'normal', recurrence: r.recurrence || 'none', done: false,
     });
   });

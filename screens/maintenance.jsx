@@ -220,7 +220,7 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
           <div>
             <div className="up dim mb-4">Property</div>
             <select className="select" value={propId} onChange={e => setPropId(e.target.value)} style={{width: '100%'}}>
-              <option value="">Select a property…</option>
+              <option value="">General — not tied to a property</option>
               {props.map(pp => <option key={pp.id} value={pp.id}>{pp.address}</option>)}
             </select>
           </div>
@@ -292,9 +292,9 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this task?')) { deleteReminder(reminder.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!title || !dueDate || (needsProperty && !propId)} onClick={() => {
+          <Btn kind="primary" disabled={!title || !dueDate} onClick={() => {
             const clean = checklist.map(c => ({ id: c.id, text: c.text.trim(), done: !!c.done })).filter(c => c.text);
-            const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId };
+            const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId || null };
             if (editing) updateReminder(reminder.id, patch); else addReminder(patch);
             onClose();
           }}>{editing ? 'Save' : 'Add task'}</Btn>
