@@ -39,6 +39,11 @@ function CalendarScreen() {
   const [adding, setAdding] = useState(null);        // { defaultDate } or true
 
   function setViewP(v) { setView(v); localStorage.setItem(CAL_VIEW_KEY, v); }
+  // General (property-less) tasks have no property page to edit on — open the form here.
+  function editTask(id) {
+    const r = (Store.state.reminders || []).find(x => x.id === id);
+    if (r) setAdding({ reminder: r });
+  }
   function setCursorP(c) { setCursor(c); localStorage.setItem(CAL_MONTH_KEY, c.y + '-' + String(c.m+1).padStart(2,'0')); }
   function stepMonth(delta) {
     let { y, m } = cursor; m += delta;
@@ -69,12 +74,13 @@ function CalendarScreen() {
       {view === 'month'
         ? <MonthGrid cursor={cursor} today={today} visible={visible}
             onStep={stepMonth} onToday={goToday} onDay={setDayModal}/>
-        : <AgendaView today={today} visible={visible} onAdd={d => setAdding({ defaultDate: d })}/>}
+        : <AgendaView today={today} visible={visible} onAdd={d => setAdding({ defaultDate: d })} onEditTask={editTask}/>}
 
       {dayModal && <DayModal date={dayModal} visible={visible}
         onClose={() => setDayModal(null)}
+        onEditTask={id => { editTask(id); setDayModal(null); }}
         onAdd={() => { setAdding({ defaultDate: dayModal }); setDayModal(null); }}/>}
-      {adding && <ReminderForm defaultDate={adding.defaultDate} onClose={() => setAdding(null)}/>}
+      {adding && <ReminderForm reminder={adding.reminder} defaultDate={adding.defaultDate} onClose={() => setAdding(null)}/>}
     </div>
   );
 }
@@ -194,7 +200,7 @@ function MonthGrid({ cursor, today, visible, onStep, onToday, onDay }) {
   );
 }
 
-function EventLine({ e, showDate }) {
+function EventLine({ e, showDate, onEditTask }) {
   const chip = eventDueChip(e.days, e.done);
   const d = isoToParts(e.date);
   return (
@@ -214,7 +220,7 @@ function EventLine({ e, showDate }) {
         </div>
       )}
       <span style={{width: 9, height: 9, borderRadius: '50%', background: catColor(e.cat), flexShrink: 0, marginTop: 5}}/>
-      <div className="grow clickable" style={{minWidth: 0}} onClick={() => e.propertyId && nav('/property/' + e.propertyId + (e.taskId ? '/tasks' : ''))}>
+      <div className="grow clickable" style={{minWidth: 0}} onClick={() => e.propertyId ? nav('/property/' + e.propertyId + (e.taskId ? '/tasks' : '')) : (e.taskId && onEditTask && onEditTask(e.taskId))}>
         <div className="row gap-8 items-center wrap">
           <span style={{fontWeight: 500, fontSize: 13, textDecoration: e.done ? 'line-through' : 'none'}}>{e.title}</span>
           {e.cat === 'task' && e.priority === 'high' && <span className="up" style={{fontSize: 9, color: 'var(--brick)', border: '1px solid var(--brick)', background: 'var(--brick-soft)', borderRadius: 4, padding: '1px 5px'}}>↑ High</span>}
@@ -228,7 +234,7 @@ function EventLine({ e, showDate }) {
   );
 }
 
-function AgendaView({ today, visible, onAdd }) {
+function AgendaView({ today, visible, onAdd, onEditTask }) {
   const from = addDaysISO(today, -30);
   const to = addDaysISO(today, 180);
   const events = buildCalendarEvents(from, to).filter(visible);
@@ -263,7 +269,7 @@ function AgendaView({ today, visible, onAdd }) {
               <span className="meta">{label}</span>
             </div>
             <div className="card__body" style={{padding: 0}}>
-              {g.items.map(e => <EventLine key={e.key} e={e} showDate={false}/>)}
+              {g.items.map(e => <EventLine key={e.key} e={e} showDate={false} onEditTask={onEditTask}/>)}
             </div>
           </Card>
         );
@@ -272,7 +278,7 @@ function AgendaView({ today, visible, onAdd }) {
   );
 }
 
-function DayModal({ date, visible, onClose, onAdd }) {
+function DayModal({ date, visible, onClose, onAdd, onEditTask }) {
   useStore();
   const dp = isoToParts(date);
   const events = buildCalendarEvents(date, date).filter(visible);
@@ -285,7 +291,7 @@ function DayModal({ date, visible, onClose, onAdd }) {
           action={<Btn kind="ghost" sz="sm" onClick={onAdd}>+ Add a task</Btn>}/>
       ) : (
         <div className="col" style={{margin: '-4px -4px'}}>
-          {events.map(e => <EventLine key={e.key} e={e} showDate={false}/>)}
+          {events.map(e => <EventLine key={e.key} e={e} showDate={false} onEditTask={onEditTask}/>)}
         </div>
       )}
     </Modal>

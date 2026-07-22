@@ -75,9 +75,56 @@ function TaskRow({ r, onEdit }) {
   );
 }
 
+// Deal-date milestones (signing, DD, closing) — derived from the property record.
+// Done-keys are shared with the Calendar, so checking one off here checks it there too.
+function dealMilestones(p) {
+  const t = v => (v && !/\d{4}-\d{2}-\d{2}/.test(v)) ? ' · ' + v : '';
+  const out = [];
+  if (p.signingDate && p.signingDate !== p.saleSigningDate)
+    out.push({ key: 'sign:' + p.id + ':' + p.signingDate, date: p.signingDate, title: 'Signing' + t(p.closingTime) });
+  if (p.saleSigningDate)
+    out.push({ key: 'salesign:' + p.id + ':' + p.saleSigningDate, date: p.saleSigningDate, title: 'Sale signing' + t(p.saleSigningTime) });
+  if (p.ddDate) out.push({ key: 'dd:' + p.id + ':' + p.ddDate, date: p.ddDate, title: 'Due-diligence deadline' });
+  if (p.expectedCloseDate) out.push({ key: 'close:' + p.id + ':' + p.expectedCloseDate, date: p.expectedCloseDate, title: 'Expected closing' });
+  const past = p.statusCode === 'I';
+  out.forEach(m => { m.past = past && m.date < TODAY(); });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function MilestoneRow({ m }) {
+  useStore();
+  const done = isEventDone(m.key);
+  const due = done ? { text: 'done', tone: 'sage', fg: 'var(--sage)' }
+    : m.past ? { text: 'past', tone: 'ghost', fg: 'var(--ink-3)' }
+    : reminderDue(m.date);
+  return (
+    <div className="row gap-12 items-center" style={{padding: '10px 16px', borderBottom: '1px solid var(--rule-soft)'}}>
+      <button onClick={() => toggleEventDone(m.key)} title={done ? 'Mark not done' : 'Mark done'}
+        style={{
+          flexShrink: 0, width: 22, height: 22, borderRadius: 999, cursor: 'pointer',
+          border: '1.5px solid ' + (done ? 'var(--sage)' : 'var(--rule)'),
+          background: done ? 'var(--sage)' : 'transparent',
+          color: done ? '#fff' : 'var(--sage)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, lineHeight: 1, padding: 0,
+        }}>✓</button>
+      <div className="col items-center shrink-0" style={{width: 64}}>
+        <div className="mono small" style={{color: due.fg, fontWeight: 500, whiteSpace: 'nowrap'}}>{fmtDate(m.date)}</div>
+      </div>
+      <div className="grow" style={{minWidth: 0}}>
+        <div className="row gap-8 items-center wrap">
+          <span style={{fontWeight: 500, fontSize: 13, textDecoration: done ? 'line-through' : 'none', color: done ? 'var(--ink-3)' : 'inherit'}}>{m.title}</span>
+          <Tag tone="ghost">deal date</Tag>
+        </div>
+      </div>
+      <Tag tone={due.tone}>{due.text}</Tag>
+    </div>
+  );
+}
+
 function RemindersPanel({ p }) {
   useStore();
   const reminders = getRemindersForProperty(p.id);
+  const milestones = dealMilestones(p);
   const PRIO = { high: 0, normal: 1, low: 2 };
   const active = reminders.filter(r => !r.done)
     .sort((a, b) => (PRIO[a.priority || 'normal'] - PRIO[b.priority || 'normal']) || (a.dueDate || '').localeCompare(b.dueDate || ''));
@@ -104,11 +151,12 @@ function RemindersPanel({ p }) {
             <Btn sz="sm" onClick={() => setAdding(true)}>+ Task</Btn>
           </div>
         }/>
-        {active.length === 0 ? (
+        {active.length === 0 && milestones.length === 0 ? (
           <div className="card__body"><Empty icon="🗓" title="No tasks yet"
             sub="Add anything with a deadline — closing to-dos, inspections, filter changes, follow-ups. Tasks show up on the Calendar."/></div>
         ) : (
           <div className="col">
+            {milestones.map(m => <MilestoneRow key={m.key} m={m}/>)}
             {active.map(r => <TaskRow key={r.id} r={r} onEdit={setEditing}/>)}
           </div>
         )}
@@ -172,7 +220,7 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
           <div>
             <div className="up dim mb-4">Property</div>
             <select className="select" value={propId} onChange={e => setPropId(e.target.value)} style={{width: '100%'}}>
-              <option value="">Select a property…</option>
+              <option value="">General — not tied to a property</option>
               {props.map(pp => <option key={pp.id} value={pp.id}>{pp.address}</option>)}
             </select>
           </div>
@@ -244,9 +292,9 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this task?')) { deleteReminder(reminder.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!title || !dueDate || (needsProperty && !propId)} onClick={() => {
+          <Btn kind="primary" disabled={!title || !dueDate} onClick={() => {
             const clean = checklist.map(c => ({ id: c.id, text: c.text.trim(), done: !!c.done })).filter(c => c.text);
-            const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId };
+            const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId || null };
             if (editing) updateReminder(reminder.id, patch); else addReminder(patch);
             onClose();
           }}>{editing ? 'Save' : 'Add task'}</Btn>

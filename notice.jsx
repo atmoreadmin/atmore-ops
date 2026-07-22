@@ -34,6 +34,7 @@ const SHEET_SCHEMA = {
       { key: 'zip',             label: 'Zip',                type: 'string' },
       { key: 'assigned',        label: 'Assigned Person',    type: 'string' },
       { key: 'loanType',        label: 'Loan Type',          type: 'enum' },
+      { key: 'financingType',   label: 'Financing',          type: 'enum', notes: 'DSCR / Cash / Bridge' },
       { key: 'lockbox',         label: 'Lockbox Code',       type: 'string' },
       { key: 'ddDate',          label: 'DD Date',            type: 'date' },
       { key: 'signingDate',     label: 'Signing Date',       type: 'date' },
@@ -47,6 +48,7 @@ const SHEET_SCHEMA = {
       { key: 'acqDDFee',        label: 'Due Diligence Fee (Buy)', type: 'money', notes: 'Non-refundable DD fee paid at purchase (already inside price)' },
       { key: 'rehab',           label: 'Rehab Spent',        type: 'money' },
       { key: 'rehabFunds',      label: 'Rehab Budget',       type: 'money' },
+      { key: 'rehabDraws',      label: 'Rehab Funds From Lender', type: 'money', notes: 'Draws requested from the lender — repaid inside loan payoff' },
       { key: 'interest',        label: 'Interest Accrued',   type: 'money' },
       { key: 'salesDate',       label: 'Sales Date',         type: 'date' },
       { key: 'saleSigningDate',  label: 'Sale Signing Date',  type: 'date',   notes: 'Closing/signing appointment date (sale side)' },
@@ -69,6 +71,12 @@ const SHEET_SCHEMA = {
       { key: 'saleDDCollected',  label: 'DD Fee Collected',    type: 'money',  notes: 'Due diligence fee collected from buyer — counts as income' },
       { key: 'saleEarnest',      label: 'Buyer Earnest (Sale)',type: 'money',  notes: 'Buyer EMD — nets through closing, informational' },
       { key: 'exchangeFunds',    label: '1031 Funds Rolled Out (Sale)', type: 'money', notes: 'Relinquished side — sale proceeds rolled into the exchange when this property is sold' },
+      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'text' },
+      { key: 'saleCreditsReceived', label: 'Sale Credits Received', type: 'money', notes: 'Credits paid to you at closing (tax prorations etc.) — adds to profit' },
+      { key: 'interestCredit',   label: 'Interest Credit',     type: 'money', notes: 'Credit received back after closing on the loan — reduces interest cost' },
+      { key: 'otherFees',        label: 'Other Fees',          type: 'money', notes: 'Miscellaneous deal costs' },
+      { key: 'cashToClose',      label: 'Cash To Close (Actual)', type: 'money', notes: 'From the purchase HUD — cash actually brought to closing' },
+      { key: 'cashReceivedAtClose', label: 'Cash Received At Closing (Actual)', type: 'money', notes: 'From the sales HUD — cash actually received' },
       { key: 'contractDate',     label: 'Under Contract Date', type: 'date' },
       { key: 'buyerDDDate',      label: 'Buyer DD Deadline',   type: 'date' },
       { key: 'expectedCloseDate',label: 'Expected Close Date', type: 'date' },
@@ -127,6 +135,10 @@ const SHEET_SCHEMA = {
       { key: 'phaPortion', label: 'Voucher (PHA) Portion', type: 'money', notes: 'Section 8 — monthly amount paid by the housing authority' },
       { key: 'tenantPortion', label: 'Tenant Responsibility', type: 'money', notes: 'Section 8 — monthly amount the tenant pays out of pocket' },
       { key: 'occupants',  label: 'Occupants',         type: 'number' },
+      { key: 'lateFeeAmount',   label: 'Late Fee Amount',    type: 'money', notes: 'Blank = default 5% of rent; 0 = no late fee' },
+      { key: 'lateFeeStartDay', label: 'Late Fee Start Day', type: 'number' },
+      { key: 'lateFeeMax',      label: 'Late Fee Max Cap',   type: 'money' },
+      { key: 'lateFeePerDay',   label: 'Late Fee Per Day',   type: 'bool' },
       { key: 'status',     label: 'Status',            type: 'enum', notes: 'active / past / vacant / prep / vacating' },
       { key: 'notes',      label: 'Notes',             type: 'string' },
     ],
@@ -147,6 +159,9 @@ const SHEET_SCHEMA = {
       { key: 'status',        label: 'Status',          type: 'enum', notes: 'paid / partial / late / vacate-due / not-due' },
       { key: 'lateFeeWaived', label: 'Late Fee Waived', type: 'bool' },
       { key: 'linkedTxId',    label: 'Linked Tx ID',    type: 'fk' },
+      { key: 'linkedTxIds',   label: 'Linked Tx IDs',   type: 'string', notes: 'comma-separated, all payments in the month' },
+      { key: 'reducedCharge', label: 'Reduced Charge',  type: 'bool' },
+      { key: 'noAutoMatch',   label: 'No Auto Match',   type: 'bool' },
     ],
   },
   Transactions: {
@@ -162,6 +177,8 @@ const SHEET_SCHEMA = {
       { key: 'payee',       label: 'Payee',       type: 'string' },
       { key: 'category',    label: 'Category',    type: 'enum' },
       { key: 'project',     label: 'Property',    type: 'string', notes: 'Address (lookup against Properties) or "multiple"' },
+      { key: 'bucket',      label: 'Bucket',      type: 'enum',   notes: 'Properties / Rentals / Office' },
+      { key: 'notes',       label: 'Notes',       type: 'string' },
       { key: 'importBatch', label: 'Import Batch',type: 'string' },
     ],
   },
@@ -308,7 +325,7 @@ const SHEET_SCHEMA = {
   WebAccounts: {
     description: 'Vendor / portal logins (Adobe, Amazon, bank & HOA portals, etc.). Imported from your old Web Accounts sheet.',
     pk: 'id',
-    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '' })),
+    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '', updatedAt: w.updatedAt || null })),
     columns: [
       { key: 'id',       label: 'ID',           type: 'string', required: true },
       { key: 'org',      label: 'Organization', type: 'string', required: true },
@@ -344,6 +361,7 @@ const SHEET_SCHEMA = {
       lastDone: r.lastDone || '',
       checklist: JSON.stringify(r.checklist || []),
       notes: r.notes || '',
+      updatedAt: r.updatedAt || null,
     })),
     columns: [
       { key: 'id',         label: 'ID',          type: 'string', required: true },
@@ -356,6 +374,194 @@ const SHEET_SCHEMA = {
       { key: 'lastDone',   label: 'Last Done',   type: 'date' },
       { key: 'checklist',  label: 'Checklist',   type: 'string', notes: 'JSON array of {id,text,done}' },
       { key: 'notes',      label: 'Notes',       type: 'string' },
+    ],
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Below: collections + record sub-details that previously lived only in the
+  // browser. Each is flattened into scalar rows (one row per item, with a
+  // foreign key back to its parent) so it round-trips through the flat Sheet.
+  // ─────────────────────────────────────────────────────────────────────────
+  Maintenance: {
+    description: 'Maintenance / "Log work" records — repairs and upkeep per property.',
+    pk: 'id',
+    rowSource: (s) => (s.maintenance || []).map(m => ({
+      id: m.id, propertyId: m.propertyId || '', date: m.date || '',
+      category: m.category || '', description: m.description || '',
+      vendor: m.vendor || '', cost: m.cost ?? null, status: m.status || 'open', updatedAt: m.updatedAt || null,
+    })),
+    columns: [
+      { key: 'id',          label: 'ID',          type: 'string', required: true },
+      { key: 'propertyId',  label: 'Property ID', type: 'fk', notes: 'References Properties.id' },
+      { key: 'date',        label: 'Date',        type: 'date' },
+      { key: 'category',    label: 'Category',    type: 'string' },
+      { key: 'description', label: 'Description', type: 'string', required: true },
+      { key: 'vendor',      label: 'Vendor',      type: 'string' },
+      { key: 'cost',        label: 'Cost',        type: 'number' },
+      { key: 'status',      label: 'Status',      type: 'enum', notes: 'open / scheduled / done' },
+    ],
+  },
+  AutoTagRules: {
+    description: 'Auto-tag rules — regex patterns that suggest a category/project on import. Row order (Ord) sets priority; first match wins.',
+    pk: 'id',
+    rowSource: (s) => (s.autoTagRules || []).map((r, i) => ({
+      id: r.id, ord: i, pattern: r.pattern || '', category: r.category || '',
+      payee: r.payee || '', project: r.project || '', conf: r.conf ?? 80,
+    })),
+    columns: [
+      { key: 'id',       label: 'ID',         type: 'string', required: true },
+      { key: 'ord',      label: 'Ord',        type: 'number', notes: 'Priority order (0 = top)' },
+      { key: 'pattern',  label: 'Pattern',    type: 'string', required: true, notes: 'Case-insensitive regex matched on description' },
+      { key: 'category', label: 'Category',   type: 'string' },
+      { key: 'payee',    label: 'Payee',      type: 'string' },
+      { key: 'project',  label: 'Project',    type: 'string', notes: 'Property id, or a token like "extract"' },
+      { key: 'conf',     label: 'Confidence', type: 'number' },
+    ],
+  },
+  TransactionSplits: {
+    description: 'Split lines for a transaction (one parent transaction divided across projects/categories). FK → Transactions.id.',
+    pk: 'txId+ord',
+    rowSource: (s) => {
+      const rows = [];
+      (s.transactions || []).forEach(t => (t.splits || []).forEach((sp, i) => rows.push({
+        txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null,
+      })));
+      return rows;
+    },
+    columns: [
+      { key: 'txId',     label: 'Transaction ID', type: 'fk', required: true, notes: 'References Transactions.id' },
+      { key: 'ord',      label: 'Ord',            type: 'number' },
+      { key: 'project',  label: 'Project',        type: 'string' },
+      { key: 'category', label: 'Category',       type: 'string' },
+      { key: 'amount',   label: 'Amount',         type: 'number' },
+    ],
+  },
+  TenantRentHistory: {
+    description: 'Rent-change history per tenant — the dated rent amounts that drive the ledger. FK → Tenants.id.',
+    pk: 'tenantId+ord',
+    rowSource: (s) => {
+      const rows = [];
+      (s.tenants || []).forEach(t => (t.rentHistory || []).forEach((h, i) => rows.push({
+        tenantId: t.id, ord: i, effectiveDate: h.effectiveDate || '', amount: h.amount ?? null, note: h.note || '',
+      })));
+      return rows;
+    },
+    columns: [
+      { key: 'tenantId',      label: 'Tenant ID',      type: 'fk', required: true, notes: 'References Tenants.id' },
+      { key: 'ord',           label: 'Ord',            type: 'number' },
+      { key: 'effectiveDate', label: 'Effective Date', type: 'date' },
+      { key: 'amount',        label: 'Amount',         type: 'number' },
+      { key: 'note',          label: 'Note',           type: 'string' },
+    ],
+  },
+  ContractorTen99: {
+    description: '1099 issuance history per contractor — one row per tax year. FK → Contractors.id.',
+    pk: 'contractorId+taxYear',
+    rowSource: (s) => {
+      const rows = [];
+      (s.contractors || []).forEach(c => (c.ten99History || []).forEach(h => rows.push({
+        contractorId: c.id, taxYear: h.taxYear ?? null, status: h.status || '',
+        issuedDate: h.issuedDate || '', amountReported: h.amountReported ?? null,
+      })));
+      return rows;
+    },
+    columns: [
+      { key: 'contractorId',   label: 'Contractor ID',   type: 'fk', required: true, notes: 'References Contractors.id' },
+      { key: 'taxYear',        label: 'Tax Year',        type: 'number' },
+      { key: 'status',         label: 'Status',          type: 'enum', notes: 'issued / etc.' },
+      { key: 'issuedDate',     label: 'Issued Date',     type: 'date' },
+      { key: 'amountReported', label: 'Amount Reported', type: 'number' },
+    ],
+  },
+  StageHistory: {
+    description: 'Pipeline stage-change log per property — the audit trail of status moves and notes. FK → Properties.id.',
+    pk: 'propertyId+ord',
+    rowSource: (s) => {
+      const rows = [];
+      (s.properties || []).forEach(p => (p.stageHistory || []).forEach((h, i) => rows.push({
+        propertyId: p.id, ord: i, from: h.from || '', to: h.to || '', at: h.at || '', note: h.note || '', by: h.by || '',
+      })));
+      return rows;
+    },
+    columns: [
+      { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
+      { key: 'ord',        label: 'Ord',         type: 'number' },
+      { key: 'from',       label: 'From',        type: 'string', notes: 'Status code moved from' },
+      { key: 'to',         label: 'To',          type: 'string', notes: 'Status code moved to' },
+      { key: 'at',         label: 'At',          type: 'date' },
+      { key: 'note',       label: 'Note',        type: 'string' },
+      { key: 'by',         label: 'By',          type: 'string', notes: 'import / user / capture / settings' },
+    ],
+  },
+  FeeItems: {
+    description: 'Itemized purchase/sale closing-fee lines per property. Kind = purchase or sale. FK → Properties.id.',
+    pk: 'propertyId+kind+ord',
+    rowSource: (s) => {
+      const rows = [];
+      (s.properties || []).forEach(p => {
+        (p.purchaseFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'purchase', ord: i, label: it.label || '', amount: it.amount ?? null }));
+        (p.saleFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'sale', ord: i, label: it.label || '', amount: it.amount ?? null }));
+      });
+      return rows;
+    },
+    columns: [
+      { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
+      { key: 'kind',       label: 'Kind',        type: 'enum', notes: 'purchase / sale' },
+      { key: 'ord',        label: 'Ord',         type: 'number' },
+      { key: 'label',      label: 'Label',       type: 'string' },
+      { key: 'amount',     label: 'Amount',      type: 'number' },
+    ],
+  },
+  Utilities: {
+    description: 'Per-property utility accounts (electric / water / gas / trash) — provider, account number, on/off status. FK → Properties.id.',
+    pk: 'propertyId+type',
+    rowSource: (s) => {
+      const rows = [];
+      const TYPES = ['electric', 'water', 'gas', 'trash'];
+      (s.properties || []).forEach(p => {
+        const u = p.utilities || {};
+        TYPES.forEach(type => {
+          const r = u[type];
+          if (r && (r.provider || r.account || (r.status && r.status !== ''))) {
+            rows.push({ propertyId: p.id, type, provider: r.provider || '', account: r.account || '', status: r.status || '' });
+          }
+        });
+      });
+      return rows;
+    },
+    columns: [
+      { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
+      { key: 'type',       label: 'Type',        type: 'enum', notes: 'electric / water / gas / trash' },
+      { key: 'provider',   label: 'Provider',    type: 'string' },
+      { key: 'account',    label: 'Account #',   type: 'string' },
+      { key: 'status',     label: 'Status',      type: 'enum', notes: 'on / transferred / off' },
+    ],
+  },
+  CompletedEvents: {
+    description: 'Calendar events marked done. One row per completed event key (derived rent/lease/tax/insurance events; tasks track their own done flag).',
+    pk: 'key',
+    rowSource: (s) => Object.keys(s.completedEvents || {}).filter(k => s.completedEvents[k]).map(key => ({ key })),
+    columns: [
+      { key: 'key', label: 'Event Key', type: 'string', required: true },
+    ],
+  },
+  ExchangeDraws: {
+    description: '1031 exchange fund draws — money deployed from an exchange into a replacement property. FK → Exchanges.id.',
+    pk: 'exchangeId+ord',
+    rowSource: (s) => {
+      const rows = [];
+      (s.exchanges || []).forEach(e => (e.draws || []).forEach((d, i) => rows.push({
+        exchangeId: e.id, ord: i, propId: d.propId || '', amount: d.amount ?? null, date: d.date || '', note: d.note || '',
+      })));
+      return rows;
+    },
+    columns: [
+      { key: 'exchangeId', label: 'Exchange ID', type: 'fk', required: true, notes: 'References Exchanges.id' },
+      { key: 'ord',        label: 'Ord',         type: 'number' },
+      { key: 'propId',     label: 'Property ID', type: 'fk', notes: 'References Properties.id' },
+      { key: 'amount',     label: 'Amount',      type: 'number' },
+      { key: 'date',       label: 'Date',        type: 'date' },
+      { key: 'note',       label: 'Note',        type: 'string' },
     ],
   },
 };
@@ -403,6 +609,7 @@ function IntegrationScreen({ embedded } = {}) {
     <Segmented value={view}
       options={[
         {value:'sync', label:'Sync'},
+        {value:'sharepoint', label:'SharePoint'},
         {value:'schema', label:'Schema'},
         {value:'export', label:'Export workbook'},
         {value:'strategy', label:'Strategy'},
@@ -428,6 +635,7 @@ function IntegrationScreen({ embedded } = {}) {
       )}
 
       {view === 'sync' && <SyncView/>}
+      {view === 'sharepoint' && <SharePointView/>}
       {view === 'schema' && <SchemaView/>}
       {view === 'export' && <ExportView onExport={exportWorkbook} exporting={exporting}/>}
       {view === 'strategy' && <StrategyView/>}

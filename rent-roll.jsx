@@ -34,11 +34,11 @@ function heroStat(p, tenants) {
   if (code === 'G' || code === 'H') {
     const base = p.salesPrice != null ? p.salesPrice : p.listPrice;
     if (base != null) return { label: 'Projected net', value: base - costBasis, tone: (base - costBasis) >= 0 ? 'sage' : 'brick', sign: true, sub: 'price − basis' };
-    return { label: 'Cost basis', value: costBasis };
+    return { value: null };
   }
   if (code === 'E' || code === 'F') {
     if (p.listPrice != null) return { label: 'List price', value: p.listPrice };
-    return { label: 'Cost basis', value: costBasis };
+    return { value: null };
   }
   return { label: 'Purchase price', value: p.purchasePrice != null ? purchase : null };
 }
@@ -239,6 +239,8 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   const rehab = p.rehab || 0;
   const interest = Math.abs(p.interest || 0);
   const rehabBudget = p.rehabFunds ? Math.abs(p.rehabFunds) : null;
+  const rehabDraws = Math.abs(p.rehabDraws || 0);
+  const outOfPocketRehab = Math.max(0, rehab - rehabDraws);
   const purchaseFeeItems = p.purchaseFeeItems || [];
   const saleFeeItems = p.saleFeeItems || [];
 
@@ -246,21 +248,25 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   const closeCosts = Math.abs(p.salesFees || 0);
   const concessions = Math.abs(p.salesCredits || 0);
   const ddCollected = Math.abs(p.saleDDCollected || 0);
+  const saleCreditsRecd = Math.abs(p.saleCreditsReceived || 0);
   const saleEMD = Math.abs(p.saleEarnest || 0);
   const payoff = Math.abs(p.salesLoanPayoff || 0);
-  // Atmore loan: principal in nets against payoff out; only the interest fee is a cost.
+  // Atmore loan: payoff out minus the loan funded at acquisition; only the interest fee is a cost.
   const atmorePrincipal = Math.abs(p.atmoreLoanPrincipal || 0);
   const atmorePayoff = Math.abs(p.atmoreLoanPayoff || 0);
-  const atmoreInterest = atmorePayoff > 0 ? Math.max(0, atmorePayoff - atmorePrincipal) : 0;
+  const atmorePrinBasis = Math.abs(p.purchaseLoan || 0) > 0 ? Math.abs(p.purchaseLoan || 0) : atmorePrincipal;
+  const atmoreInterest = atmorePayoff > 0 ? Math.max(0, atmorePayoff - atmorePrinBasis) : 0;
 
   // All-in cost out. Loan payoff is NOT here — the borrowed money is already
   // inside the purchase price; only its interest is a cost.
-  const costBasis = purchase + fees - credits + rehab + interest + atmoreInterest;
+  const interestCreditAmt = Math.abs(p.interestCredit || 0);
+  const otherFeesAmt = Math.abs(p.otherFees || 0);
+  const costBasis = purchase + fees - credits + rehab + interest - interestCreditAmt + otherFeesAmt + atmoreInterest;
   // Money in. DD fee collected up front is income (it's deducted from line 603
   // precisely because it was already received). EMD nets through closing.
-  const netProceeds = salesPrice != null ? salesPrice - closeCosts - concessions + ddCollected : null;
+  const netProceeds = salesPrice != null ? salesPrice - closeCosts - concessions + ddCollected + saleCreditsRecd : null;
   const netProfit = salesPrice != null ? netProceeds - costBasis : null;
-  const netCashAtClose = salesPrice != null ? (salesPrice - closeCosts - concessions) - payoff : null;
+  const netCashAtClose = salesPrice != null ? (salesPrice - closeCosts - concessions + saleCreditsRecd) - payoff : null;
   const sold = p.statusCode === 'I';
 
   return (
@@ -314,6 +320,12 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
                 </div>
               </div>
             </div>
+            {rehabDraws > 0 && (
+              <div className="row between items-center">
+                <div className="small mid">↳ Lender rehab draws</div>
+                <div className="mono small dim">{fmtMoney(rehabDraws)} · {fmtMoney(outOfPocketRehab)} out of pocket</div>
+              </div>
+            )}
             <div className="row between items-center">
               <div>+ Loan interest</div>
               <div className="mono">{fmtMoney(interest)}</div>
@@ -332,6 +344,11 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
             {(acqDD > 0 || acqEMD > 0) && (
               <div className="tiny dim" style={{lineHeight: 1.5}}>
                 Incl. {acqDD > 0 ? `${fmtMoney(acqDD)} due-diligence fee` : ''}{acqDD > 0 && acqEMD > 0 ? ' and ' : ''}{acqEMD > 0 ? `${fmtMoney(acqEMD)} earnest` : ''} paid up front — already inside the price.
+              </div>
+            )}
+            {rehabDraws > 0 && (
+              <div className="tiny dim" style={{lineHeight: 1.5}}>
+                {fmtMoney(rehabDraws)} of rehab was lender-funded (draws) — repaid inside the loan payoff, so it stays in cost basis; your out-of-pocket rehab was {fmtMoney(outOfPocketRehab)}.
               </div>
             )}
             {atmorePayoff > 0 && (
@@ -374,6 +391,10 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
                 {ddCollected > 0 && <div className="row between items-center">
                   <div className="small mid">+ Due-diligence fee collected</div>
                   <div className="mono small" style={{color: 'var(--sage)'}}>+{fmtMoney(ddCollected)}</div>
+                </div>}
+                {saleCreditsRecd > 0 && <div className="row between items-center">
+                  <div className="small mid">+ Sale credits received</div>
+                  <div className="mono small" style={{color: 'var(--sage)'}}>+{fmtMoney(saleCreditsRecd)}</div>
                 </div>}
                 <div className="divider" style={{margin: '3px 0'}}/>
                 <div className="row between items-center">
@@ -510,6 +531,7 @@ function TenantsPanel({ p, tenants, compact }) {
               </div>
               {!compact && (
                 <>
+                  <MonthlyCarryingCosts p={p} rent={t.rent}/>
                   <div className="divider"/>
                   <PaymentHistory tenantId={t.id}/>
                 </>
@@ -532,19 +554,89 @@ function TenantsPanel({ p, tenants, compact }) {
   );
 }
 
+// ────── Monthly carrying costs ──────
+// Derives the recurring monthly charges for a property from its stored
+// financials: mortgage payment, property tax (annual ÷ 12), insurance
+// (annual ÷ 12). Escrowed tax/insurance are collected inside the mortgage
+// payment, so they're shown but excluded from the total to avoid double-counting.
+function MonthlyCarryingCosts({ p, rent }) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const ld = p.loanDetail || {};
+  const tx = p.taxes || {};
+  const ins = p.insurance || {};
+  const mortgage = ld.monthlyPayment || 0;
+  const taxMo = tx.annualAmount ? tx.annualAmount / 12 : 0;
+  const insMo = ins.premium ? ins.premium / 12 : 0;
+  // Nothing entered at all → don't show the block.
+  if (!mortgage && !taxMo && !insMo) return null;
+  const taxEscrowed = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  const insEscrowed = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
+  // Always show all three categories so a missing one is visible, not silently dropped.
+  const rows = [
+    { label: 'Mortgage', sub: 'monthly payment', amount: mortgage },
+    { label: 'Property tax', sub: tx.annualAmount ? fmtMoney(tx.annualAmount) + '/yr ÷ 12' : '', amount: taxMo, escrowed: taxEscrowed },
+    { label: 'Insurance', sub: ins.premium ? fmtMoney(ins.premium) + '/yr ÷ 12' : '', amount: insMo, escrowed: insEscrowed },
+  ];
+  const total = rows.reduce((a, r) => a + (r.escrowed ? 0 : r.amount), 0);
+  const net = rent != null ? rent - total : null;
+  return (
+    <div>
+      <div className="divider"/>
+      <div className="up dim mb-8">Monthly carrying costs</div>
+      <table className="tbl">
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.label}>
+              <td className="small">
+                {r.label} {r.sub && <span className="dim">· {r.sub}</span>}
+                {r.escrowed && <Tag tone="blue" style={{marginLeft: 6}}>in escrow</Tag>}
+              </td>
+              {r.amount > 0 ? (
+                <td className="num mono small" style={{color: r.escrowed ? 'var(--ink-3)' : 'var(--brick)'}}>
+                  {r.escrowed ? 'incl.' : fmtMoney(-r.amount)}
+                </td>
+              ) : (
+                <td className="num small dim">
+                  not on file · <a onClick={() => setEditorOpen(true)} style={{cursor: 'pointer', color: 'var(--blue)'}}>Add</a>
+                </td>
+              )}
+            </tr>
+          ))}
+          <tr style={{borderTop: '2px solid var(--rule)'}}>
+            <td className="small" style={{fontWeight: 600}}>Total carrying cost</td>
+            <td className="num mono small" style={{fontWeight: 600, color: 'var(--brick)'}}>{fmtMoney(-total)}/mo</td>
+          </tr>
+          {net != null && (
+            <tr>
+              <td className="small" style={{fontWeight: 600}}>Net after rent ({fmtMoney(rent)}/mo)</td>
+              <td className="num mono small" style={{fontWeight: 600, color: net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(net)}/mo</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {editorOpen && <PropertyEditor key={p.id} property={p} onClose={() => setEditorOpen(false)}/>}
+    </div>
+  );
+}
+
 function PaymentHistory({ tenantId }) {
   const [open, setOpen] = useState(null);
+  const [viewTx, setViewTx] = useState(null);
+  const [viewSplit, setViewSplit] = useState(null);
+  const [splitTxn, setSplitTxn] = useState(null);
   const tenant = getTenant(tenantId);
   const prop = tenant ? getProperty(tenant.propertyId) : null;
   // Direct-tagged transactions PLUS this property's slice of any split transaction
   // (a split parent is tagged project:'multiple', so its slices are otherwise missed).
-  const directTx = prop ? getTxForProperty(prop.id) : [];
+  // Parents that HAVE splits are excluded here — their slices below carry the amounts,
+  // otherwise a split shows twice (full original + each slice).
+  const directTx = (prop ? getTxForProperty(prop.id) : []).filter(t => !(t.splits && t.splits.length));
   const addrLower = ((prop && prop.address) || '').toLowerCase().trim();
   const splitTx = prop ? (Store.state.transactions || []).flatMap(t => {
     if (!t.splits || !t.splits.length) return [];
     return t.splits
       .filter(sp => (sp.project || '').toLowerCase().trim() === addrLower)
-      .map((sp, i) => ({ id: t.id + '-s' + i, date: t.date, desc: t.desc, category: sp.category || t.category, amount: sp.amount }));
+      .map((sp, i) => ({ id: t.id + '-s' + i, srcId: t.id, date: t.date, desc: t.desc, payee: t.payee, category: sp.category || t.category, amount: sp.amount }));
   }) : [];
   const tx = [...directTx, ...splitTx];
   if (tx.length === 0) return null;
@@ -553,27 +645,83 @@ function PaymentHistory({ tenantId }) {
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const fmtM = ym => { const [y, m] = ym.split('-'); return (MON[parseInt(m, 10) - 1] || ym) + ' ' + y; };
 
-  // Group the property's transactions by month into money in (income) vs money out (charges).
+  // Group by month into money in vs out. Security deposits are refundable
+  // liabilities, NOT income — they're excluded from in/out and tracked separately.
+  // Renovation/financing-phase categories are also excluded from In/Out/Net:
+  // this card tracks RENTAL cash flow only.
+  // this card tracks RENTAL cash flow only — same rule as the Rental P&L page:
+  // only categories starting with "Rental" count; everything else (reno,
+  // financing, construction) is shown separately as Non-rental.
+  const isDep = t => /security deposit/i.test(t.category || '');
+  const isNonRental = t => !isDep(t) && !/^rental/i.test((t.category || '').trim()) && !t.recurring;
   const byMonth = {};
   tx.forEach(t => {
     if (!t.date) return;
     const m = t.date.slice(0, 7);
-    if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, txns: [] };
-    if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
+    if (!byMonth[m]) byMonth[m] = { month: m, in: 0, out: 0, otherNet: 0, txns: [] };
+    if (isDep(t)) { /* excluded from cash flow */ }
+    else if (isNonRental(t)) byMonth[m].otherNet += (t.amount || 0);
+    else if ((t.amount || 0) >= 0) byMonth[m].in += t.amount;
     else byMonth[m].out += Math.abs(t.amount);
     byMonth[m].txns.push(t);
   });
+  // Deposits held: scoped to the current tenant's tenure when occupied, so an old
+  // refund (previous tenant's deposit, collected before records began) doesn't net
+  // against the new tenant's deposit. Vacant → all-time net.
+  const _curTen = prop ? (Store.state.tenants || []).find(t => t.propertyId === prop.id && t.status === 'active' && t.moveIn && t.moveIn <= TODAY()) : null;
+  const depTx = tx.filter(isDep).filter(t => !_curTen || (t.date || '') >= _curTen.moveIn);
+  const depositsHeld = depTx.reduce((a, t) => a + (t.amount || 0), 0);
   const months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
+  // Rented vs not: a month counts as rented if any tenant's lease (move-in →
+  // move-out, or open-ended) covers it.
+  const leaseTenants = (Store.state.tenants || []).filter(t => t.propertyId === prop.id && t.moveIn);
+  const isRentedMonth = ym => leaseTenants.some(t => t.moveIn.slice(0, 7) <= ym && (!t.moveOut || t.moveOut.slice(0, 7) >= ym));
+  months.forEach(m => { m.rented = isRentedMonth(m.month); });
+
+  // Recurring monthly carrying costs (mortgage + tax/12 + insurance/12) blended
+  // into each month so the per-month net reflects true cash flow, not just logged
+  // transactions. Escrowed tax/insurance ride inside the mortgage payment, so
+  // they're skipped as separate lines to avoid double-counting.
+  const ld = prop.loanDetail || {}, ptx = prop.taxes || {}, pins = prop.insurance || {};
+  const mortgage = ld.monthlyPayment || 0;
+  const taxMo = ptx.annualAmount ? ptx.annualAmount / 12 : 0;
+  const insMo = pins.premium ? pins.premium / 12 : 0;
+  const taxEsc = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  const insEsc = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
+  const carrying = [
+    mortgage > 0 && { tag: '_mtg', desc: 'Mortgage payment', category: 'Mortgage', amount: -mortgage },
+    taxMo > 0 && !taxEsc && { tag: '_tax', desc: 'Property tax (1/12)', category: 'Property tax', amount: -taxMo },
+    insMo > 0 && !insEsc && { tag: '_ins', desc: 'Insurance (1/12)', category: 'Insurance', amount: -insMo },
+  ].filter(Boolean);
+  if (carrying.length) {
+    months.forEach(m => {
+      carrying.forEach(c => {
+        m.out += Math.abs(c.amount);
+        m.txns.push({ ...c, id: m.month + c.tag, date: m.month + '-01', recurring: true });
+      });
+    });
+  }
   const totalIn = months.reduce((a, m) => a + m.in, 0);
   const totalOut = months.reduce((a, m) => a + m.out, 0);
+  const totalOther = months.reduce((a, m) => a + m.otherNet, 0);
+  const groupOf = flag => { const list = months.filter(m => m.rented === flag); return { list, in: list.reduce((a, m) => a + m.in, 0), out: list.reduce((a, m) => a + m.out, 0) }; };
+  const cfSections = [
+    { key: 'rented', label: 'Rented', g: groupOf(true) },
+    { key: 'vacant', label: 'Not rented', g: groupOf(false) },
+  ].filter(s => s.g.list.length > 0);
 
   return (
     <div>
       <div className="row between items-center mb-8">
-        <div className="up dim">Monthly cash flow · {months.length} months</div>
+        <div className="col" style={{gap: 2}}>
+          <div className="up dim">Monthly cash flow · {months.length} months</div>
+          {carrying.length > 0 && <div className="tiny dim">Includes recurring mortgage/tax/insurance estimates · rental activity only</div>}
+        </div>
         <div className="row gap-12 small">
-          <span><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
-          <span><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
+          {depositsHeld !== 0 && <span title={_curTen ? 'Deposit transactions since ' + fmtDate(_curTen.moveIn, {full: true}) + ' (current tenant)' : 'All-time deposit collections minus refunds'}><span className="dim">Deposits held:</span> <span className="mono" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</span></span>}
+          {totalOther !== 0 && <span title="Anything not in a Rental-prefixed category — renovation, construction and financing activity, not counted in In/Out/Net"><span className="dim">Non-rental:</span> <span className="mono dim">{fmtMoney(totalOther)}</span></span>}
+          <span title="Rental income and deposits received (renovation/financing excluded)"><span className="dim">In:</span> <span className="mono" style={{color: 'var(--sage)'}}>{fmtMoney(totalIn)}</span></span>
+          <span title="Rental charges only — renovation/financing excluded"><span className="dim">Out:</span> <span className="mono" style={{color: 'var(--brick)'}}>{fmtMoney(-totalOut)}</span></span>
           <span><span className="dim">Net:</span> <span className="mono" style={{color: (totalIn - totalOut) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(totalIn - totalOut)}</span></span>
         </div>
       </div>
@@ -587,10 +735,25 @@ function PaymentHistory({ tenantId }) {
           </tr>
         </thead>
         <tbody>
-          {months.map(m => {
+          {cfSections.map((s, si) => (
+          <React.Fragment key={s.key}>
+          {cfSections.length > 1 && si > 0 && (
+            <tr aria-hidden="true"><td colSpan={4} style={{padding: 0, height: 18, background: 'var(--paper-3)', borderBottom: '2px solid var(--rule)'}}></td></tr>
+          )}
+          {cfSections.length > 1 && (
+            <tr style={{background: 'var(--paper-3)', borderTop: '2px solid var(--rule)'}} title={s.key === 'rented' ? 'Months covered by a tenant lease (move-in to move-out)' : 'Months with no lease in place — vacancy / turnover carrying costs'}>
+              <td className="up" style={{fontSize: 10.5, fontWeight: 700, paddingTop: 9, paddingBottom: 9, color: s.key === 'rented' ? 'var(--sage)' : 'var(--brick)'}}>{s.label} · {s.g.list.length} mo</td>
+              <td className="num mono small" style={{color: s.g.in > 0 ? 'var(--sage)' : 'var(--ink-3)'}}>{s.g.in > 0 ? fmtMoney(s.g.in) : '—'}</td>
+              <td className="num mono small" style={{color: s.g.out > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{s.g.out > 0 ? fmtMoney(-s.g.out) : '—'}</td>
+              <td className="num mono small" style={{color: (s.g.in - s.g.out) >= 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 600}}>{fmtMoney(s.g.in - s.g.out)}</td>
+            </tr>
+          )}
+          {s.g.list.map(m => {
             const net = m.in - m.out;
             const isOpen = open === m.month;
-            const rows = [...m.txns].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+            const rows = [...m.txns].sort((a, b) => (a.recurring ? 1 : 0) - (b.recurring ? 1 : 0) || (a.category || '\uffff').localeCompare(b.category || '\uffff') || (a.payee || '\uffff').localeCompare(b.payee || '\uffff') || (b.date || '').localeCompare(a.date || ''));
+            const rentalRows = rows.filter(t => !isNonRental(t));
+            const otherRows = rows.filter(t => isNonRental(t));
             return (
               <React.Fragment key={m.month}>
                 <tr onClick={() => setOpen(isOpen ? null : m.month)} style={{cursor: 'pointer'}}>
@@ -603,14 +766,46 @@ function PaymentHistory({ tenantId }) {
                   <tr>
                     <td colSpan={4} style={{padding: 0, background: 'var(--paper-3)'}}>
                       <div style={{padding: '4px 12px 8px 26px'}}>
-                        {rows.map(t => (
-                          <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
-                            <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{fmtDate(t.date)}</span>
-                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</span>
-                            {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                        {otherRows.length > 0 && rentalRows.length > 0 && <div className="tiny up dim" style={{padding: '6px 0 2px'}}>Rental</div>}
+                        {rentalRows.map(t => {
+                          const src = t.recurring ? null : (Store.state.transactions || []).find(x => x.id === (t.srcId || t.id));
+                          const isSlice = !!t.srcId;
+                          return (
+                          <div key={t.id} className="row gap-10 items-center" title={isSlice ? 'Click to view the full split' : src ? 'Click to view this charge' : undefined}
+                            onClick={src ? (e) => { e.stopPropagation(); if (isSlice) setViewSplit(src); else setViewTx(src); } : undefined}
+                            style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: src ? 'pointer' : 'default'}}>
+                            <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{t.recurring ? '—' : fmtDate(t.date)}</span>
+                            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontStyle: t.recurring ? 'italic' : 'normal', color: t.recurring ? 'var(--ink-2)' : 'inherit', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}{t.payee && <span className="dim" style={{fontStyle: 'normal'}}>{' · ' + t.payee}</span>}</span>
+                            {t.recurring && <Tag tone="ochre">recurring</Tag>}
+                            {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
+                            {isDep(t) && <Tag tone="blue">deposit · not income</Tag>}
+                            {src && !isSlice && !src.splits && <button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, flexShrink: 0}} title="Split this charge across properties" onClick={(e) => { e.stopPropagation(); setSplitTxn(src); }}>Split</button>}
+                            {t.category && !isDep(t) && <Tag tone="ghost">{t.category}</Tag>}
                             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
                           </div>
-                        ))}
+                          );
+                        })}
+                        {otherRows.length > 0 && (
+                          <React.Fragment>
+                            <div className="tiny up dim" style={{padding: '10px 0 2px'}}>Renovation / financing — not counted in cash flow</div>
+                            {otherRows.map(t => {
+                              const src = t.recurring ? null : (Store.state.transactions || []).find(x => x.id === (t.srcId || t.id));
+                              const isSlice = !!t.srcId;
+                              return (
+                              <div key={t.id} className="row gap-10 items-center" title={isSlice ? 'Click to view the full split' : src ? 'Click to view this charge' : undefined}
+                                onClick={src ? (e) => { e.stopPropagation(); if (isSlice) setViewSplit(src); else setViewTx(src); } : undefined}
+                                style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: src ? 'pointer' : 'default', opacity: 0.65}}>
+                                <span className="mono small dim" style={{width: 64, flexShrink: 0}}>{fmtDate(t.date)}</span>
+                                <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: src ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+                                {isSlice && <Tag tone="blue">{'split' + (src && src.splits ? ' · ' + src.splits.length + ' parts' : '')}</Tag>}
+                                {src && !isSlice && !src.splits && <button className="btn btn--ghost btn--sm" style={{padding: '1px 7px', fontSize: 11, flexShrink: 0}} title="Split this charge across properties" onClick={(e) => { e.stopPropagation(); setSplitTxn(src); }}>Split</button>}
+                                {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                                <span className="mono small dim" style={{width: 92, textAlign: 'right', flexShrink: 0}}>{fmtMoney(t.amount)}</span>
+                              </div>
+                              );
+                            })}
+                          </React.Fragment>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -618,8 +813,13 @@ function PaymentHistory({ tenantId }) {
               </React.Fragment>
             );
           })}
+          </React.Fragment>
+          ))}
         </tbody>
       </table>
+      {viewTx && <TransactionEditor tx={viewTx} onClose={() => setViewTx(null)}/>}
+      {viewSplit && <SplitTransactionModal tx={viewSplit} onClose={() => setViewSplit(null)}/>}
+      {splitTxn && <SplitTransactionModal tx={splitTxn} onClose={() => setSplitTxn(null)}/>}
     </div>
   );
 }
@@ -633,20 +833,21 @@ const TX_COLUMNS = [
     render: t => <span className="mono small dim">{t.acct}</span> },
   { key: 'desc',     label: 'Description', alwaysShow: true,
     render: t => <span className="small">{t.desc}{t.split && <Tag tone="ghost" style={{marginLeft: 6}}>split</Tag>}</span> },
-  { key: 'payee',    label: 'Payee',
+  { key: 'payee',    label: 'Payee',       default: true,
     render: t => <span className="small dim">{t.payee || '—'}</span> },
   { key: 'category', label: 'Category',    default: true,
     render: t => <Tag tone="ghost">{t.category || '—'}</Tag> },
   { key: 'amount',   label: 'Amount',      alwaysShow: true, numeric: true,
     render: t => <span className="mono" style={{color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span> },
 ];
-const TX_COLS_KEY = 'atmore-tx-columns-v1';
+const TX_COLS_KEY = 'atmore-tx-columns-v2';
 
 function TransactionsPanel({ p, tx }) {
   const store = useStore();
   const [editing, setEditing] = useState(null);
   const [splitting, setSplitting] = useState(null);
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [sort, setSort] = useState({ key: 'date', dir: 'desc' });
   const [visibleCols, setVisibleCols] = useState(() => {
     try { const saved = localStorage.getItem(TX_COLS_KEY); if (saved) return JSON.parse(saved); } catch (e) {}
     return TX_COLUMNS.filter(c => c.default || c.alwaysShow).map(c => c.key);
@@ -684,7 +885,14 @@ function TransactionsPanel({ p, tx }) {
       }));
   });
   const rows = [...tx.map(t => ({ ...t, split: false })), ...splitRows]
-    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    .sort((a, b) => {
+      const { key, dir } = sort;
+      let cmp;
+      if (key === 'amount') cmp = (a.amount || 0) - (b.amount || 0);
+      else cmp = String(a[key] || '').localeCompare(String(b[key] || ''));
+      if (cmp === 0) cmp = (a.date || '').localeCompare(b.date || '');
+      return dir === 'asc' ? cmp : -cmp;
+    });
 
   if (rows.length === 0) return (
     <Card><CardHead title="Transactions"/><div className="card__body">
@@ -754,7 +962,14 @@ function TransactionsPanel({ p, tx }) {
       </div>
       <table className="tbl">
         <thead>
-          <tr>{activeCols.map(c => <th key={c.key} className={c.numeric ? 'num' : undefined}>{c.label}</th>)}</tr>
+          <tr>{activeCols.map(c => (
+            <th key={c.key} className={c.numeric ? 'num' : undefined}
+              onClick={() => setSort(s => ({ key: c.key, dir: s.key === c.key && s.dir === 'desc' ? 'asc' : 'desc' }))}
+              style={{cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap'}}
+              title="Click to sort">
+              {c.label}{sort.key === c.key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+            </th>
+          ))}</tr>
         </thead>
         <tbody>
           {rows.map(t => (
