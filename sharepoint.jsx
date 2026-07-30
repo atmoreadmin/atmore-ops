@@ -1038,11 +1038,11 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            {drift && drift.findings.some(f => f.fields.some(x => !x.inSchema)) && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
+            {drift && drift.findings.length > 0 && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
               await SP.provision(addLog);
               SP.saveConfig({ skipFields: {} });
-              const n = SPSync.backfillFields(drift.findings.filter(f => f.fields.some(x => !x.inSchema)), addLog);
+              const n = SPSync.backfillFields(drift.findings, addLog);
               addLog(n ? 'Re-push started — watch Recent sync activity, then Re-check.' : 'Nothing queued.');
             })}>{busy === 'backfill' ? 'Backfilling…' : 'Create columns & backfill'}</Btn>}
           </div>
