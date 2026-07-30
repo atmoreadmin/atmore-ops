@@ -54,6 +54,9 @@ const SHEET_SCHEMA = {
       { key: 'saleSigningDate',  label: 'Sale Signing Date',  type: 'date',   notes: 'Closing/signing appointment date (sale side)' },
       { key: 'saleSigningTime',  label: 'Sale Signing Time',  type: 'string', notes: 'HH:MM 24-hour' },
       { key: 'listPrice',       label: 'List Price',         type: 'money',  notes: 'Asking price while on market' },
+      { key: 'listDate',        label: 'List Date',          type: 'date',   notes: 'Date the property went on market' },
+      { key: 'listingAgent',    label: 'Listing Agent',      type: 'string', notes: 'Atmore listing agent or FSBO' },
+      { key: 'listingNotes',    label: 'Listing Notes',      type: 'string', notes: 'Target buyer, staging, showing instructions' },
       { key: 'salesPrice',      label: 'Sales Price',        type: 'money' },
       { key: 'grossProfit',     label: 'Gross Profit',       type: 'money' },
       { key: 'vestingLLC',      label: 'Vesting LLC',        type: 'string' },
@@ -287,6 +290,9 @@ const SHEET_SCHEMA = {
       { key: 'financing',        label: 'Financing',           type: 'enum', notes: 'Cash / Conventional / FHA / VA / USDA / Hard money / Seller finance / Other' },
       { key: 'closeDate',        label: 'Proposed Close',      type: 'date' },
       { key: 'status',           label: 'Status',              type: 'enum', notes: 'received / countered / accepted / rejected / withdrawn / expired' },
+      { key: 'dueDiligenceFee',  label: 'Due Diligence Fee',   type: 'money', notes: 'Non-refundable fee paid by buyer for the DD period' },
+      { key: 'dueDiligenceDays', label: 'Due Diligence Days',  type: 'number' },
+      { key: 'dueDiligenceDate', label: 'Due Diligence Deadline', type: 'date' },
       { key: 'concClosingCost',  label: 'Concession: Closing Cost', type: 'money' },
       { key: 'concRepairCredit', label: 'Concession: Repair Credit', type: 'money' },
       { key: 'concHomeWarranty', label: 'Concession: Home Warranty', type: 'money' },
@@ -325,10 +331,11 @@ const SHEET_SCHEMA = {
   WebAccounts: {
     description: 'Vendor / portal logins (Adobe, Amazon, bank & HOA portals, etc.). Imported from your old Web Accounts sheet.',
     pk: 'id',
-    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '', updatedAt: w.updatedAt || null })),
+    rowSource: (s) => (s.webAccounts || []).map((w, i) => ({ id: w.id || ('wa' + (i + 1)), org: w.org || '', url: w.url || '', username: w.username || '', password: w.password || '', email: w.email || '', notes: w.notes || '', updatedAt: w.updatedAt || null })),
     columns: [
       { key: 'id',       label: 'ID',           type: 'string', required: true },
       { key: 'org',      label: 'Organization', type: 'string', required: true },
+      { key: 'url',      label: 'Website',      type: 'string' },
       { key: 'username', label: 'Username',     type: 'string' },
       { key: 'password', label: 'Password',     type: 'string' },
       { key: 'email',    label: 'Email',        type: 'string' },
@@ -424,7 +431,7 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.transactions || []).forEach(t => (t.splits || []).forEach((sp, i) => rows.push({
-        txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null,
+        txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
       })));
       return rows;
     },
@@ -434,6 +441,7 @@ const SHEET_SCHEMA = {
       { key: 'project',  label: 'Project',        type: 'string' },
       { key: 'category', label: 'Category',       type: 'string' },
       { key: 'amount',   label: 'Amount',         type: 'number' },
+      { key: 'bucket',   label: 'Bucket',         type: 'string', notes: 'P&L bucket override for this slice; blank = inherit from the parent transaction' },
     ],
   },
   TenantRentHistory: {
