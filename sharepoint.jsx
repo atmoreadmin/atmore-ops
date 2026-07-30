@@ -1038,7 +1038,8 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            {drift && drift.findings.length > 0 && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b3</span>
+            {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
               await SP.provision(addLog);
               SP.saveConfig({ skipFields: {} });
