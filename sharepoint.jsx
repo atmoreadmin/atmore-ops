@@ -210,8 +210,10 @@ const SP = {
   _fieldsFor(tabName, row) {
     const fields = { Title: this._titleFor(row) };
     const types = this._typeMap(tabName);
+    const skip = (this.config.skipFields || {})[tabName] || [];
     for (const [k, v] of Object.entries(row)) {
       if (v == null || v === '') continue;
+      if (skip.includes(spField(k))) continue;   // column SharePoint keeps rejecting
       const t = types[k];
       let out;
       if (Array.isArray(v)) out = v.join(',');
@@ -307,6 +309,9 @@ const SPSync = {
   _childItems: null,  // childTab -> Map(parentId -> [SP item ids])
   _childSigs: null,   // childTab -> Map(parentId -> group JSON)
   _cfgSigs: null,     // configTab -> whole-tab JSON
+  _rawItems: null,    // tab -> Map(SP item id -> {id, fields}) — cache delta merges into
+  _delta: null,       // tab -> Graph deltaLink (relative) for incremental pulls
+  _log: (() => { try { return JSON.parse(localStorage.getItem('sp_activity') || '[]'); } catch (e) { return []; } })(),
   _pushTimer: null,
   _flushing: false,
   _lastPullAt: 0,
@@ -344,33 +349,45 @@ const SPSync = {
     return items;
   },
 
-  // Pull every list, rebuild app state, rebaseline all signatures + item indexes.
-  async pull() {
-    this._set('syncing', 'Loading from SharePoint…');
-    const tabs = {};
-    this._items = {}; this._childItems = {};
-    const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
-    const bigLists = [];
-    for (const tabName of allTabs) {
-      const items = await this._fetchList(tabName);
-      // Tripwire: warn well before SharePoint's 5,000-item list view threshold
-      // so there's time to partition (e.g. archive old Transactions by year).
-      if (items.length >= 4000) bigLists.push(tabName + ' (' + items.length.toLocaleString() + ')');
-      tabs[tabName] = items.map(it => this._rowFromItem(tabName, it));
-      const idx = new Map();
-      items.forEach((it, i) => { const rid = (it.fields || {}).RecID; if (rid != null) idx.set(String(rid), it.id); });
-      this._items[tabName] = idx;
-      const child = SP_CHILD_TABS[tabName];
-      if (child) {
-        const byParent = new Map();
-        items.forEach(it => {
-          const pid = String((it.fields || {})[child[1]] || '');
-          if (!byParent.has(pid)) byParent.set(pid, []);
-          byParent.get(pid).push(it.id);
-        });
-        this._childItems[tabName] = byParent;
-      }
+  logLine(line) {
+    this._log.push({ at: new Date().toISOString(), line });
+    if (this._log.length > 60) this._log.splice(0, this._log.length - 60);
+    try { localStorage.setItem('sp_activity', JSON.stringify(this._log)); } catch (e) {}
+  },
+
+  // Daily backup snapshot to the Google Sheet (only while live on SharePoint).
+  async _maybeBackup() {
+    try {
+      if (!this.liveOn() || typeof Sync === 'undefined' || !Sync.isConfigured()) return;
+      const last = Number(localStorage.getItem('sp_backup_at') || 0);
+      if (Date.now() - last < 24 * 3600 * 1000) return;
+      localStorage.setItem('sp_backup_at', String(Date.now()));
+      await Sync.push(Store.state);
+      this.logLine('Daily backup snapshot exported to Google Sheet \u2713');
+    } catch (e) {
+      try { localStorage.setItem('sp_backup_at', String(Date.now() - 22 * 3600 * 1000)); } catch (e2) {}
+      this.logLine('Daily Sheet backup failed: ' + (e.message || e) + ' \u2014 will retry in ~2h');
     }
+  },
+
+  _indexTab(tabName, items) {
+    const idx = new Map();
+    items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid != null) idx.set(String(rid), it.id); });
+    this._items[tabName] = idx;
+    const child = SP_CHILD_TABS[tabName];
+    if (child) {
+      const byParent = new Map();
+      items.forEach(it => {
+        const pid = String((it.fields || {})[child[1]] || '');
+        if (!byParent.has(pid)) byParent.set(pid, []);
+        byParent.get(pid).push(it.id);
+      });
+      this._childItems[tabName] = byParent;
+    }
+  },
+
+  // Apply a pulled snapshot: rebuild app state, rebaseline, surface status.
+  _finishPull(tabs, bigLists, doneMsg) {
     const newState = deserializeFromSheet({ tabs });
     this._lastPullAt = Date.now();
     if (SyncEngine.dirty) {
@@ -392,7 +409,89 @@ const SPSync = {
     SyncEngine.dirty = false;
     SyncEngine.lastSyncedAt = new Date().toISOString();
     if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
-    else this._set('synced', 'Loaded from SharePoint');
+    else this._set('synced', doneMsg);
+  },
+
+  // Grab a delta cursor (no data) so later refreshes only fetch what changed.
+  async _grabDelta(tabName, sid, lid) {
+    for (const q of ['?token=latest&expand=fields', '?token=latest']) {
+      try {
+        const d = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/delta' + q);
+        const link = d['@odata.deltaLink'];
+        if (link) { this._delta[tabName] = link.replace('https://graph.microsoft.com/v1.0', ''); return; }
+      } catch (e) {}
+    }
+  },
+
+  // Pull every list, rebuild app state, rebaseline all signatures + item indexes.
+  async pull() {
+    this._set('syncing', 'Loading from SharePoint…');
+    const tabs = {};
+    this._items = {}; this._childItems = {}; this._rawItems = {}; this._delta = {};
+    const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
+    const bigLists = [];
+    const sid = await SP.siteId();
+    const listIds = SP.config.listIds || {};
+    for (const tabName of allTabs) {
+      const items = await this._fetchList(tabName);
+      // Tripwire: warn well before SharePoint's 5,000-item list view threshold
+      // so there's time to partition (e.g. archive old Transactions by year).
+      if (items.length >= 4000) bigLists.push(tabName + ' (' + items.length.toLocaleString() + ')');
+      const raw = new Map();
+      items.forEach(it => raw.set(String(it.id), { id: it.id, fields: it.fields || {} }));
+      this._rawItems[tabName] = raw;
+      tabs[tabName] = items.map(it => this._rowFromItem(tabName, it));
+      this._indexTab(tabName, items);
+      if (listIds[tabName]) await this._grabDelta(tabName, sid, listIds[tabName]);
+    }
+    this.logLine('Full reload from SharePoint (' + allTabs.length + ' lists)');
+    this._finishPull(tabs, bigLists, 'Loaded from SharePoint');
+  },
+
+  // Incremental refresh: ask each list only for what changed since last time.
+  // Falls back to a full pull if any cursor is missing or expired.
+  async deltaPull() {
+    if (this._flushing) return;
+    if (!this._delta || !this._rawItems || !Object.keys(this._delta).length) return this.pull();
+    const sid = await SP.siteId();
+    const listIds = SP.config.listIds || {};
+    let changed = 0;
+    try {
+      for (const t of Object.keys(this._delta)) {
+        const raw = this._rawItems[t]; if (!raw) return this.pull();
+        let url = this._delta[t]; let nextLink = null;
+        while (url) {
+          const r = await SP.graph(url);
+          for (const it of (r.value || [])) {
+            const key = String(it.id);
+            if (it.deleted) { if (raw.delete(key)) changed++; continue; }
+            let fields = it.fields;
+            if (!fields) {
+              try { const full = await SP.graph('/sites/' + sid + '/lists/' + listIds[t] + '/items/' + it.id + '?expand=fields'); fields = full.fields; }
+              catch (e) { if (/404/.test(String(e.message || e))) { if (raw.delete(key)) changed++; continue; } throw e; }
+            }
+            raw.set(key, { id: it.id, fields: fields || {} });
+            changed++;
+          }
+          nextLink = r['@odata.deltaLink'] || nextLink;
+          url = r['@odata.nextLink'] ? r['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '') : null;
+        }
+        if (nextLink) this._delta[t] = nextLink.replace('https://graph.microsoft.com/v1.0', '');
+      }
+    } catch (e) {
+      this.logLine('Quick refresh failed (' + (e.message || e) + ') — doing a full reload');
+      return this.pull();
+    }
+    this._lastPullAt = Date.now();
+    if (!changed) { if (SyncEngine.dirty) this._queueFlush(500); return; }
+    const tabs = {};
+    for (const [t, raw] of Object.entries(this._rawItems)) {
+      const items = [...raw.values()];
+      tabs[t] = items.map(it => this._rowFromItem(t, it));
+      this._indexTab(t, items);
+    }
+    this.logLine('Picked up ' + changed + ' change' + (changed === 1 ? '' : 's') + ' from SharePoint');
+    this._finishPull(tabs, [], 'Updated from SharePoint');
   },
 
   _baseline(state) {
@@ -424,6 +523,19 @@ const SPSync = {
       // Collect every parent-tab operation, then send in $batch chunks — bank
       // imports create hundreds of rows at once and must not go one-by-one.
       const ops = [];
+      // Recover from a lost POST response: if a previous flush died mid-batch
+      // while creating items, the create may have landed without us recording the
+      // item id — a blind retry would duplicate the row. Re-index those lists by
+      // RecID first so the retry PATCHes the existing item instead.
+      for (const t of [...(this._recheck || new Set())]) {
+        if (!listIds[t]) continue;
+        try {
+          const items = await this._fetchList(t);
+          const idx = this._items[t] || (this._items[t] = new Map());
+          items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid != null && !idx.has(String(rid))) idx.set(String(rid), it.id); });
+          this._recheck.delete(t);
+        } catch (e) {}
+      }
       for (const t of SP_PARENT_TABS) {
         const lid = listIds[t]; if (!lid) continue;
         const m = this._sigs[t];
@@ -458,22 +570,54 @@ const SPSync = {
           else m.delete(id);
         }
       }
-      let pending = ops, attempt = 0;
+      let pending = ops, attempt = 0, badOps = [], repairRounds = 0;
       while (pending.length) {
         const next = [];
         for (let i = 0; i < pending.length; i += 20) {
           const slice = pending.slice(i, i + 20);
           if (ops.length > 25) this._set('syncing', 'Saving… ' + Math.min(ops.length, i + 20 + (ops.length - pending.length)) + '/' + ops.length);
           const requests = slice.map((op, j) => ({ id: String(j + 1), method: op.method, url: op.url, headers: op.body ? { 'Content-Type': 'application/json' } : undefined, body: op.body }));
-          const res = await SP.graph('/$batch', { method: 'POST', body: JSON.stringify({ requests }) });
+          let res;
+          try { res = await SP.graph('/$batch', { method: 'POST', body: JSON.stringify({ requests }) }); }
+          catch (e) {
+            // Network died mid-batch — any POST in it may have landed server-side
+            // without a recorded id. Flag those lists for re-indexing next flush.
+            slice.forEach(op => { if (op.method === 'POST') (this._recheck = this._recheck || new Set()).add(op.tab); });
+            throw e;
+          }
           (res.responses || []).forEach(x => {
             const op = slice[Number(x.id) - 1]; if (!op) return;
             if (x.status === 429 || x.status === 503) { next.push(op); return; }
+            // DELETE of an already-gone item (another device or an earlier retry
+            // beat us to it) — the goal state is achieved; treat as success.
+            // PATCH of an item deleted server-side (partner removed it while we
+            // edited): recreate it — the surviving edit wins over the delete.
+            // 409 resourceModified: the item changed server-side mid-write
+            // (another device, or our own overlapping retry). Requeue quietly —
+            // the next pass writes against the fresh version. No user-facing error.
+            if (x.status === 409) { next.push(op); return; }
+            if (x.status === 404 && op.method === 'PATCH' && !op.del) {
+              const ii = this._items[op.tab]; if (ii) ii.delete(op.recId);
+              try {
+                const listUrl = op.url.slice(0, op.url.indexOf('/items/'));
+                next.push({ method: 'POST', url: listUrl + '/items', body: { fields: SP._fieldsFor(op.tab, JSON.parse(op.sig)) }, tab: op.tab, recId: op.recId, sig: op.sig });
+              } catch (e) {}
+              return;
+            }
+            if (x.status === 404 && op.del) {
+              const mm = this._sigs[op.tab]; const ii = this._items[op.tab];
+              ii.delete(op.recId); mm.delete(op.recId); return;
+            }
             if (x.status >= 400) {
               console.error('SP sync op failed', { status: x.status, error: x.body && x.body.error, sent: op.body });
               const err = (x.body && x.body.error) || {};
               const detail = [err.code, err.message, err.innerError && err.innerError.code].filter(Boolean).join(' / ');
               const sent = op.body ? ' — fields sent: ' + Object.keys(op.body.fields || op.body).join(', ') : '';
+              // A 400 means SharePoint refused one of the COLUMNS, not the record.
+              // Retrying the same body forever can't help — hand it to the repair
+              // pass, which finds the offending column, adds it if it's missing,
+              // and drops it from syncing if SharePoint still won't take it.
+              if (x.status === 400 && op.body && !op.del) { badOps.push(op); return; }
               throw new Error(op.tab + ' ' + op.method + ' failed (' + x.status + '): ' + (detail || 'unknown') + sent);
             }
             const m = this._sigs[op.tab]; const idx = this._items[op.tab];
@@ -489,10 +633,20 @@ const SPSync = {
         if (pending.length) {
           if (++attempt > 8) throw new Error('Still throttled after 8 retries — changes are kept locally and will retry.');
           this._set('syncing', 'Saving… (throttled, pausing)');
+          this.logLine('SharePoint throttled — pausing ' + Math.min(60, 5 * attempt) + 's before retrying');
           await new Promise(r => setTimeout(r, Math.min(60, 5 * attempt) * 1000));
+        } else if (badOps.length && repairRounds < 3) {
+          repairRounds++;
+          const retry = await this._repairFields(badOps);
+          badOps = [];
+          pending = retry;
+        } else if (badOps.length) {
+          this.logLine('\u2717 ' + badOps.length + ' change(s) SharePoint would not accept — see column notes above');
+          badOps = [];
         }
       }
       // Child rows: resync the whole group whenever a parent's children changed.
+      let childGroups = 0, cfgTabs = 0;
       for (const [t, [, fk]] of Object.entries(SP_CHILD_TABS)) {
         const lid = listIds[t]; if (!lid) continue;
         const groups = new Map();
@@ -508,6 +662,7 @@ const SPSync = {
         const keys = new Set([...groups.keys(), ...old.keys()]);
         for (const k of keys) {
           if (groups.get(k) === old.get(k)) continue;
+          childGroups++;
           for (const iid of (itemsBy.get(k) || [])) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + iid, { method: 'DELETE' }).catch(() => {});
           const newIds = [];
           for (const r of (rowsBy.get(k) || [])) {
@@ -524,6 +679,7 @@ const SPSync = {
         const lid = listIds[t]; if (!lid) continue;
         const sig = JSON.stringify(payload[t] || []);
         if (this._cfgSigs[t] === sig) continue;
+        cfgTabs++;
         const existing = await this._fetchList(t);
         for (const it of existing) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
         for (const r of (payload[t] || [])) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
@@ -532,22 +688,122 @@ const SPSync = {
       SyncEngine.dirty = false;
       SyncEngine.lastSyncedAt = new Date().toISOString();
       this._set('synced', 'All changes saved');
+      const parts = [];
+      if (ops.length) parts.push(ops.length + ' record change' + (ops.length === 1 ? '' : 's'));
+      if (childGroups) parts.push(childGroups + ' detail group' + (childGroups === 1 ? '' : 's'));
+      if (cfgTabs) parts.push('settings');
+      if (parts.length) this.logLine('Saved ' + parts.join(', ') + ' \u2713');
+      this._maybeBackup();
     } catch (e) {
       const auth = /token|sign|auth|login|interaction/i.test(String(e.message || e));
       this._set('error', auth ? 'Microsoft sign-in expired — click here to sign in again' : 'Save failed — retrying… (' + (e.message || e) + ')');
+      this.logLine('\u2717 Save failed: ' + (e.message || e) + (auth ? ' — sign-in needed' : ' — will retry'));
       if (!auth) this._queueFlush(15000);
     } finally {
       this._flushing = false;
     }
   },
 
+  // Force a re-push of records that hold a value in a field SharePoint never
+  // received (newly-declared schema column). Drops those rows from the sync
+  // baseline so the next flush sees them as changed and writes every field.
+  backfillFields(findings, onLog) {
+    const payload = serializeForSheet(Store.state).tabs;
+    let n = 0;
+    for (const f of (findings || [])) {
+      const m = this._sigs && this._sigs[f.tab];
+      if (!m) continue;
+      const keys = f.fields.map(x => x.field);
+      for (const r of (payload[f.tab] || [])) {
+        if (r.id == null) continue;
+        const has = keys.some(k => { const v = r[k]; return v !== null && v !== undefined && v !== ''; });
+        if (!has) continue;
+        if (m.delete(String(r.id))) n++;
+      }
+    }
+    if (onLog) onLog(n ? 'Queued ' + n + ' record(s) for a full re-push…' : 'No local records still hold those values — nothing to backfill.');
+    if (n) this._queueFlush(300);
+    return n;
+  },
+
   _queueFlush(ms) { clearTimeout(this._pushTimer); this._pushTimer = setTimeout(() => this.flush(), ms); },
   _set(status, message) { SyncEngine._set(status, message); },
+
+  // A write SharePoint rejected with 400: figure out WHICH column it choked on.
+  // Missing columns get created; a column that still fails on its own is
+  // recorded and skipped from then on, so one bad column can't wedge all saves.
+  async _repairFields(list) {
+    const out = [];
+    const skipCfg = { ...(SP.config.skipFields || {}) };
+    const colCache = {};
+    const noteBad = (tab, name, why) => {
+      skipCfg[tab] = [...new Set([...(skipCfg[tab] || []), name])];
+      this.logLine('\u26a0 ' + tab + '.' + name + ' rejected by SharePoint (' + why + ') — that column will stop syncing; everything else saves normally');
+    };
+    for (const op of list) {
+      const base = op.url.split('/items')[0];
+      const body = op.body.fields || op.body;
+      const tab = op.tab;
+      if (colCache[tab] === undefined) {
+        try {
+          const c = await SP.graph(base + '/columns?$select=name&$top=250');
+          colCache[tab] = new Set((c.value || []).map(k => k.name));
+        } catch (e) { colCache[tab] = null; }
+      }
+      const have = colCache[tab];
+      // 1. Create any column this list is missing (list provisioned before the
+      //    field existed in the app).
+      if (have) {
+        const types = SP._typeMap(tab);
+        for (const name of Object.keys(body)) {
+          if (name === 'Title' || have.has(name) || (skipCfg[tab] || []).includes(name)) continue;
+          const key = Object.keys(types).find(k => spField(k) === name);
+          const def = key ? SP._columnDef(key, types[key]) : { name, text: { allowMultipleLines: true } };
+          try {
+            await SP.graph(base + '/columns', { method: 'POST', body: JSON.stringify(def) });
+            have.add(name);
+            this.logLine('Added missing column ' + tab + '.' + name + ' to SharePoint \u2713');
+          } catch (e) { noteBad(tab, name, 'column missing and could not be created'); }
+        }
+      }
+      const clean = () => {
+        const f = {}; const bad = skipCfg[tab] || [];
+        Object.entries(body).forEach(([k, v]) => { if (!bad.includes(k)) f[k] = v; });
+        return f;
+      };
+      // 2. PATCH ops can be probed directly: retry the cleaned set, and if it
+      //    still fails, send each field alone to name the culprit.
+      if (op.method === 'PATCH') {
+        let fields = clean();
+        try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify(fields) }); }
+        catch (e) {
+          for (const [k, v] of Object.entries(fields)) {
+            if (k === 'Title') continue;
+            try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify({ [k]: v }) }); }
+            catch (e2) { noteBad(tab, k, String(e2.message || e2).slice(0, 90)); }
+          }
+          fields = clean();
+          try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify(fields) }); } catch (e3) {}
+        }
+      }
+      out.push({ ...op, body: op.method === 'POST' ? { fields: clean() } : clean() });
+    }
+    SP.saveConfig({ skipFields: skipCfg });
+    return out;
+  },
 
   _onLocalChange() {
     if (SyncEngine._applyingRemote) return;
     SyncEngine.dirty = true;
     this._set('dirty', 'Saving…');
+    // Stale-tab guard: this tab hasn't seen SharePoint in a while — re-baseline
+    // against the server first so an old session can't save stale data. The
+    // pull keeps the local edits and flushes them right after (dirty path).
+    if (this._lastPullAt && !this._flushing && Date.now() - this._lastPullAt > 30 * 60000) {
+      this.logLine('Tab was idle — refreshing from SharePoint before saving');
+      this.deltaPull().catch(() => { this._queueFlush(2500); });
+      return;
+    }
     this._queueFlush(2500);
   },
 
@@ -565,25 +821,28 @@ const SPSync = {
       // One-time schema catch-up: lists provisioned by an older build may lack
       // columns this build writes (e.g. updatedAt). provision() is idempotent
       // and only adds what's missing.
-      if (SP.config.schemaVer !== 3) {
+      if (SP.config.schemaVer !== 4) {
         this._set('syncing', 'Updating list columns…');
         await SP.provision(() => {});
-        SP.saveConfig({ schemaVer: 3 });
+        SP.saveConfig({ schemaVer: 4 });
       }
       await this.pull();
+      this._maybeBackup();
     } catch (e) {
       this._set('error', 'SharePoint unreachable: ' + (e.message || e));
+      this.logLine('\u2717 SharePoint unreachable: ' + (e.message || e));
     }
     // Adopt other people's edits: re-pull when the tab regains focus after
-    // being idle, and on a slow interval — writes are per-item, so pulls are
-    // purely additive freshness, never a conflict mechanism.
+    // being idle, and on a slow interval — delta cursors make each check a
+    // handful of tiny \u201cwhat changed?\u201d requests, never a full reload.
     const freshen = () => {
       if (SyncEngine.dirty || this._flushing) return;
-      if (Date.now() - this._lastPullAt < 4 * 60000) return;
-      this.pull().catch(() => {});
+      if (Date.now() - this._lastPullAt < 3 * 60000) return;
+      this.deltaPull().catch(() => {});
+      this._maybeBackup();
     };
     window.addEventListener('focus', freshen);
-    setInterval(freshen, 5 * 60000);
+    setInterval(freshen, 4 * 60000);
     window.addEventListener('beforeunload', e => {
       if (SyncEngine.dirty) { this.flush(); e.preventDefault(); e.returnValue = ''; }
     });
@@ -596,6 +855,11 @@ function SharePointView() {
   const [busy, setBusy] = useState('');
   const [log, setLog] = useState([]);
   const [progress, setProgress] = useState(null);
+  const [dups, setDups] = useState(null);
+  const [drift, setDrift] = useState(null);
+  const [dupBusy, setDupBusy] = useState('');
+  const [act, setAct] = useState(() => (SPSync._log || []).slice());
+  React.useEffect(() => { const t = setInterval(() => setAct((SPSync._log || []).slice()), 2000); return () => clearInterval(t); }, []);
   const cfg = SP.config;
   const onProd = window.location.hostname === 'atmoreadmin.github.io';
   const addLog = line => setLog(l => [...l.slice(-30), line]);
@@ -607,6 +871,79 @@ function SharePointView() {
     finally { setBusy(''); setProgress(null); }
   }
   const stepDone = { signin: !!account, provision: !!cfg.provisionedAt, migrate: !!cfg.migratedAt };
+
+  // Duplicate check: same-RecID items are the fingerprint of a sync retry that
+  // saved one record twice. Records that merely look alike are never flagged.
+  async function scanDups() {
+    setDupBusy('scan'); setDups(null);
+    try {
+      const listIds = cfg.listIds || {};
+      const groups = []; let scanned = 0;
+      for (const t of SP_PARENT_TABS) {
+        if (!listIds[t]) continue;
+        const items = await SPSync._fetchList(t); scanned++;
+        const byRid = new Map();
+        items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid == null) return; const k = String(rid); if (!byRid.has(k)) byRid.set(k, []); byRid.get(k).push(it); });
+        for (const [rid, list] of byRid) {
+          if (list.length < 2) continue;
+          // Keeper: the copy the app is actively pointing at; else the oldest (lowest item id)
+          const liveId = (SPSync._items && SPSync._items[t]) ? SPSync._items[t].get(rid) : null;
+          let keep = list.find(it => String(it.id) === String(liveId));
+          if (!keep) keep = list.slice().sort((a, b) => Number(a.id) - Number(b.id))[0];
+          const f = keep.fields || {};
+          const label = [f.RecTitle || f.name || f.payee || f.address || '', f.date || f.month || '', f.amount != null ? '$' + Number(f.amount).toLocaleString() : ''].filter(Boolean).join(' · ');
+          groups.push({ tab: t, rid, keepId: keep.id, extras: list.filter(it => it !== keep).map(it => it.id), label, note: (list.length) + ' copies, keeping 1' });
+        }
+      }
+      // Detail rows (transaction splits, fee items, …) have no RecID — flag a
+      // parent group only when SharePoint holds MORE rows than the app does AND
+      // the surplus rows are exact copies of another row. Only the copies go.
+      const payload = serializeForSheet(Store.state).tabs;
+      for (const [t, [, fk]] of Object.entries(SP_CHILD_TABS)) {
+        if (!listIds[t]) continue;
+        const items = await SPSync._fetchList(t); scanned++;
+        const fkSp = spField(fk);
+        const cols = ((window.SHEET_SCHEMA[t] || {}).columns || []).map(c => spField(c.key));
+        const localBy = new Map();
+        (payload[t] || []).forEach(r => { const k = String(r[fk] || ''); localBy.set(k, (localBy.get(k) || 0) + 1); });
+        const spBy = new Map();
+        items.forEach(it => { const k = String((it.fields || {})[fkSp] || ''); if (!spBy.has(k)) spBy.set(k, []); spBy.get(k).push(it); });
+        for (const [k, list] of spBy) {
+          const surplus = list.length - (localBy.get(k) || 0);
+          if (surplus <= 0) continue;
+          const clusters = new Map();
+          list.forEach(it => { const f = it.fields || {}; const key = JSON.stringify(cols.map(c => f[c] ?? null)); if (!clusters.has(key)) clusters.set(key, []); clusters.get(key).push(it); });
+          const extras = [];
+          for (const cl of clusters.values()) {
+            cl.sort((a, b) => Number(a.id) - Number(b.id));
+            while (cl.length > 1 && extras.length < surplus) extras.push(cl.shift().id);
+          }
+          if (extras.length) groups.push({ tab: t, rid: t + ':' + k, keepId: null, extras, label: 'detail rows — ' + list.length + ' in SharePoint vs ' + (localBy.get(k) || 0) + ' in the app', note: 'removing ' + extras.length + ' identical extra' + (extras.length === 1 ? '' : 's') });
+        }
+      }
+      setDups({ groups, scanned });
+      addLog(groups.length ? 'Duplicate scan: ' + groups.length + ' record(s) saved more than once' : 'Duplicate scan: all clean across ' + scanned + ' lists');
+    } catch (e) { addLog('\u2717 Duplicate scan: ' + (e.message || e)); }
+    finally { setDupBusy(''); }
+  }
+  async function cleanDups() {
+    const extras = dups.groups.flatMap(g => g.extras.map(id => ({ tab: g.tab, id })));
+    if (!confirm('Remove ' + extras.length + ' duplicate cop' + (extras.length === 1 ? 'y' : 'ies') + ' from SharePoint?\n\nOne copy of every record is kept \u2014 the one the app is actively using. Nothing in the app itself changes.')) return;
+    setDupBusy('clean');
+    try {
+      const sid = await SP.siteId(); const listIds = cfg.listIds || {};
+      let ok = 0, fail = 0;
+      for (const x of extras) {
+        try { await SP.graph('/sites/' + sid + '/lists/' + listIds[x.tab] + '/items/' + x.id, { method: 'DELETE' }); ok++; }
+        catch (e) { if (/404/.test(String(e.message || e))) ok++; else fail++; }
+      }
+      addLog('Duplicate cleanup: removed ' + ok + (fail ? ' \u2014 ' + fail + ' failed (rescan and retry)' : ' \u2713'));
+      SPSync.logLine('Duplicate cleanup: removed ' + ok + ' extra cop' + (ok === 1 ? 'y' : 'ies'));
+      if (SPSync.liveOn()) { try { await SPSync.pull(); } catch (e) {} }
+      await scanDups();
+    } finally { setDupBusy(''); }
+  }
+  const dupExtras = dups ? dups.groups.reduce((a, g) => a + g.extras.length, 0) : 0;
 
   return (
     <div className="col gap-16">
@@ -657,7 +994,7 @@ function SharePointView() {
             </div>
           )}
           {log.length > 0 && (
-            <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', maxHeight: 180, overflowY: 'auto', lineHeight: 1.7}}>
+            <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 180, overflowY: 'auto', lineHeight: 1.7}}>
               {log.map((l, i) => <div key={i}>{l}</div>)}
             </div>
           )}
@@ -672,6 +1009,88 @@ function SharePointView() {
           {cfg.migratedAt && <div>Migrated {cfg.migratedAt.slice(0, 16).replace('T', ' ')} — {Object.entries(cfg.migrateTotals || {}).map(([t, n]) => t + ' ' + n).join(' · ')}</div>}
         </div>
       </Card>
+      {!!cfg.migratedAt && (
+      <Card>
+        <CardHead title="Duplicate check" right={dups ? (dups.groups.length ? <Tag tone="brick">{dups.groups.length} duplicated</Tag> : <Tag tone="sage">Clean</Tag>) : null}/>
+        <div className="card__body col gap-10">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>
+            Finds records saved to SharePoint more than once — copies that share the same internal record ID, the fingerprint of a sync retry. Two genuinely separate charges with the same name, amount and date have different record IDs and are never flagged. Nothing is deleted without confirmation.
+          </div>
+          <div className="row gap-8" style={{flexWrap: 'wrap'}}>
+            <Btn kind={dups && dupExtras ? 'ghost' : 'primary'} disabled={!!busy || !!dupBusy || !account} onClick={scanDups}>{dupBusy === 'scan' ? 'Scanning…' : dups ? 'Rescan' : 'Scan for duplicates'}</Btn>
+            {dupExtras > 0 && <Btn kind="primary" disabled={!!busy || !!dupBusy} onClick={cleanDups}>{dupBusy === 'clean' ? 'Removing…' : 'Remove ' + dupExtras + ' extra cop' + (dupExtras === 1 ? 'y' : 'ies') + ' · keep one of each'}</Btn>}
+          </div>
+          {dups && dups.groups.length === 0 && <div className="small" style={{color: 'var(--sage)'}}>✓ No duplicates — every record appears exactly once across {dups.scanned} lists.</div>}
+          {dups && dups.groups.length > 0 && (
+            <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 220, overflowY: 'auto', lineHeight: 1.8}}>
+              {dups.groups.map((g, i) => <div key={i}>{g.tab} · {g.label || g.rid} — {g.note}</div>)}
+            </div>
+          )}
+        </div>
+      </Card>
+      )}
+      {!!cfg.migratedAt && (
+      <Card>
+        <CardHead title="Unsynced field check" right={drift ? (drift.findings.length ? <Tag tone="brick">{drift.findings.reduce((a, f) => a + f.fields.length, 0)} field(s)</Tag> : <Tag tone="sage">All fields sync</Tag>) : null}/>
+        <div className="card__body col gap-10">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>
+            Runs your real records through a save-and-reload round trip and reports any field that had a value going in but came back empty — the signature of a field with no SharePoint column, which saves locally and then blanks on the next sync. Read-only: nothing is written or changed.
+          </div>
+          <div className="row gap-8" style={{flexWrap: 'wrap'}}>
+            <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
+            {drift && drift.findings.some(f => f.fields.some(x => !x.inSchema)) && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
+              addLog('Creating any missing columns…');
+              await SP.provision(addLog);
+              SP.saveConfig({ skipFields: {} });
+              const n = SPSync.backfillFields(drift.findings.filter(f => f.fields.some(x => !x.inSchema)), addLog);
+              addLog(n ? 'Re-push started — watch Recent sync activity, then Re-check.' : 'Nothing queued.');
+            })}>{busy === 'backfill' ? 'Backfilling…' : 'Create columns & backfill'}</Btn>}
+          </div>
+          {drift && drift.error && <div className="small" style={{color: 'var(--brick)'}}>{drift.error}</div>}
+          {drift && !drift.error && drift.findings.length === 0 && <div className="small" style={{color: 'var(--sage)'}}>✓ Every field on every record survives a full save-and-reload.</div>}
+          {drift && drift.findings.length > 0 && (
+            <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 260, overflowY: 'auto', lineHeight: 1.8}}>
+              {drift.findings.map(f => f.fields.map(x => (
+                <div key={f.tab + x.field}>{f.tab} · {x.field} — lost on {x.count} of {f.records} record(s){x.inSchema ? ' (column exists — pull is dropping it)' : ' (no SharePoint column)'}</div>
+              )))}
+            </div>
+          )}
+        </div>
+      </Card>
+      )}
+      {!!cfg.migratedAt && !!Object.keys(cfg.skipFields || {}).length && (
+      <Card>
+        <CardHead title="Columns not syncing" right={<Tag tone="ochre">needs attention</Tag>}/>
+        <div className="card__body col gap-8">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>SharePoint refused these columns, so the app skips them to keep everything else saving. The data is safe in the app — it just isn’t mirrored to SharePoint for these fields.</div>
+          <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.8}}>
+            {Object.entries(cfg.skipFields || {}).map(([t, names]) => <div key={t}>{t} — {names.join(', ')}</div>)}
+          </div>
+          <div className="row gap-8">
+            <Btn kind="ghost" disabled={!!busy} onClick={() => run('fixcols', async () => {
+              addLog('Re-checking skipped columns…');
+              await SP.provision(addLog);
+              SP.saveConfig({ skipFields: {} });
+              addLog('Cleared — the next save will try those columns again ✓');
+            })}>{busy === 'fixcols' ? 'Re-checking…' : 'Repair columns & try again'}</Btn>
+          </div>
+        </div>
+      </Card>
+      )}
+      {!!cfg.migratedAt && (
+      <Card>
+        <CardHead title="Recent sync activity" right={SPSync._lastPullAt ? <Tag tone="ghost">checked {new Date(SPSync._lastPullAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}</Tag> : null}/>
+        <div className="card__body col gap-8">
+          {act.length === 0 ? (
+            <div className="small" style={{color: 'var(--ink-3)'}}>Nothing yet — entries appear as the app syncs.</div>
+          ) : (
+            <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 220, overflowY: 'auto', lineHeight: 1.8}}>
+              {act.slice().reverse().map((e, i) => <div key={i}><span style={{color: 'var(--ink-3)'}}>{e.at.slice(5, 16).replace('T', ' ')}</span> {e.line}</div>)}
+            </div>
+          )}
+        </div>
+      </Card>
+      )}
       <Card>
         <CardHead title={cfg.liveSync ? 'Live on SharePoint' : 'What happens after migration'}/>
         <div className="card__body col gap-10">
@@ -681,8 +1100,11 @@ function SharePointView() {
             : 'Once the data is in and the counts check out, step 4 flips this device\u2019s live sync to SharePoint: per-item writes, and per-user identity on every change. The Google Sheet then becomes a read-only export for reporting and backup.'}
         </div>
         {cfg.liveSync && Sync.isConfigured() && (
-          <div className="row gap-8">
-            <Btn kind="ghost" disabled={!!busy} onClick={() => run('export', async () => { addLog('Exporting snapshot to Google Sheet…'); await Sync.push(Store.state); addLog('Sheet snapshot updated ✓'); })}>{busy === 'export' ? 'Exporting…' : 'Export snapshot to Google Sheet'}</Btn>
+          <div className="col gap-6">
+            <div className="row gap-8">
+              <Btn kind="ghost" disabled={!!busy} onClick={() => run('export', async () => { addLog('Exporting snapshot to Google Sheet…'); await Sync.push(Store.state); addLog('Sheet snapshot updated ✓'); })}>{busy === 'export' ? 'Exporting…' : 'Export snapshot to Google Sheet'}</Btn>
+            </div>
+            <div className="tiny" style={{color: 'var(--ink-3)'}}>A backup snapshot also goes to the Google Sheet automatically once a day{Number(localStorage.getItem('sp_backup_at') || 0) ? ' — last: ' + new Date(Number(localStorage.getItem('sp_backup_at'))).toLocaleString() : ''}.</div>
           </div>
         )}
         </div>
