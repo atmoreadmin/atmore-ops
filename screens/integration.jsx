@@ -18,6 +18,8 @@ const SHEET_SCHEMA = {
         loanBalance: loan.currentBalance ?? null, loanRate: loan.interestRate ?? null, loanMaturity: loan.maturityDate || null,
         loanEscrowTaxes: loan.escrowedTaxes ?? null, loanEscrowIns: loan.escrowedInsurance ?? null, loanContact: loan.lenderContact || null,
         taxAnnual: tax.annualAmount ?? null, taxDueDate: tax.dueDate || null, taxEscrowed: tax.escrowed ?? null, taxParcel: tax.taxId || null,
+        carryMortgage: (p.rentalCarrying || {}).mortgage ?? null, carryHOA: (p.rentalCarrying || {}).hoa ?? null,
+        carryTax: (p.rentalCarrying || {}).tax ?? null, carryInsurance: (p.rentalCarrying || {}).insurance ?? null,
         hoa1Name: h1.name || null, hoa1Url: h1.website || null, hoa1User: h1.username || null, hoa1Pass: h1.password || null, hoa1Monthly: h1.monthly ?? null,
         hoa2Name: h2.name || null, hoa2Url: h2.website || null, hoa2User: h2.username || null, hoa2Pass: h2.password || null, hoa2Monthly: h2.monthly ?? null,
       };
@@ -74,7 +76,7 @@ const SHEET_SCHEMA = {
       { key: 'saleDDCollected',  label: 'DD Fee Collected',    type: 'money',  notes: 'Due diligence fee collected from buyer — counts as income' },
       { key: 'saleEarnest',      label: 'Buyer Earnest (Sale)',type: 'money',  notes: 'Buyer EMD — nets through closing, informational' },
       { key: 'exchangeFunds',    label: '1031 Funds Rolled Out (Sale)', type: 'money', notes: 'Relinquished side — sale proceeds rolled into the exchange when this property is sold' },
-      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'text' },
+      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'string' },
       { key: 'saleCreditsReceived', label: 'Sale Credits Received', type: 'money', notes: 'Credits paid to you at closing (tax prorations etc.) — adds to profit' },
       { key: 'interestCredit',   label: 'Interest Credit',     type: 'money', notes: 'Credit received back after closing on the loan — reduces interest cost' },
       { key: 'otherFees',        label: 'Other Fees',          type: 'money', notes: 'Miscellaneous deal costs' },
@@ -84,6 +86,11 @@ const SHEET_SCHEMA = {
       { key: 'buyerDDDate',      label: 'Buyer DD Deadline',   type: 'date' },
       { key: 'expectedCloseDate',label: 'Expected Close Date', type: 'date' },
       { key: 'utilityNote',      label: 'Utility Notes',       type: 'string', notes: 'Per-property note shown on the Utilities tab' },
+      // ── Rental P&L carrying costs, monthly (folded in) ──
+      { key: 'carryMortgage',label: 'Carry — Mortgage/mo', type: 'money', notes: 'Manual monthly carrying cost used by the Rental P&L' },
+      { key: 'carryHOA',     label: 'Carry — HOA/mo',      type: 'money' },
+      { key: 'carryTax',     label: 'Carry — Taxes/mo',    type: 'money' },
+      { key: 'carryInsurance',label: 'Carry — Insurance/mo',type: 'money' },
       // ── Insurance (folded in) ──
       { key: 'insCarrier',   label: 'Insurance Carrier',   type: 'string' },
       { key: 'insPolicy',    label: 'Insurance Policy #',  type: 'string' },

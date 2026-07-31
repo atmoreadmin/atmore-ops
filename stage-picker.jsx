@@ -311,9 +311,10 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
   // Rehab funds drawn are informational only — they never enter the profit math;
   // the full rehab spent is counted as the cost.
   const ddPaid = Math.abs(num(p.acqDDFee));
+  const earnestPaid = Math.abs(num(p.acqEarnest));
   const cashToCloseAmt = Math.abs(num(p.cashToClose));
   const otherFeesTotal = Math.abs(num(rehab)) + Math.abs(num(interest)) - intCredit + otherFeesAmt + atmoreInterest;
-  const cashNetProfit = cashBackAmt + ddColl - cashToCloseAmt - ddPaid - otherFeesTotal;
+  const cashNetProfit = cashBackAmt + ddColl - cashToCloseAmt - ddPaid - earnestPaid - otherFeesTotal;
   const haveCashFigures = cashBackAmt > 0 && cashToCloseAmt > 0;
   const rehabDiffers = taggedRehab > 0 && Math.abs(num(rehab) - taggedRehab) > 1;
 
@@ -424,6 +425,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         {loanFundedAmt > 0 && <CloseoutSummaryRow label="Loan funded" value={fmtMoney(loanFundedAmt)} sub="repaid at payoff — informational"/>}
         {acq1031 > 0 && <CloseoutSummaryRow label="1031 funds brought in" value={fmtMoney(acq1031)} sub="informational — not counted in net profit"/>}
         {ddPaid > 0 && <CloseoutSummaryRow label="− DD paid" value={'−' + fmtMoney(ddPaid)} color="var(--brick)"/>}
+        {earnestPaid > 0 && <CloseoutSummaryRow label="− Earnest paid" value={'−' + fmtMoney(earnestPaid)} color="var(--brick)" sub="deposited before closing — not in cash to close"/>}
         <CloseoutSummaryRow label="− Cash to close" value={'−' + fmtMoney(cashToCloseAmt)} color="var(--brick)" sub={cashToCloseAmt === 0 ? 'enter it in the Acquisition dialog' : null}/>
 
         <div className="divider" style={{margin: '2px 0'}}/>
@@ -449,7 +451,7 @@ function MarkSoldDialog({ property, onBack, onClose, initialNote, editMode }) {
         <div className="divider" style={{margin: '2px 0'}}/>
 
         {/* Bottom line */}
-        <CloseoutSummaryRow label="Net profit" value={fmtMoney(cashNetProfit, {sign: true})} big sub="cash received + DD collected − cash to close − DD paid − other fees" color={cashNetProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
+        <CloseoutSummaryRow label="Net profit" value={fmtMoney(cashNetProfit, {sign: true})} big sub={'cash received + DD collected − cash to close − DD paid' + (earnestPaid > 0 ? ' − earnest paid' : '') + ' − other fees'} color={cashNetProfit >= 0 ? 'var(--sage)' : 'var(--brick)'}/>
         {!haveCashFigures && <div className="tiny dim">Enter actual cash-to-close and cash-received figures for an accurate number.</div>}
 
       </div>
@@ -895,8 +897,17 @@ function computeCloseoutProfit(p) {
   const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - atmorePrinBasisP) : 0;
   // Rehab funds drawn are informational only — full rehab spent counts as the cost.
   const otherFeesTotal = abs(p.rehab) + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
-  const cashNetProfit = abs(p.cashReceivedAtClose) + abs(p.saleDDCollected) - abs(p.cashToClose) - abs(p.acqDDFee) - otherFeesTotal;
+  const cashNetProfit = abs(p.cashReceivedAtClose) + abs(p.saleDDCollected) - abs(p.cashToClose) - abs(p.acqDDFee) - abs(p.acqEarnest) - otherFeesTotal;
   return Math.round(cashNetProfit);
 }
 
-Object.assign(window, { computeCloseoutProfit, StagePicker, StagePip, MarkSoldDialog, MarkFailedDialog, ConvertRentalDialog, UnderContractDialog, FillStageFieldsDialog, UtilitiesPrompt, FeeItemsEditor, feeItemsTotal, cleanFeeItems, initFeeItems, FEE_PRESETS_PURCHASE, FEE_PRESETS_SALE });
+// Single source of truth for all-in cost. Mirrors the property Money tab.
+function computeCostBasis(p) {
+  const abs = v => { const x = parseFloat(v); return isNaN(x) ? 0 : Math.abs(x); };
+  const prinBasis = abs(p.purchaseLoan) > 0 ? abs(p.purchaseLoan) : abs(p.atmoreLoanPrincipal);
+  const atmoreInterest = abs(p.atmoreLoanPayoff) > 0 ? Math.max(0, abs(p.atmoreLoanPayoff) - prinBasis) : 0;
+  return abs(p.purchasePrice) + abs(p.purchaseFees) - abs(p.purchaseCredits) + abs(p.rehab)
+       + abs(p.interest) - abs(p.interestCredit) + abs(p.otherFees) + atmoreInterest;
+}
+
+Object.assign(window, { computeCostBasis, computeCloseoutProfit, StagePicker, StagePip, MarkSoldDialog, MarkFailedDialog, ConvertRentalDialog, UnderContractDialog, FillStageFieldsDialog, UtilitiesPrompt, FeeItemsEditor, feeItemsTotal, cleanFeeItems, initFeeItems, FEE_PRESETS_PURCHASE, FEE_PRESETS_SALE });

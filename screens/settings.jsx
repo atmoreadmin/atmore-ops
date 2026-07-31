@@ -644,18 +644,37 @@ function WebAccountsEditor() {
   const [q, setQ] = useState('');
   const [reveal, setReveal] = useState({});
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ org: '', username: '', password: '', email: '', notes: '' });
-  const rows = list.filter(w => !q || (w.org + ' ' + w.username + ' ' + w.email).toLowerCase().includes(q.toLowerCase()));
+  const [editId, setEditId] = useState(null);
+  const blank = { org: '', url: '', username: '', password: '', email: '', notes: '' };
+  const [draft, setDraft] = useState(blank);
+  const rows = list.filter(w => !q || (w.org + ' ' + w.username + ' ' + w.email + ' ' + (w.url || '')).toLowerCase().includes(q.toLowerCase()));
 
+  function close() { setDraft(blank); setAdding(false); setEditId(null); }
+  function startEdit(w) { setDraft({ ...blank, ...w }); setEditId(w.id); setAdding(false); }
   function save() {
     if (!draft.org.trim()) return;
     Store.update(s => {
       if (!Array.isArray(s.webAccounts)) s.webAccounts = [];
-      s.webAccounts.push({ id: 'wa' + Date.now().toString(36), ...draft });
+      if (editId) {
+        const i = s.webAccounts.findIndex(w => w.id === editId);
+        if (i >= 0) s.webAccounts[i] = { ...s.webAccounts[i], ...draft, updatedAt: new Date().toISOString() };
+      } else {
+        s.webAccounts.push({ id: 'wa' + Date.now().toString(36), ...draft });
+      }
     });
-    setDraft({ org: '', username: '', password: '', email: '', notes: '' });
-    setAdding(false);
+    close();
   }
+  const form = (
+    <div className="grid g-2 mb-12" style={{padding: '12px 14px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
+      <div><div className="up dim mb-4">Organization</div><input className="input" value={draft.org} onChange={e => setDraft({...draft, org: e.target.value})} style={{width: '100%'}}/></div>
+      <div><div className="up dim mb-4">Website</div><input className="input" placeholder="portal.example.com" value={draft.url} onChange={e => setDraft({...draft, url: e.target.value})} style={{width: '100%'}}/></div>
+      <div><div className="up dim mb-4">Username</div><input className="input" value={draft.username} onChange={e => setDraft({...draft, username: e.target.value})} style={{width: '100%'}}/></div>
+      <div><div className="up dim mb-4">Password</div><input className="input mono" value={draft.password} onChange={e => setDraft({...draft, password: e.target.value})} style={{width: '100%'}}/></div>
+      <div><div className="up dim mb-4">Email</div><input className="input" value={draft.email} onChange={e => setDraft({...draft, email: e.target.value})} style={{width: '100%'}}/></div>
+      <div><div className="up dim mb-4">Notes</div><input className="input" value={draft.notes || ''} onChange={e => setDraft({...draft, notes: e.target.value})} style={{width: '100%'}}/></div>
+      <div className="row gap-8" style={{gridColumn: 'span 2'}}><div className="grow"/><Btn sz="sm" kind="ghost" onClick={close}>Cancel</Btn><Btn sz="sm" kind="primary" disabled={!draft.org.trim()} onClick={save} title={!draft.org.trim() ? 'Enter an organization name' : ''}>{editId ? 'Save changes' : 'Add login'}</Btn></div>
+    </div>
+  );
   function remove(id) {
     if (!confirm('Delete this login?')) return;
     Store.update(s => { s.webAccounts = (s.webAccounts || []).filter(w => w.id !== id); });
@@ -666,26 +685,21 @@ function WebAccountsEditor() {
       <CardHead title={`Web logins · ${list.length}`} right={
         <div className="row gap-8 items-center">
           <input className="input" placeholder="Search…" value={q} onChange={e => setQ(e.target.value)} style={{width: 180}}/>
-          <Btn sz="sm" kind="ghost" onClick={() => setAdding(a => !a)}>+ Add</Btn>
+          <Btn sz="sm" kind="ghost" onClick={() => { setEditId(null); setDraft(blank); setAdding(a => !a); }}>+ Add</Btn>
         </div>}/>
       <div className="card__body">
         <div className="small dim mb-12">Vendor &amp; portal credentials (Adobe, Amazon, bank &amp; HOA portals…). Imported from your Web Accounts sheet; syncs with the workbook.</div>
-        {adding && (
-          <div className="grid g-2 mb-12" style={{padding: '12px 14px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
-            <div><div className="up dim mb-4">Organization</div><input className="input" value={draft.org} onChange={e => setDraft({...draft, org: e.target.value})} style={{width: '100%'}}/></div>
-            <div><div className="up dim mb-4">Username</div><input className="input" value={draft.username} onChange={e => setDraft({...draft, username: e.target.value})} style={{width: '100%'}}/></div>
-            <div><div className="up dim mb-4">Password</div><input className="input mono" value={draft.password} onChange={e => setDraft({...draft, password: e.target.value})} style={{width: '100%'}}/></div>
-            <div><div className="up dim mb-4">Email</div><input className="input" value={draft.email} onChange={e => setDraft({...draft, email: e.target.value})} style={{width: '100%'}}/></div>
-            <div className="row gap-8" style={{gridColumn: 'span 2'}}><div className="grow"/><Btn sz="sm" kind="ghost" onClick={() => setAdding(false)}>Cancel</Btn><Btn sz="sm" kind="primary" disabled={!draft.org.trim()} onClick={save}>Add login</Btn></div>
-          </div>
-        )}
+        {adding && !editId && form}
         {rows.length === 0 ? <Empty icon="🔑" title="No web logins" sub={q ? 'None match your search.' : 'Add one or import from your Web Accounts sheet.'}/> : (
           <table className="tbl">
-            <thead><tr><th>Organization</th><th>Username</th><th>Password</th><th>Email</th><th></th></tr></thead>
+            <thead><tr><th>Organization</th><th>Website</th><th>Username</th><th>Password</th><th>Email</th><th></th></tr></thead>
             <tbody>
-              {rows.map(w => (
+              {rows.map(w => editId === w.id ? (
+                <tr key={w.id}><td colSpan={6} style={{padding: 0}}>{form}</td></tr>
+              ) : (
                 <tr key={w.id}>
                   <td style={{fontWeight: 500}}>{w.org}</td>
+                  <td className="small">{w.url ? <a href={/^https?:\/\//i.test(w.url) ? w.url : 'https://' + w.url} target="_blank" rel="noreferrer">{w.url.replace(/^https?:\/\//i, '').replace(/\/$/, '')}</a> : <span className="dim">—</span>}</td>
                   <td className="mono small">{w.username || <span className="dim">—</span>}</td>
                   <td className="mono small">
                     {w.password ? (reveal[w.id]
@@ -694,7 +708,7 @@ function WebAccountsEditor() {
                       : <span className="dim">—</span>}
                   </td>
                   <td className="small dim">{w.email || '—'}</td>
-                  <td><button onClick={() => remove(w.id)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--brick)',font:'inherit',fontSize:11}}>Delete</button></td>
+                  <td><div className="row gap-8"><button onClick={() => startEdit(w)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:11}}>Edit</button><button onClick={() => remove(w.id)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--brick)',font:'inherit',fontSize:11}}>Delete</button></div></td>
                 </tr>
               ))}
             </tbody>

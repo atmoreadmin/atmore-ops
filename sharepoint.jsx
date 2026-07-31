@@ -1038,11 +1038,15 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b3</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b4</span>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
               await SP.provision(addLog);
               SP.saveConfig({ skipFields: {} });
+              // Duplicate ids make two rows fight over one record — re-mint before pushing.
+              let dupFixed = 0;
+              Store.update(s => { dupFixed = dedupeIds(s); });
+              if (dupFixed) addLog('Repaired ' + dupFixed + ' duplicate record id(s).');
               const n = SPSync.backfillFields(drift.findings, addLog);
               addLog(n ? 'Re-push started — watch Recent sync activity, then Re-check.' : 'Nothing queued.');
             })}>{busy === 'backfill' ? 'Backfilling…' : 'Create columns & backfill'}</Btn>}
@@ -1052,7 +1056,9 @@ function SharePointView() {
           {drift && drift.findings.length > 0 && (
             <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 260, overflowY: 'auto', lineHeight: 1.8}}>
               {drift.findings.map(f => f.fields.map(x => (
-                <div key={f.tab + x.field}>{f.tab} · {x.field} — lost on {x.count} of {f.records} record(s){x.inSchema ? ' (column exists — pull is dropping it)' : ' (no SharePoint column)'}</div>
+                <div key={f.tab + x.field}>{x.dup
+                  ? f.tab + ' · duplicate record id — ' + x.count + ' id(s) used twice (' + x.sample + '); rows overwrite each other on sync'
+                  : f.tab + ' · ' + x.field + ' — lost on ' + x.count + ' of ' + f.records + ' record(s)' + (x.inSchema ? ' (column exists — pull is dropping it)' : ' (no SharePoint column)')}</div>
               )))}
             </div>
           )}

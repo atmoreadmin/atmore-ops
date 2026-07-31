@@ -53,7 +53,7 @@ function SplitTransactionModal({ tx, onClose }) {
 
   function save() {
     const cleaned = splits.filter(s => s.project && (parseFloat(s.amount) || 0) !== 0)
-      .map(s => ({ project: s.project, amount: parseFloat(s.amount), category: s.category || '', tenantId: s.tenantId }));
+      .map(s => ({ project: s.project, amount: parseFloat(s.amount), category: s.category || '', bucket: s.bucket || '', tenantId: s.tenantId }));
     splitTransaction(tx.id, cleaned);
 
     // Auto-mark rent ledger if requested
@@ -105,6 +105,7 @@ function SplitTransactionModal({ tx, onClose }) {
               <th>Property</th>
               <th className="num">Amount</th>
               <th>Category</th>
+              <th>Bucket</th>
               <th style={{width: 1}}></th>
             </tr>
           </thead>
@@ -133,12 +134,20 @@ function SplitTransactionModal({ tx, onClose }) {
                   <ManagedSelect listKey="categories" value={s.category} onChange={(v) => patch(i, {category: v})} style={{width: '100%', minWidth: 180}}/>
                 </td>
                 <td>
+                  <select className="select" value={s.bucket || ''} onChange={e => patch(i, {bucket: e.target.value})} style={{minWidth: 110}} title="P&L bucket for this slice (defaults to the transaction's bucket)">
+                    <option value="">— inherit —</option>
+                    <option value="Properties">Properties</option>
+                    <option value="Rentals">Rentals</option>
+                    <option value="Office">Office</option>
+                  </select>
+                </td>
+                <td>
                   {splits.length > 1 && <Btn sz="sm" kind="ghost" onClick={() => removeRow(i)}>×</Btn>}
                 </td>
               </tr>
             ))}
             <tr>
-              <td colSpan="4">
+              <td colSpan="5">
                 <Btn sz="sm" kind="ghost" onClick={addRow}>+ Add split</Btn>
               </td>
             </tr>

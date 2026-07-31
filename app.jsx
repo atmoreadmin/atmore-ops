@@ -1,3 +1,7 @@
+function liveNetProfit(p) {
+  const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+  return cp != null ? cp : (p.grossProfit != null ? p.grossProfit : null);
+}
 // app.jsx — main shell with hash-based routing
 
 const { useState, useEffect, useMemo } = React;
@@ -351,9 +355,10 @@ const PROP_COLUMNS = [
   { key: 'salesPrice',     label: 'Sale price',     numeric: true,
     render: (p) => <span className="small mono">{p.salesPrice ? fmtMoney(p.salesPrice) : '—'}</span>,
     sortValue: (p) => p.salesPrice || 0 },
+  // Recalculated, not the value stamped at save time.
   { key: 'grossProfit',    label: 'Net profit',     numeric: true,
-    render: (p) => <span className="small mono" style={{color: p.grossProfit > 0 ? 'var(--sage)' : p.grossProfit < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{p.grossProfit ? fmtMoney(p.grossProfit, {sign: true}) : '—'}</span>,
-    sortValue: (p) => p.grossProfit || 0 },
+    render: (p) => { const v = liveNetProfit(p); return <span className="small mono" style={{color: v > 0 ? 'var(--sage)' : v < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{v ? fmtMoney(v, {sign: true}) : '—'}</span>; },
+    sortValue: (p) => liveNetProfit(p) || 0 },
   { key: 'attorney',       label: 'Attorney',
     render: (p) => <span className="small dim">{p.attorney || '—'}</span>,
     sortValue: (p) => p.attorney || '' },

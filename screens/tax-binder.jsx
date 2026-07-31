@@ -234,7 +234,8 @@ function TaxBinderScreen() {
                 ['salesDate', 'Sold date', false],
                 ['salesPrice', 'Sale price', true],
                 ['cost', 'Cost basis', true],
-                ['profit', 'Net profit', true],
+                ['gain', 'Gain', true],
+                ['profit', 'Cash net', true],
                 ['ex1031In', '1031 in', true],
                 ['ex1031Out', '1031 rolled', true],
                 ['llc', 'Vesting LLC', false],
@@ -249,7 +250,7 @@ function TaxBinderScreen() {
             <tbody>
               {[...soldThisYear].sort((a, b) => {
                 const val = p => {
-                  const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
+                  const cost = ((typeof computeCostBasis === 'function') ? computeCostBasis(p) : 0);
                   const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
                   const profit = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
                   switch (soldSort.key) {
@@ -257,6 +258,7 @@ function TaxBinderScreen() {
                     case 'salesDate': return p.salesDate || '';
                     case 'salesPrice': return p.salesPrice || 0;
                     case 'cost': return cost;
+                    case 'gain': return (p.salesPrice || 0) - cost;
                     case 'profit': return profit;
                     case 'ex1031In': return Math.abs(p.acqExchangeFunds || 0);
                     case 'ex1031Out': return Math.abs(p.exchangeFunds || 0);
@@ -268,10 +270,14 @@ function TaxBinderScreen() {
                 const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
                 return soldSort.dir === 'asc' ? cmp : -cmp;
               }).map(p => {
-                const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
+                const cost = ((typeof computeCostBasis === 'function') ? computeCostBasis(p) : 0);
                 // Same live-calculated net profit as the property's close-out dialog and Sale card.
                 const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
                 const gross = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
+                // Accrual gain — the subtraction the columns imply. Kept separate from
+                // the cash-basis close-out net, which nets out money that never landed
+                // in the bank (1031 proceeds rolled forward, DD/earnest paid out).
+                const gain = (p.salesPrice || 0) - cost;
                 const ex1031In = Math.abs(p.acqExchangeFunds || 0);   // 1031 funds brought in at acquisition
                 const ex1031Out = Math.abs(p.exchangeFunds || 0);     // 1031 funds rolled out at sale
                 return (
@@ -280,7 +286,17 @@ function TaxBinderScreen() {
                     <td className="mono small dim">{fmtDate(p.salesDate, {full: true})}</td>
                     <td className="num mono">{fmtMoney(p.salesPrice || 0)}</td>
                     <td className="num mono dim">{fmtMoney(cost)}</td>
-                    <td className="num mono" style={{color: gross > 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 500}}>{fmtMoney(gross, {sign: true})}</td>
+                    <td className="num mono" style={{color: gain > 0 ? 'var(--sage)' : gain < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{fmtMoney(gain, {sign: true})}</td>
+                    <td className="num mono" style={{color: gross > 0 ? 'var(--sage)' : 'var(--brick)', fontWeight: 500}}>{fmtMoney(gross, {sign: true})}{(() => {
+                      const d = gross - gain;
+                      if (Math.abs(d) < 1000) return null;
+                      const ex = ex1031Out > 0 || ex1031In > 0;
+                      const mark = ex ? '1031' : '†';
+                      const why = ex1031Out > 0 ? 'Proceeds rolled into the next purchase — cash net reads low.'
+                        : ex1031In > 0 ? 'Exchange funds brought in at purchase inflate cash received — cash net reads high.'
+                        : 'Financed deal: loan principal is inside the accrual basis but never passes through the cash math.';
+                      return <sup title={why + ' Difference vs. gain: ' + fmtMoney(d, {sign: true})} style={{color: 'var(--ochre)', marginLeft: 2, cursor: 'help'}}>{mark}</sup>;
+                    })()}</td>
                     <td className="num mono dim">{ex1031In ? fmtMoney(ex1031In) : '—'}</td>
                     <td className="num mono dim">{ex1031Out ? fmtMoney(ex1031Out) : '—'}</td>
                     <td className="small dim">{p.vestingLLC || '—'}</td>
@@ -289,19 +305,20 @@ function TaxBinderScreen() {
               })}
               {(() => {
                 const tot = soldThisYear.reduce((a, p) => {
-                  const cost = Math.abs(p.purchasePrice || 0) + (p.rehab || 0) + Math.abs(p.interest || 0) + Math.abs(p.purchaseFees || 0);
+                  const cost = ((typeof computeCostBasis === 'function') ? computeCostBasis(p) : 0);
                   const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
                   const gross = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : (p.salesPrice || 0) - cost);
-                  a.price += p.salesPrice || 0; a.cost += cost; a.profit += gross;
+                  a.price += p.salesPrice || 0; a.cost += cost; a.profit += gross; a.gain += (p.salesPrice || 0) - cost;
                   a.in1031 += Math.abs(p.acqExchangeFunds || 0); a.out1031 += Math.abs(p.exchangeFunds || 0);
                   return a;
-                }, { price: 0, cost: 0, profit: 0, in1031: 0, out1031: 0 });
+                }, { price: 0, cost: 0, gain: 0, profit: 0, in1031: 0, out1031: 0 });
                 return (
                   <tr style={{borderTop: '2px solid var(--rule)', fontWeight: 600, background: 'var(--paper-3)'}}>
                     <td>Total · {soldThisYear.length} propert{soldThisYear.length === 1 ? 'y' : 'ies'}</td>
                     <td></td>
                     <td className="num mono">{fmtMoney(tot.price)}</td>
                     <td className="num mono dim">{fmtMoney(tot.cost)}</td>
+                    <td className="num mono" style={{color: tot.gain > 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(tot.gain, {sign: true})}</td>
                     <td className="num mono" style={{color: tot.profit > 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(tot.profit, {sign: true})}</td>
                     <td className="num mono dim">{tot.in1031 ? fmtMoney(tot.in1031) : '—'}</td>
                     <td className="num mono dim">{tot.out1031 ? fmtMoney(tot.out1031) : '—'}</td>
@@ -312,6 +329,13 @@ function TaxBinderScreen() {
             </tbody>
           </table>
         )}
+        <div className="small" style={{padding: '10px 14px', borderTop: '1px solid var(--rule)', color: 'var(--ink-3)', lineHeight: 1.6}}>
+          <strong>Gain</strong> is sale price − cost basis, the accrual figure for the return.
+          <strong style={{marginLeft: 8}}>Cash net</strong> is what actually moved through the bank: proceeds received, less cash to close, DD fee and earnest paid, and rehab/interest carried.
+          The two differ whenever money didn't change hands at closing; hover any marker for the reason on that row.
+          <sup style={{color: 'var(--ochre)'}}>1031</sup> means exchange funds were involved — proceeds rolled <em>out</em> into the next purchase make cash net read low or negative, while funds brought <em>in</em> at purchase make it read high. Neither changes the taxable gain.
+          <sup style={{color: 'var(--ochre)'}}>†</sup> marks financed deals: loan principal sits inside the accrual cost basis but never passes through the cash math, so cash net runs above gain on a purchase-money loan and below it where payoff came out of proceeds.
+        </div>
       </Card>
 
       <Card className="mb-16">
@@ -349,6 +373,13 @@ function TaxBinderScreen() {
             </tbody>
           </table>
         )}
+        <div className="small" style={{padding: '10px 14px', borderTop: '1px solid var(--rule)', color: 'var(--ink-3)', lineHeight: 1.6}}>
+          <strong>Gain</strong> is sale price − cost basis, the accrual figure for the return.
+          <strong style={{marginLeft: 8}}>Cash net</strong> is what actually moved through the bank: proceeds received, less cash to close, DD fee and earnest paid, and rehab/interest carried.
+          The two differ whenever money didn't change hands at closing; hover any marker for the reason on that row.
+          <sup style={{color: 'var(--ochre)'}}>1031</sup> means exchange funds were involved — proceeds rolled <em>out</em> into the next purchase make cash net read low or negative, while funds brought <em>in</em> at purchase make it read high. Neither changes the taxable gain.
+          <sup style={{color: 'var(--ochre)'}}>†</sup> marks financed deals: loan principal sits inside the accrual cost basis but never passes through the cash math, so cash net runs above gain on a purchase-money loan and below it where payoff came out of proceeds.
+        </div>
       </Card>
 
       <div className="small dim" style={{maxWidth: 700, lineHeight: 1.6}}>

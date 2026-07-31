@@ -63,6 +63,7 @@ const Store = {
       this.state = saved.data;
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
+      if (dedupeIds(this.state)) this.save();
       if (!this.state._offersSeeded) { seedOffers(this.state); this.state._offersSeeded = true; this.save(); }
       if (!Array.isArray(this.state.statuses) || !this.state.statuses.length) { this.state.statuses = defaultStatuses(); this.save(); }
       if (this.state.lists && !this.state.lists.propertyTypes) {
@@ -1112,6 +1113,9 @@ function markPaid(ledgerId, fullAmt) {
     if (!r) return;
     r.paid = fullAmt != null ? fullAmt : r.charge;
     r.paidOn = s.today;
+    // Remember the hand-entered figure: if a matching transaction is logged later,
+    // the row picks it up but never drops BELOW what was recorded by hand.
+    r.manualPaidAmt = r.paid;
     r.status = r.paid > r.charge ? 'overpaid' : r.paid >= r.charge ? 'paid' : 'partial';
   });
 }
@@ -1135,7 +1139,7 @@ function markUnpaid(ledgerId) {
   Store.update(s => {
     const r = s.rentLedger.find(x => x.id === ledgerId);
     if (!r) return;
-    r.paid = 0; r.paidOn = null;
+    r.paid = 0; r.paidOn = null; r.manualPaidAmt = null;
     // Determine status by date
     const todayDay = parseInt(s.today.slice(-2));
     if (r.month === s.today.slice(0,7) && todayDay > 11) r.status = 'vacate-due';
@@ -1154,7 +1158,7 @@ function unmarkPayment(ledgerId) {
     if (!r) return;
     if (r.originalCharge != null) { r.charge = r.originalCharge; r.originalCharge = null; }
     r.reducedCharge = false;
-    r.paid = 0; r.paidOn = null;
+    r.paid = 0; r.paidOn = null; r.manualPaidAmt = null;
     r.linkedTxId = null; r.linkedTxIds = [];
     r.noAutoMatch = true;
     const todayDay = parseInt(s.today.slice(-2));
@@ -1172,9 +1176,13 @@ function autoReconcileRentForMonth(month) {
   if (!month) return;
   // Rows that could still absorb payments: unpaid AND unlinked, or auto-linked but
   // underpaid (a second payment for the month may have arrived since the first was linked).
+  const noLinks = r => !r.linkedTxId && !(r.linkedTxIds && r.linkedTxIds.length);
   const rows = (s.rentLedger || []).filter(r => r.month === month && !r.reducedCharge && !r.noAutoMatch && (
     ((r.paid || 0) === 0 && !r.linkedTxId) ||
-    ((r.paid || 0) < r.charge && (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length)))
+    ((r.paid || 0) < r.charge && (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length))) ||
+    // Hand-marked partial with nothing linked yet: the real deposit may still be
+    // logged in Transactions later — let it attach instead of stranding the row.
+    ((r.paid || 0) > 0 && (r.paid || 0) < r.charge && noLinks(r))
   ));
   if (rows.length === 0) return;
   // Track consumption per tx — but a SPLIT transaction is consumed per property slice,
@@ -1226,7 +1234,7 @@ function autoReconcileRentForMonth(month) {
     cand.sort((a, b) => (b.nameMatch - a.nameMatch) || (Math.abs(a.amt - r.charge) - Math.abs(b.amt - r.charge)));
     const existing = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds.slice() : (r.linkedTxId ? [r.linkedTxId] : []);
     const txIds = existing.concat(cand.map(c => c.tx.id).filter(id => !existing.includes(id)));
-    if (txIds.length === existing.length && (r.paid || 0) > 0) continue; // nothing new for a linked row
+    if (txIds.length === existing.length && (r.paid || 0) > 0 && existing.length) continue; // nothing new for a linked row
     const primary = cand[0];
     cand.forEach(c => usedTx.add(usedKey(c.tx.id, r.propertyId)));
     updates.push({ id: r.id, txId: existing[0] || primary.tx.id, txIds, paidOn: primary.tx.date });
@@ -1236,6 +1244,7 @@ function autoReconcileRentForMonth(month) {
     updates.forEach(u => {
       const r = st.rentLedger.find(x => x.id === u.id);
       if (!r) return;
+      if ((r.paid || 0) > 0 && r.manualPaidAmt == null && !r.linkedTxId && !(r.linkedTxIds && r.linkedTxIds.length)) r.manualPaidAmt = r.paid;
       r.linkedTxId = u.txId;
       r.linkedTxIds = u.txIds;
       if (!r.paidOn) r.paidOn = u.paidOn || st.today;
@@ -1309,7 +1318,9 @@ function syncLinkedRentAmounts() {
     }
     if (!anyTx) continue;
     // Show exactly what was collected — no cap at the charge; over-collection is flagged.
-    const newPaid = sum;
+    // A hand-entered amount acts as a floor: matching a transaction can only raise the
+    // figure, never quietly overwrite what was recorded manually (Unmark clears it).
+    const newPaid = Math.max(sum, r.manualPaidAmt || 0);
     const newStatus = newPaid > r.charge ? 'overpaid' : newPaid >= r.charge ? 'paid' : 'partial';
     if (newPaid !== r.paid || newStatus !== r.status) fixes.push({ id: r.id, paid: newPaid, status: newStatus, paidOn: lastDate });
   }
@@ -1486,6 +1497,54 @@ function tagTransaction(txId, fields) {
   });
 }
 
+// ─── Unique id minting ───
+// Ids used to be prefix+(list.length+100), which reuses an id after any delete:
+// two rows share one id, and every sync/round-trip collapses them (the later row
+// wins, the earlier row's fields look "lost"). Take max existing suffix + 1 and
+// verify uniqueness before returning.
+function nextId(list, prefix, start) {
+  const rows = Array.isArray(list) ? list : [];
+  const used = new Set(rows.map(r => String(r && r.id || '')));
+  let n = start;
+  for (const r of rows) {
+    const m = String(r && r.id || '').match(new RegExp('^' + prefix + '(\\d+)$'));
+    if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+  }
+  while (used.has(prefix + n)) n++;
+  return prefix + n;
+}
+// Repairs rows that already collided. Only the LATER holder of an id is re-minted,
+// so every existing propertyId/tenantId reference keeps pointing at the first row —
+// nothing is silently re-parented. Parent collections (properties, tenants, hoas)
+// have children hanging off their id, so re-keying them is ambiguous by nature: the
+// automatic pass on load touches leaf collections only, and { deep: true } (the
+// explicit "Create columns & backfill" action) handles parents, recording every
+// change in state._idRepairs so the reassignment is visible instead of silent.
+// Specs live inside the function: Store.load() runs at top level, before any
+// module-scope const below it is initialized.
+function dedupeIds(state, opts) {
+  const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
+  const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100]];
+  const specs = (opts && opts.deep) ? leaf.concat(parent) : leaf;
+  const changes = [];
+  for (const [coll, prefix, start] of specs) {
+    const rows = state[coll]; if (!Array.isArray(rows)) continue;
+    const seen = new Set();
+    for (const r of rows) {
+      if (!r) continue;
+      const id = String(r.id || '');
+      if (!id || seen.has(id)) {
+        r.id = nextId(rows, prefix, start);
+        changes.push({ coll, from: id || '(blank)', to: r.id, at: new Date().toISOString() });
+      }
+      seen.add(String(r.id));
+    }
+  }
+  if (changes.length) state._idRepairs = (state._idRepairs || []).concat(changes).slice(-100);
+  return changes.length;
+}
+function idRepairLog(state) { return ((state || {})._idRepairs || []); }
+
 function setUI(patch) {
   Store.update(s => Object.assign(s.uiState, patch));
 }
@@ -1493,7 +1552,7 @@ function setUI(patch) {
 // ─── Contractor mutations ───
 function addContractor(c) {
   Store.update(s => {
-    const id = 'c' + (s.contractors.length + 100);
+    const id = nextId(s.contractors, 'c', 100);
     s.contractors.push({ id, name: c.name, phone: c.phone || '', email: c.email || '',
       specialty: c.specialty || '', notes: c.notes || '',
       ytd: 0, jobs: 0, lastPaid: '', properties: [] });
@@ -1525,7 +1584,7 @@ function updateRefi(id, patch) {
 }
 function addRefi(refi) {
   Store.update(s => {
-    const id = 'rf' + (s.refis.length + 100);
+    const id = nextId(s.refis, 'rf', 100);
     s.refis.push({ id, status: 'applied', applicationDate: s.today, ...refi });
   });
 }
@@ -1664,7 +1723,7 @@ function getLeadsForProperty(propId) {
 function addLead(lead) {
   Store.update(s => {
     s.leads = s.leads || [];
-    const id = 'ld' + (s.leads.length + 100);
+    const id = nextId(s.leads, 'ld', 100);
     s.leads.push({ id, ...lead });
   });
 }
@@ -1785,7 +1844,7 @@ function splitTransaction(txId, splits) {
   Store.update(s => {
     const t = s.transactions.find(x => x.id === txId);
     if (!t) return;
-    t.splits = splits.map(p => ({ project: p.project, amount: p.amount, category: p.category || '' }));
+    t.splits = splits.map(p => ({ project: p.project, amount: p.amount, category: p.category || '', bucket: p.bucket || '' }));
     t.project = 'multiple';
     // Compose category as 'multiple' if splits use different cats; else single category
     const cats = new Set(t.splits.map(s => s.category).filter(Boolean));
@@ -1825,6 +1884,65 @@ function linkLedgerToTransaction(ledgerId, txId) {
     r.linkedTxId = r.linkedTxIds[0];
   });
 }
+// Why didn't a rental-income transaction land on this charge? Re-runs the auto-match
+// gates over every income transaction in the row's month and reports what failed, so a
+// payment that "didn't show up" is explainable instead of invisible.
+function explainRentMatch(row) {
+  const s = Store.state;
+  const out = { blocked: null, linked: [], nearMisses: [] };
+  if (!row) return out;
+  if (row.noAutoMatch) out.blocked = 'This row was unmarked, so auto-matching is off until you link a payment or record one by hand.';
+  else if (row.reducedCharge) out.blocked = 'Settled at an accepted lower rate — manual settlement wins over auto-matching.';
+  const prop = (s.properties || []).find(p => p.id === row.propertyId);
+  const tenant = (s.tenants || []).find(t => t.id === row.tenantId);
+  const linkedIds = (row.linkedTxIds && row.linkedTxIds.length) ? row.linkedTxIds : (row.linkedTxId ? [row.linkedTxId] : []);
+  out.linked = linkedIds.map(id => (s.transactions || []).find(t => t.id === id)).filter(Boolean);
+  if (!prop) { out.blocked = out.blocked || 'This charge has no property attached.'; return out; }
+  const addrLower = (prop.address || '').toLowerCase().trim();
+  const addrShort = addrLower.split(',')[0].replace(/\s*#\w+\s*$/, '').trim();
+  const firstName = tenant && tenant.name ? tenant.name.split(' ')[0].toLowerCase() : '';
+  const activeOnProp = (s.tenants || []).filter(t => t.propertyId === row.propertyId && t.status === 'active').length;
+  const taggedToProp = pj => { const pl = (pj || '').toLowerCase().trim(); return !!pl && (pl === addrLower || pl.includes(addrShort) || addrLower.includes(pl)); };
+  const claimedBy = new Map();
+  (s.rentLedger || []).forEach(r => {
+    if (r.id === row.id) return;
+    const ids = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds : (r.linkedTxId ? [r.linkedTxId] : []);
+    ids.forEach(id => claimedBy.set(id, r));
+  });
+  const monthStart = row.month + '-01';
+  const monthEnd = addMonthsISO(monthStart, 1);
+  const nearMonthStart = addMonthsISO(monthStart, -1);
+  const nearMonthEnd = addMonthsISO(monthStart, 2);
+  for (const tx of (s.transactions || [])) {
+    if (linkedIds.includes(tx.id)) continue;
+    if (!(tx.amount > 0 || (tx.splits || []).some(sp => sp.amount > 0))) continue;
+    if (!tx.date || tx.date < nearMonthStart || tx.date >= nearMonthEnd) continue;
+    const sliceAmt = (tx.splits || []).filter(sp => taggedToProp(sp.project) && sp.amount > 0).reduce((a, sp) => a + sp.amount, 0);
+    const propOk = taggedToProp(tx.project) || sliceAmt > 0;
+    const catSrc = sliceAmt > 0 ? ((tx.splits || []).find(sp => taggedToProp(sp.project))?.category || tx.category) : tx.category;
+    const catOk = /rent/i.test(catSrc || '');
+    const monthOk = tx.date >= monthStart && tx.date < monthEnd;
+    const nameOk = !(activeOnProp > 1 && firstName) || (tx.desc || '').toLowerCase().includes(firstName);
+    const claimed = claimedBy.get(tx.id);
+    const reasons = [];
+    if (!propOk) reasons.push('not tagged to ' + (prop.address || 'this property').split(',')[0]);
+    if (!catOk) reasons.push('category "' + (catSrc || 'none') + '" isn\u2019t a Rental category');
+    if (!monthOk) reasons.push('dated ' + tx.date + ', outside ' + row.month);
+    if (!nameOk) reasons.push('several tenants at this property and the description doesn\u2019t name ' + (tenant?.name || 'the tenant'));
+    if (claimed) reasons.push('already applied to another charge (' + claimed.month + ')');
+    if (reasons.length === 0) continue; // would have matched; reconcile will pick it up
+    if (!propOk && !catOk && !monthOk) continue; // unrelated transaction, don't list it
+    const amt = sliceAmt || tx.amount;
+    // A transaction far larger than the charge (sale proceeds, refi funding) is never
+    // this month's rent — keep it out so it can't be one-clicked onto a rent row.
+    if (row.charge > 0 && amt > row.charge * 3) continue;
+    out.nearMisses.push({ tx, amount: amt, reasons, claimedBy: claimed || null });
+  }
+  out.nearMisses.sort((a, b) => a.reasons.length - b.reasons.length || Math.abs(a.amount - row.charge) - Math.abs(b.amount - row.charge));
+  out.nearMisses = out.nearMisses.slice(0, 6);
+  return out;
+}
+
 function findMatchingTxForLedger(ledger) {
   // Find recent transactions in the same/adjacent month with positive amount roughly matching
   const t = Store.state.tenants.find(x => x.id === ledger.tenantId);
@@ -1862,7 +1980,7 @@ function isDuplicateTransaction(date, amount, desc) {
 // ─── Add tenant ───
 function addTenant(tenantData, startLedger = true) {
   Store.update(s => {
-    const id = 'tn' + (s.tenants.length + 100);
+    const id = nextId(s.tenants, 'tn', 100);
     s.tenants.push({ id, status: 'active', ...tenantData });
     if (startLedger && tenantData.moveIn && tenantData.rent > 0) {
       // Generate ledger entries from moveIn month through current month, all as upcoming
@@ -1966,7 +2084,7 @@ function updateTenant(tenantId, patch) {
 function addProperty(propData) {
   let newId;
   Store.update(s => {
-    newId = 'p' + (s.properties.length + 1000);
+    newId = nextId(s.properties, 'p', 1000);
     const today = s.today;
     const code = propData.statusCode || 'A';
     s.properties.push({
@@ -1982,16 +2100,30 @@ function addProperty(propData) {
       assigned: propData.assigned || '',
       loanType: propData.loanType || '',
       lockbox: '',
+      // ── Under contract, buy side (mirrors the capture-hub "to buy" card) ──
       ddDate: propData.ddDate || null,
       signingDate: propData.signingDate || null,
+      closingTime: propData.closingTime || null,
+      dueDiligenceFee: propData.acqDDFee || null,
+      dueDiligenceDays: propData.dueDiligenceDays || null,
+      dueDiligenceDeadline: propData.ddDate || null,
+      contractDate: propData.signingDate || null,
       purchaseDate: null,
       purchasePrice: propData.purchasePrice || null,
       purchaseFees: null, purchaseCredits: null, purchaseLoan: null,
+      purchaseFeeItems: [], saleFeeItems: [],
       acqEarnest: propData.acqEarnest || null, acqDDFee: propData.acqDDFee || null, acqExchangeFunds: null,
+      cashToClose: null, cashReceivedAtClose: null, otherFees: null,
+      // ── Listing / sell side, empty until those stages ──
+      listPrice: null, listDate: null, listingAgent: null, listingNotes: null,
       salesDate: null, salesPrice: null, salesFees: null, salesCredits: null, salesLoanPayoff: null,
-      saleDDCollected: null, saleEarnest: null,
+      saleDDCollected: null, saleEarnest: null, saleCreditsReceived: null,
+      buyerDDDate: null, saleSigningDate: null, saleSigningTime: null,
+      expectedCloseDate: null, saleAttorney: '', attorney: '', attorneyContact: '',
+      financingType: propData.financingType || '', failedReason: null, rentalCarrying: null,
       rehab: null, rehabFunds: propData.rehabFunds || null, rehabDraws: null,
       interest: null, atmoreLoanPayoff: null, atmoreLoanPrincipal: null, exchangeFunds: null, interestCredit: null, grossProfit: null,
+      notes: propData.notes || '',
       hoaName: '', hoaWebsite: '', hoaUser: '', hoaPass: '',
       vestingLLC: propData.vestingLLC || 'Atmore Properties LLC',
       driveUrl: propData.driveUrl || '',
@@ -2005,7 +2137,7 @@ function addProperty(propData) {
 // ─── Add HOA ───
 function addHOA(hoaData) {
   Store.update(s => {
-    const id = 'h' + (s.hoas.length + 100);
+    const id = nextId(s.hoas, 'h', 100);
     s.hoas.push({
       id, propertyId: hoaData.propertyId,
       name: hoaData.name || '',
@@ -2028,7 +2160,7 @@ function deleteHOA(id) {
 
 Object.assign(window, {
   splitTransaction, clearSplit, txSplitsForProperty,
-  linkLedgerToTransaction, findMatchingTxForLedger,
+  linkLedgerToTransaction, findMatchingTxForLedger, explainRentMatch,
   isDuplicateTransaction,
   addTenant, updateTenant, moveOutTenant, updateDepositSettlement, addProperty, addHOA, updateHOA, deleteHOA,
 });
@@ -2139,10 +2271,37 @@ function acceptOffer(id, { patch = null, advanceToUnderContract = false } = {}) 
     if (o) {
       const p = getProperty(o.propertyId);
       if (p && p.statusCode !== 'G') {
+        // Push the accepted terms onto the property first, so the Under Contract
+        // popover and close-out prefill match what was entered on the offer.
+        Store.update(st => {
+          const prop = st.properties.find(x => x.id === o.propertyId);
+          const off = (st.offers || []).find(x => x.id === id);
+          applyOfferToProperty(prop, off, st.today);
+        });
         changeStage(o.propertyId, 'G', { note: `Accepted offer from ${o.buyer || 'buyer'}`, by: 'offers' });
       }
     }
   }
+}
+
+// Copy an accepted offer's terms onto the property's sale-side contract fields —
+// the ones the Under Contract popover and the close-out dialog read. Called from
+// BOTH goUnderContract and acceptOffer so the two paths agree.
+function applyOfferToProperty(p, offer, today) {
+  if (!p || !offer) return;
+  if (offer.offerPrice != null) p.salesPrice = offer.offerPrice;
+  const concTotal = offerTotalConcessions(offer);
+  if (concTotal > 0) p.salesCredits = concTotal;
+  if (offer.earnestMoney != null) p.saleEarnest = Math.abs(offer.earnestMoney);
+  if (offer.dueDiligenceFee != null) p.saleDDCollected = Math.abs(offer.dueDiligenceFee);
+  if (offer.dueDiligenceDate) p.buyerDDDate = offer.dueDiligenceDate;
+  else if (offer.dueDiligenceDays != null && today) {
+    const d = new Date(today + 'T12:00:00');
+    d.setDate(d.getDate() + Number(offer.dueDiligenceDays));
+    p.buyerDDDate = d.toISOString().slice(0, 10);
+  }
+  if (offer.closeDate) p.expectedCloseDate = offer.closeDate;
+  if (!p.contractDate && today) p.contractDate = today;
 }
 
 // Move a property to Under Contract from accepted terms. Ties the stage change
@@ -2185,23 +2344,13 @@ function goUnderContract(propId, { offerId = null, terms = {}, closing = {}, not
     // Property contract/closing fields (close-out prefills from salesPrice / salesCredits)
     const p = s.properties.find(x => x.id === propId);
     if (p) {
-      if (offer.offerPrice != null) p.salesPrice = offer.offerPrice;
-      const concTotal = offerTotalConcessions(offer);
-      if (concTotal > 0) p.salesCredits = concTotal;
+      applyOfferToProperty(p, offer, s.today);
+      // Explicit closing entries from the dialog win over the offer's values.
       if (c.attorney) p.saleAttorney = c.attorney;
       if (c.attorneyContact) p.attorneyContact = c.attorneyContact;
       if (c.buyerDDDate) p.buyerDDDate = c.buyerDDDate;
-      else if (offer.dueDiligenceDate) p.buyerDDDate = offer.dueDiligenceDate;
-      else if (offer.dueDiligenceDays != null) {
-        const base = s.today;
-        const d = new Date(base + 'T12:00:00');
-        d.setDate(d.getDate() + Number(offer.dueDiligenceDays));
-        p.buyerDDDate = d.toISOString().slice(0, 10);
-      }
       if (c.saleSigningDate) p.saleSigningDate = c.saleSigningDate;
       if (c.saleSigningTime) p.saleSigningTime = c.saleSigningTime;
-      if (offer.dueDiligenceFee != null) p.saleDDCollected = Math.abs(offer.dueDiligenceFee);
-      if (offer.closeDate) p.expectedCloseDate = offer.closeDate;
       p.contractDate = s.today;
     }
   });
@@ -2276,7 +2425,7 @@ Object.assign(window, {
   FINANCING_TYPES, CONTINGENCY_TYPES, CONCESSION_FIELDS, SALE_SIDE_STAGES,
   emptyConcessions, offerTotalConcessions, offerNetToSeller, isOfferActive,
   getOffersForProperty, bestNetForProperty, activeOfferCount,
-  addOffer, updateOffer, deleteOffer, acceptOffer, offersAwaitingResponse,
+  addOffer, updateOffer, deleteOffer, acceptOffer, offersAwaitingResponse, applyOfferToProperty,
   goUnderContract,
 });
 
@@ -2974,6 +3123,7 @@ Object.assign(window, {
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
+  nextId, dedupeIds, idRepairLog,
   getExchange, updateExchange,
   commitImportRows,
   STATUS_LABEL, STATUS_ORDER, STAGE_LABEL_MAP,

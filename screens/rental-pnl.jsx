@@ -125,19 +125,31 @@ function CarryingEditor({ p, onClose }) {
 
 // Drill-down: every transaction (and carrying line) behind one month's numbers.
 function PnlMonthTxModal({ p, m, onClose }) {
+  useStore();
+  const [edit, setEdit] = useState(null);        // { tx, split } or { carrying: true }
   const tx = pnlRentalTx(p).filter(t => (t.date || '').slice(0, 7) === m.ym)
     .sort((a, b) => Math.abs(b.amount || 0) - Math.abs(a.amount || 0));
   const carry = pnlCarrying(p);
+  // A row may be one slice of a split — its id is "<txId>-s<n>". Edit the real
+  // transaction behind it: the split editor for split rows, the plain editor otherwise.
+  function openEdit(row) {
+    const baseId = String(row.id).split('-s')[0];
+    const real = (Store.state.transactions || []).find(t => t.id === baseId);
+    if (!real) return;
+    setEdit({ tx: real, split: !!(real.splits && real.splits.length) });
+  }
   return (
+    <>
     <Modal title={p.address + ' — ' + PNL_MON[m.m - 1] + ' ' + m.ym.slice(0, 4)} onClose={onClose} wide>
       <div className="col">
         {tx.length === 0 && m.carryDetail.length === 0 && <div className="small dim" style={{padding: '8px 0'}}>No rental transactions this month.</div>}
         {tx.map(t => (
           <div key={t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)'}}>
             <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
-            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}{String(t.id).includes('-s') && <span className="dim tiny">{' · split slice'}</span>}</span>
             {t.category && <Tag tone="ghost">{t.category}</Tag>}
             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" onClick={() => openEdit(t)}>Edit</Btn>
           </div>
         ))}
         {m.carryDetail.map(label => {
@@ -149,6 +161,7 @@ function PnlMonthTxModal({ p, m, onClose }) {
               <span className="small grow" style={{fontStyle: 'italic', color: 'var(--ink-2)'}}>{label} — monthly carrying</span>
               <Tag tone="ochre">recurring</Tag>
               <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: 'var(--brick)'}}>{fmtMoney(-amt)}</span>
+              <Btn sz="sm" kind="ghost" onClick={() => setEdit({ carrying: true })}>Edit</Btn>
             </div>
           );
         })}
@@ -158,6 +171,10 @@ function PnlMonthTxModal({ p, m, onClose }) {
         </div>
       </div>
     </Modal>
+    {edit && edit.carrying && <CarryingEditor p={p} onClose={() => setEdit(null)}/>}
+    {edit && edit.split && <SplitTransactionModal tx={edit.tx} onClose={() => setEdit(null)}/>}
+    {edit && edit.tx && !edit.split && <TransactionEditor tx={edit.tx} onClose={() => setEdit(null)}/>}
+    </>
   );
 }
 
@@ -193,6 +210,7 @@ function RentalPnlScreen() {
   const [open, setOpen] = useState(null);
   const [editCarry, setEditCarry] = useState(null);
   const [genOpen, setGenOpen] = useState(false);
+  const [genMon, setGenMon] = useState({});
 
   const props = useMemo(() => (Store.state.properties || []).filter(isRentalPnlProperty)
     .sort((a, b) => (a.address || '').localeCompare(b.address || '')), [Store.state.properties]);
@@ -311,14 +329,34 @@ function RentalPnlScreen() {
               {genTx.length > 0 && genOpen && (
                 <tr><td colSpan={6} style={{padding: 0, background: 'var(--paper-3)'}}>
                   <div style={{padding: '4px 14px 10px 34px'}}>
-                    {[...genTx].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(t => (
-                      <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0', borderTop: '1px solid var(--rule-soft)'}}>
-                        <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
-                        <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
-                        {t.category && <Tag tone="ghost">{t.category}</Tag>}
-                        <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
-                      </div>
-                    ))}
+                    {(() => {
+                      const byMon = new Map();
+                      [...genTx].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+                        .forEach(t => { const m = parseInt((t.date || '').slice(5, 7)) || 0; if (!byMon.has(m)) byMon.set(m, []); byMon.get(m).push(t); });
+                      return [...byMon.entries()].sort((a, b) => b[0] - a[0]).map(([m, list]) => {
+                        const sub = list.reduce((a, t) => a + (t.amount || 0), 0);
+                        const mOpen = !!genMon[m];
+                        return (
+                          <div key={m} style={{marginTop: 8}}>
+                            <div className="row gap-10 items-center" style={{padding: '4px 0', borderTop: '1px solid var(--rule)', cursor: 'pointer'}} onClick={() => setGenMon(s => ({ ...s, [m]: !s[m] }))}>
+                              <span style={{display: 'inline-block', width: 14, color: 'var(--ink-3)'}}>{mOpen ? '▾' : '▸'}</span>
+                              <span className="up" style={{fontSize: 10.5, fontWeight: 700, color: 'var(--ink-2)'}}>{PNL_MON[m - 1] || '—'} {year}</span>
+                              <span className="dim tiny">{list.length} charge{list.length === 1 ? '' : 's'}</span>
+                              <div className="grow"/>
+                              <span className="mono small" style={{width: 92, textAlign: 'right', fontWeight: 600, color: sub < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(sub)}</span>
+                            </div>
+                            {mOpen && list.map(t => (
+                              <div key={t.id} className="row gap-10 items-center" style={{padding: '5px 0 5px 24px', borderTop: '1px solid var(--rule-soft)'}}>
+                                <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+                                <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+                                {t.category && <Tag tone="ghost">{t.category}</Tag>}
+                                <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                 </td></tr>
               )}

@@ -53,6 +53,7 @@ function milestoneSpec(key) {
         { key: 'ddDate',      label: 'DD deadline',                  type: 'date', tone: 'ochre' },
         { key: 'signingDate', label: 'Signing date',                 type: 'date' },
         { key: 'closingTime', label: 'Signing time',                 type: 'time' },
+        { key: 'attorney',    label: 'Closing attorney',             type: 'text' },
       ],
     };
   }
@@ -91,6 +92,7 @@ function milestoneSpec(key) {
       { key: 'buyerDDDate',    label: 'Buyer DD deadline',         type: 'date', tone: 'ochre' },
       { key: 'saleSigningDate',label: 'Sale / signing date',       type: 'date' },
       { key: 'saleSigningTime',label: 'Signing time',              type: 'time' },
+      { key: 'saleAttorney',   label: 'Closing attorney',          type: 'text' },
     ],
   };
 }
@@ -141,6 +143,15 @@ function MilestonePopover({ p, spec, anchorRight, onClose }) {
                   value={draft[f.key]} onChange={e => set(f.key, e.target.value)}
                   placeholder="0" style={{width: '100%'}}/>
               </div>
+            ) : f.type === 'text' ? (
+              <React.Fragment>
+                <input className="input" type="text" list="cap-attorneys"
+                  value={draft[f.key]} onChange={e => set(f.key, e.target.value)}
+                  placeholder="Firm or attorney name" style={{width: '100%'}}/>
+                <datalist id="cap-attorneys">
+                  {[...new Set((Store.state.properties || []).flatMap(x => [x.attorney, x.saleAttorney]).filter(Boolean))].sort().map(a => <option key={a} value={a}/>)}
+                </datalist>
+              </React.Fragment>
             ) : (
               <input className="input mono" type={f.type === 'time' ? 'time' : 'date'}
                 value={draft[f.key]} onChange={e => set(f.key, e.target.value)}

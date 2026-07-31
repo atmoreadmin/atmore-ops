@@ -108,6 +108,7 @@ function RentRollScreen() {
 function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, search, setSearch, onMarkPaid, onNotice, statusCounts }) {
   const month = getCurrentMonth();
   const [sortKey, setSortKey] = useState('status');
+  const [whyRow, setWhyRow] = useState(null);
   const [sortDir, setSortDir] = useState('asc');
   const [confirmUnmark, setConfirmUnmark] = useState(null); // ledger id pending confirm
 
@@ -198,8 +199,8 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
               const lateFee = lateFeeFor(r);
               const owed = r.charge - r.paid + lateFee;
               const isLate = r.status === 'late' || r.status === 'vacate-due';
-              return (
-                <tr key={r.id} className={isLate ? 'row--late' : ''}>
+              return (<React.Fragment key={r.id}>
+                <tr className={isLate ? 'row--late' : ''}>
                   <td><Av name={t?.name}/></td>
                   <td>
                     <div style={{fontWeight: 500, fontSize: 13}}>{t?.name || <span className="dim">—</span>}</div>
@@ -251,15 +252,61 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                       {r.status === 'vacate-due' && (
                         <Btn sz="sm" kind="danger" onClick={(e) => { e.stopPropagation(); onNotice(r); }}>Notice</Btn>
                       )}
+                      {(r.paid || 0) < r.charge && (
+                        <Btn sz="sm" kind="ghost" title="Show why a logged rental-income transaction didn't attach to this charge" onClick={(e) => { e.stopPropagation(); setWhyRow(whyRow === r.id ? null : r.id); }}>{whyRow === r.id ? 'Hide' : 'Why unpaid?'}</Btn>
+                      )}
                     </div>
                   </td>
                 </tr>
-              );
+                {whyRow === r.id && <MatchDiagnosticRow row={r}/>}
+              </React.Fragment>);
             })}
           </tbody>
         </table>
       </Card>
     </>
+  );
+}
+
+// ────── Match diagnostic: why a logged payment didn't attach ──────
+function MatchDiagnosticRow({ row }) {
+  const d = explainRentMatch(row);
+  const need = row.charge - (row.paid || 0);
+  return (
+    <tr>
+      <td colSpan="10" style={{background: 'var(--paper-2, #f6f4ef)', borderTop: '1px solid var(--rule)', padding: '10px 14px'}}>
+        <div className="small" style={{marginBottom: 6}}>
+          <strong>Still short {fmtMoney(need)}.</strong> A transaction auto-attaches only when it is income, tagged to this property, in a Rental category, and dated inside {row.month}.
+        </div>
+        {d.blocked && <div className="small" style={{color: 'var(--brick)', marginBottom: 6}}>{d.blocked}</div>}
+        {d.linked.length > 0 && (
+          <div className="tiny dim" style={{marginBottom: 6}}>Currently linked: {d.linked.map(t => t.date + ' · ' + fmtMoney(t.amount)).join(' · ')}</div>
+        )}
+        {d.nearMisses.length === 0 ? (
+          <div className="small dim">No rental-income transaction near this month came close to matching. Log the payment in Transactions (tag it to {(getProperty(row.propertyId)?.address || '').split(',')[0]} with a Rental Income category), or use Mark paid.</div>
+        ) : (
+          <table style={{width: '100%', fontSize: 12}}>
+            <tbody>
+              {d.nearMisses.map(m => (
+                <tr key={m.tx.id}>
+                  <td className="mono" style={{padding: '3px 8px 3px 0', whiteSpace: 'nowrap'}}>{m.tx.date}</td>
+                  <td style={{padding: '3px 8px 3px 0'}}>{m.tx.desc || <span className="dim">no description</span>}</td>
+                  <td className="num mono" style={{padding: '3px 8px 3px 0', whiteSpace: 'nowrap'}}>{fmtMoney(m.amount)}</td>
+                  <td style={{padding: '3px 8px 3px 0', color: 'var(--brick)'}}>{m.reasons.join(' · ')}</td>
+                  <td style={{padding: '3px 0'}}>
+                    {m.claimedBy ? (
+                      <span className="tiny dim">applied to {m.claimedBy.month}</span>
+                    ) : (
+                      <Btn sz="sm" kind="ghost" title="Attach this transaction to this charge" onClick={() => { linkLedgerToTransaction(row.id, m.tx.id); reconcileRentAcrossMonths(); }}>Link anyway</Btn>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </td>
+    </tr>
   );
 }
 

@@ -100,6 +100,69 @@ function serializeForSheet(state) {
   return { _v: 1, sentAt: new Date().toISOString(), tabs };
 }
 
+// ─── Schema drift audit ───
+// Round-trips live state through serialize → deserialize and reports any field that
+// carried a real value on the way in but came back empty. Catches BOTH ways a field
+// can silently fail to sync: (1) no column in SHEET_SCHEMA, so serializeForSheet
+// never copies it; (2) a hard-coded whitelist in deserializeFromSheet that doesn't
+// name it, so a pull strips it. Column auto-create can't help with either — nothing
+// is ever sent, so SharePoint never returns the 400 that triggers the repair.
+const DRIFT_IGNORE = new Set([
+  'netToSeller', 'concClosingCost', 'concRepairCredit', 'concHomeWarranty', 'concRateBuydown', 'concOther',
+  'ytd', 'jobs', 'ten99History', 'draws', 'concessions', 'hoas', 'insurance', 'loan', 'tax', 'rentalCarrying',
+  'splits', 'feeItems', 'utilities', 'stageHistory', 'updatedAt',
+  // Carried by child tabs or folded into flat columns — no own column by design.
+  'purchaseFeeItems', 'saleFeeItems', 'loanDetail', 'taxes', 'rentHistory',
+]);
+function auditSyncFields() {
+  const src = Store.state;
+  let round;
+  try { round = deserializeFromSheet(serializeForSheet(src)); }
+  catch (e) { return { error: e.message || String(e), findings: [] }; }
+  const findings = [];
+  const filled = v => v != null && v !== '' && !(Array.isArray(v) && v.length === 0);
+  for (const [tabName, coll] of Object.entries(MERGED_COLLECTIONS)) {
+    const before = src[coll] || [], after = round[coll] || [];
+    if (!before.length) continue;
+    const byId = new Map(after.map(r => [r.id, r]));
+    // Duplicate/blank ids are the #1 cause of phantom "pull is dropping it" reports:
+    // two rows share one id, so the merge keeps one and the other's fields read as
+    // lost. Report it as its own finding — no column work can fix it.
+    const idSeen = new Set(), dupIds = new Set();
+    for (const rec of before) { const k = String(rec.id || ''); if (!k || idSeen.has(k)) dupIds.add(k || '(blank)'); idSeen.add(k); }
+    const cols = new Set(((window.SHEET_SCHEMA[tabName] || {}).columns || []).map(c => c.key));
+    const lost = new Map();
+    // Direction 1 — undeclared columns. A key with no SHEET_SCHEMA column is stripped
+    // by serializeForSheet on the way out. Some collections (Exchanges) then restore
+    // it from this device's local copy on the way back, so the round-trip below sees
+    // no loss even though a second device would show the field blank. This check does
+    // not depend on survival, so it catches those.
+    for (const rec of before) {
+      for (const [k, v] of Object.entries(rec)) {
+        if (k[0] === '_' || DRIFT_IGNORE.has(k) || cols.has(k) || !filled(v)) continue;
+        const e = lost.get(k) || { field: k, count: 0, inSchema: false, sample: v };
+        e.count++; lost.set(k, e);
+      }
+    }
+    // Direction 2 — declared column, but the pull drops it (hard-coded whitelist).
+    for (const rec of before) {
+      if (dupIds.has(String(rec.id || '')) || dupIds.has('(blank)') && !rec.id) continue;  // explained by the duplicate-id finding
+      const out = byId.get(rec.id);
+      if (!out) continue;
+      for (const [k, v] of Object.entries(rec)) {
+        if (k[0] === '_' || DRIFT_IGNORE.has(k) || !filled(v)) continue;
+        if (!cols.has(k)) continue;   // already reported above
+        if (filled(out[k])) continue;
+        const e = lost.get(k) || { field: k, count: 0, inSchema: true, sample: v };
+        e.count++; lost.set(k, e);
+      }
+    }
+    if (dupIds.size) lost.set('id', { field: 'id', count: dupIds.size, inSchema: true, dup: true, sample: [...dupIds].join(', ') });
+    if (lost.size) findings.push({ tab: tabName, collection: coll, records: before.length, fields: [...lost.values()].sort((a, b) => b.count - a.count) });
+  }
+  return { error: null, findings, checkedAt: new Date().toISOString() };
+}
+
 // Convert pulled { tabs: {...} } → app state shape
 function deserializeFromSheet(pulledData) {
   if (!pulledData || !pulledData.tabs) throw new Error('Empty or malformed response');
@@ -174,7 +237,8 @@ function deserializeFromSheet(pulledData) {
 
   // Properties — nested objects (insurance/loan/taxes/HOAs) are now FLAT columns on this tab.
   const rebuiltHoas = [];
-  state.properties = (tabs.Properties || []).map(p => {
+  const tabPresent = name => Array.isArray(tabs[name]);
+  state.properties = !tabPresent('Properties') ? (Store.state.properties || []) : (tabs.Properties).map(p => {
     const out = { ...p };
     const local = localProps[p.id] || {};
     // Columns the Sheet doesn't have yet (bridge not migrated) come back with the
@@ -220,6 +284,9 @@ function deserializeFromSheet(pulledData) {
     // Loan detail
     const loan = { lender: p.loanLender || '', loanNumber: p.loanNumber || '', monthlyPayment: num(p.loanPayment), currentBalance: num(p.loanBalance), interestRate: num(p.loanRate), maturityDate: p.loanMaturity || '', escrowedTaxes: truthy(p.loanEscrowTaxes), escrowedInsurance: truthy(p.loanEscrowIns), lenderContact: p.loanContact || '' };
     out.loanDetail = (loan.lender || loan.loanNumber || loan.currentBalance != null || loan.monthlyPayment != null) ? loan : null;
+    // Rental P&L carrying costs
+    const carry = { mortgage: num(p.carryMortgage), hoa: num(p.carryHOA), tax: num(p.carryTax), insurance: num(p.carryInsurance) };
+    out.rentalCarrying = Object.values(carry).some(v => v != null) ? carry : null;
     // Taxes
     const tax = { annualAmount: num(p.taxAnnual), dueDate: p.taxDueDate || '', escrowed: truthy(p.taxEscrowed), taxId: p.taxParcel || '' };
     out.taxes = (tax.annualAmount != null || tax.taxId || tax.dueDate) ? tax : null;
@@ -246,6 +313,7 @@ function deserializeFromSheet(pulledData) {
     ['insCarrier','insPolicy','insPremium','insRenewal','insAgent','insAgentPhone',
      'loanLender','loanNumber','loanPayment','loanBalance','loanRate','loanMaturity','loanEscrowTaxes','loanEscrowIns','loanContact',
      'taxAnnual','taxDueDate','taxEscrowed','taxParcel','utilityNote',
+     'carryMortgage','carryHOA','carryTax','carryInsurance',
      'hoa1Name','hoa1Url','hoa1User','hoa1Pass','hoa1Monthly','hoa2Name','hoa2Url','hoa2User','hoa2Pass','hoa2Monthly'].forEach(k => delete out[k]);
     return out;
   });
@@ -253,7 +321,7 @@ function deserializeFromSheet(pulledData) {
   // Tenants — rent-change history is no longer synced; keep local if present.
   const localTenants = {};
   (Store.state.tenants || []).forEach(t => { localTenants[t.id] = t; });
-  state.tenants = (tabs.Tenants || []).map(t => {
+  state.tenants = !tabPresent('Tenants') ? (Store.state.tenants || []) : (tabs.Tenants).map(t => {
     const out = { ...t };
     out.rentHistory = rentHistByT
       ? (rentHistByT[t.id] || []).slice().sort(byOrd).map(h => ({ effectiveDate: h.effectiveDate || '', amount: h.amount ?? 0, note: h.note || '' }))
@@ -261,7 +329,7 @@ function deserializeFromSheet(pulledData) {
     return out;
   });
 
-  state.rentLedger = (tabs.RentLedger || []).map(r => {
+  state.rentLedger = !tabPresent('RentLedger') ? (Store.state.rentLedger || []) : (tabs.RentLedger).map(r => {
     const out = { ...r };
     // linkedTxIds round-trips as a comma-joined string; rebuild the array so the
     // legacy-migration in validateRentLinks doesn't fire (and mark dirty) on every open.
@@ -286,11 +354,11 @@ function deserializeFromSheet(pulledData) {
     state.transactions = Store.state.transactions;
     if (window.SyncEngine) SyncEngine.dirty = true;  // push local ledger back to the Sheet
   } else {
-  state.transactions = (tabs.Transactions || []).map(tx => {
+  state.transactions = !tabPresent('Transactions') ? (Store.state.transactions || []) : (tabs.Transactions).map(tx => {
     const out = { ...tx };
     if (splitsByTx) {
       const sp = (splitsByTx[tx.id] || []).slice().sort(byOrd);
-      if (sp.length) out.splits = sp.map(x => ({ project: x.project || '', amount: x.amount ?? 0, category: x.category || '' }));
+      if (sp.length) out.splits = sp.map(x => ({ project: x.project || '', amount: x.amount ?? 0, category: x.category || '', bucket: x.bucket || '' }));
     } else if (localTx[tx.id] && localTx[tx.id].splits) {
       out.splits = localTx[tx.id].splits;
     }
@@ -302,12 +370,12 @@ function deserializeFromSheet(pulledData) {
   if (typeof dedupeSplitMaterializations === 'function') dedupeSplitMaterializations(state);
 
   // HOAs were rebuilt from the flat hoa1/hoa2 columns during the Properties pass.
-  state.hoas = rebuiltHoas;
+  state.hoas = tabPresent('Properties') ? rebuiltHoas : (Store.state.hoas || []);
 
   // Contractors — 1099 history no longer synced; keep local. YTD recomputed from transactions.
   const localContractors = {};
   (Store.state.contractors || []).forEach(c => { localContractors[c.id] = c; });
-  state.contractors = (tabs.Contractors || []).map(c => {
+  state.contractors = !tabPresent('Contractors') ? (Store.state.contractors || []) : (tabs.Contractors).map(c => {
     const out = { ...c };
     out.ten99History = ten99ByC
       ? (ten99ByC[c.id] || []).map(h => ({ taxYear: h.taxYear ?? null, status: h.status || '', issuedDate: h.issuedDate || '', amountReported: h.amountReported ?? null }))
@@ -320,14 +388,14 @@ function deserializeFromSheet(pulledData) {
     return out;
   });
 
-  state.refis = tabs.Refis || [];
+  state.refis = tabPresent('Refis') ? tabs.Refis : (Store.state.refis || []);
   // Exchanges: a stale/un-migrated bridge must never wipe newer fields. Preserve any
   // local field the Sheet didn't return a column for, and keep local draws if the
   // ExchangeDraws tab is absent — mirrors the Insurance/Loan/Tax fail-safe above.
   const localExch = {};
   (Store.state.exchanges || []).forEach(x => { localExch[x.id] = x; });
   const hasDrawsTab = Array.isArray(tabs.ExchangeDraws);
-  state.exchanges = (tabs.Exchanges || []).map(e => {
+  state.exchanges = !tabPresent('Exchanges') ? (Store.state.exchanges || []) : (tabs.Exchanges).map(e => {
     const local = localExch[e.id] || {};
     const out = { ...e };
     // Flat fields: if the Sheet has no column for it, the pulled row won't have the key
@@ -347,14 +415,20 @@ function deserializeFromSheet(pulledData) {
     }
     return out;
   });
-  state.leads = tabs.Leads || [];
+  state.leads = tabPresent('Leads') ? tabs.Leads : (Store.state.leads || []);
 
-  // Offers — rebuild the nested concessions object from flat columns
-  state.offers = (tabs.Offers || []).map(o => ({
+  // Offers — rebuild the nested concessions object from flat columns. Spread `o` first
+  // so any column added to the schema later survives a pull even if it isn't named
+  // explicitly below (the old hard whitelist silently dropped due-diligence fields).
+  state.offers = !tabPresent('Offers') ? (Store.state.offers || []) : (tabs.Offers).map(o => ({
+    ...o,
     id: o.id, propertyId: o.propertyId, date: o.date,
     buyer: o.buyer, buyerAgent: o.buyerAgent, agentContact: o.agentContact,
     offerPrice: o.offerPrice, earnestMoney: o.earnestMoney,
     financing: o.financing, closeDate: o.closeDate, status: o.status,
+    dueDiligenceFee: o.dueDiligenceFee != null && o.dueDiligenceFee !== '' ? Number(o.dueDiligenceFee) : null,
+    dueDiligenceDays: o.dueDiligenceDays != null && o.dueDiligenceDays !== '' ? Number(o.dueDiligenceDays) : null,
+    dueDiligenceDate: o.dueDiligenceDate || null,
     closingCosts: o.closingCosts,
     concessions: {
       closingCost:  o.concClosingCost  || 0,
@@ -369,7 +443,9 @@ function deserializeFromSheet(pulledData) {
     driveUrl: o.driveUrl || '',
     notes: o.notes,
     updatedAt: o.updatedAt || null,
-  }));
+    concClosingCost: undefined, concRepairCredit: undefined, concHomeWarranty: undefined,
+    concRateBuydown: undefined, concOther: undefined, netToSeller: undefined,
+  })).map(o => { Object.keys(o).forEach(k => { if (o[k] === undefined) delete o[k]; }); return o; });
 
   // Lists — one consolidated tab split back into the managed lists + accounts + team.
   const listRows = tabs.Lists || [];
@@ -396,7 +472,7 @@ function deserializeFromSheet(pulledData) {
 
   // Web accounts (vendor / portal logins)
   state.webAccounts = Array.isArray(tabs.WebAccounts)
-    ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '', updatedAt: r.updatedAt || null }))
+    ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', url: r.url || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '', updatedAt: r.updatedAt || null }))
     : (Store.state.webAccounts || []);
 
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.
@@ -743,5 +819,6 @@ window.Sync = Sync;
 window.SyncEngine = SyncEngine;
 window.deserializeFromSheet = deserializeFromSheet;
 window.serializeForSheet = serializeForSheet;
+window.auditSyncFields = auditSyncFields;
 window.downloadBackup = downloadBackup;
 window.restoreBackupFromText = restoreBackupFromText;

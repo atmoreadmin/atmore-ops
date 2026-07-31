@@ -218,8 +218,8 @@ function OfferForm({ offer, propertyId, property, onClose }) {
   const net = (Number(offerPrice) || 0) - totalConc;
   const list = property?.listPrice || null;
   const deltaList = list ? net - list : null;
-  // acquisition-side cost basis — same formula as the property Money tab
-  const costBasis = property ? Math.abs(property.purchasePrice || 0) + Math.abs(property.purchaseFees || 0) - Math.abs(property.purchaseCredits || 0) + (property.rehab || 0) + Math.abs(property.interest || 0) : null;
+  // acquisition-side cost basis — shared helper, same number as the property Money tab
+  const costBasis = property ? ((typeof computeCostBasis === 'function') ? computeCostBasis(property) : null) : null;
   const projProfit = (costBasis != null && costBasis > 0 && (Number(offerPrice) || 0) > 0) ? net - costBasis : null;
 
   const save = () => {

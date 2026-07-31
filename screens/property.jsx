@@ -25,15 +25,16 @@ function heroStat(p, tenants) {
   const code = p.statusCode;
   const active = (tenants || []).find(t => t.status === 'active') || (tenants || [])[0];
   const purchase = Math.abs(p.purchasePrice || 0);
-  const costBasis = purchase + Math.abs(p.purchaseFees || 0) - Math.abs(p.purchaseCredits || 0) + (p.rehab || 0) + Math.abs(p.interest || 0);
-  if (code === 'I') return { label: 'Net profit', value: p.grossProfit != null ? p.grossProfit : null, tone: (p.grossProfit || 0) >= 0 ? 'sage' : 'brick', sign: true };
+  const costBasis = (typeof computeCostBasis === 'function') ? computeCostBasis(p) : 0;
+  if (code === 'I') { const cp = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null; const v = cp != null ? cp : (p.grossProfit != null ? p.grossProfit : null); return { label: 'Net profit', value: v, tone: (v || 0) >= 0 ? 'sage' : 'brick', sign: true }; }
   if (code === 'K' || code === 'D') {
     if (active && active.rent != null) return { label: 'Monthly rent', value: active.rent, suffix: '/mo' };
     return { label: 'Purchase price', value: p.purchasePrice != null ? purchase : null };
   }
   if (code === 'G' || code === 'H') {
-    const base = p.salesPrice != null ? p.salesPrice : p.listPrice;
-    if (base != null) return { label: 'Projected net', value: base - costBasis, tone: (base - costBasis) >= 0 ? 'sage' : 'brick', sign: true, sub: 'price − basis' };
+    const cp = (p.salesPrice != null && typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+    if (cp != null) return { label: 'Projected net', value: cp, tone: cp >= 0 ? 'sage' : 'brick', sign: true, sub: 'close-out basis' };
+    if (p.listPrice != null) { const v = p.listPrice - costBasis; return { label: 'Projected net', value: v, tone: v >= 0 ? 'sage' : 'brick', sign: true, sub: 'list price − basis' }; }
     return { value: null };
   }
   if (code === 'E' || code === 'F') {
@@ -261,11 +262,12 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
   // inside the purchase price; only its interest is a cost.
   const interestCreditAmt = Math.abs(p.interestCredit || 0);
   const otherFeesAmt = Math.abs(p.otherFees || 0);
-  const costBasis = purchase + fees - credits + rehab + interest - interestCreditAmt + otherFeesAmt + atmoreInterest;
+  const costBasis = (typeof computeCostBasis === 'function') ? computeCostBasis(p) : purchase + fees - credits + rehab + interest - interestCreditAmt + otherFeesAmt + atmoreInterest;
   // Money in. DD fee collected up front is income (it's deducted from line 603
   // precisely because it was already received). EMD nets through closing.
   const netProceeds = salesPrice != null ? salesPrice - closeCosts - concessions + ddCollected + saleCreditsRecd : null;
-  const netProfit = salesPrice != null ? netProceeds - costBasis : null;
+  const closeoutProfit = (typeof computeCloseoutProfit === 'function') ? computeCloseoutProfit(p) : null;
+  const netProfit = salesPrice != null ? (closeoutProfit != null ? closeoutProfit : netProceeds - costBasis) : null;
   const netCashAtClose = salesPrice != null ? (salesPrice - closeCosts - concessions + saleCreditsRecd) - payoff : null;
   const sold = p.statusCode === 'I';
 
@@ -416,7 +418,7 @@ function FinancialsPanel({ p, compact, onEditCloseout }) {
           <>
             <div className="row between items-center" style={{marginTop: 18, padding: '13px 16px', background: 'var(--ink)', borderRadius: 8, gap: 12}}>
               <div className="up" style={{fontSize: 11, letterSpacing: '.1em', color: 'var(--tan-soft)'}}>{sold ? 'Net profit' : 'Projected net'}</div>
-              <div className="mono" style={{fontSize: 12, color: 'var(--ink-4)', flex: 1, textAlign: 'right'}}>{fmtMoney(netProceeds)} − {fmtMoney(costBasis)} =</div>
+              <div className="mono" style={{fontSize: 12, color: 'var(--ink-4)', flex: 1, textAlign: 'right'}}>{closeoutProfit != null ? 'cash basis — see close-out' : fmtMoney(netProceeds) + ' − ' + fmtMoney(costBasis) + ' ='}</div>
               <div className="serif" style={{fontSize: 24, fontWeight: 600, color: netProfit >= 0 ? '#bcd1a6' : '#e7b0a4'}}>{fmtMoney(netProfit, {sign: true})}</div>
             </div>
             {payoff > 0 && (
