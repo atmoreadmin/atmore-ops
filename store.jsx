@@ -1524,7 +1524,7 @@ function nextId(list, prefix, start) {
 // module-scope const below it is initialized.
 function dedupeIds(state, opts) {
   const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
-  const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100]];
+  const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100],['exchanges','ex',100]];
   const specs = (opts && opts.deep) ? leaf.concat(parent) : leaf;
   const changes = [];
   for (const [coll, prefix, start] of specs) {
@@ -1776,7 +1776,7 @@ function getMaintenanceForProperty(propId) {
 function addMaintenance(rec) {
   Store.update(s => {
     s.maintenance = s.maintenance || [];
-    const id = 'mt' + (s.maintenance.reduce((a, m) => Math.max(a, parseInt(m.id.slice(2)) || 0), 100) + 1);
+    const id = nextId(s.maintenance, 'mt', 101);
     s.maintenance.push({ id, status: 'open', ...rec });
   });
 }
@@ -1797,7 +1797,7 @@ function getRemindersForProperty(propId) {
 function addReminder(rec) {
   Store.update(s => {
     s.reminders = s.reminders || [];
-    const id = 'rm' + (s.reminders.reduce((a, r) => Math.max(a, parseInt(r.id.slice(2)) || 0), 100) + 1);
+    const id = nextId(s.reminders, 'rm', 101);
     s.reminders.push({ id, recurrence: 'none', done: false, lastDone: null, priority: 'normal', checklist: [], ...rec });
   });
 }
@@ -2243,7 +2243,7 @@ function activeOfferCount(propId) {
 function addOffer(offer) {
   Store.update(s => {
     s.offers = s.offers || [];
-    const id = 'of' + (s.offers.reduce((a, o) => Math.max(a, parseInt(o.id.slice(2)) || 0), 100) + 1);
+    const id = nextId(s.offers, 'of', 101);
     s.offers.push({ id, concessions: emptyConcessions(), contingencies: [], ...offer });
   });
 }
@@ -2336,7 +2336,7 @@ function goUnderContract(propId, { offerId = null, terms = {}, closing = {}, not
     if (offer) {
       Object.assign(offer, offerFields, { status: 'accepted' });
     } else {
-      const id = 'of' + (s.offers.reduce((a, o) => Math.max(a, parseInt(o.id.slice(2)) || 0), 100) + 1);
+      const id = nextId(s.offers, 'of', 101);
       offer = { id, propertyId: propId, date: s.today, status: 'accepted', closingCosts: null,
         concessions: emptyConcessions(), contingencies: [], ...offerFields };
       s.offers.push(offer);

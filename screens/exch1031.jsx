@@ -621,7 +621,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
               closedPropIds: closed,
             };
             Store.update(s => {
-              if (isNew) s.exchanges.push({ id: 'ex' + (s.exchanges.length+100), ...data });
+              if (isNew) s.exchanges.push({ id: nextId(s.exchanges, 'ex', 100), ...data });
               else Object.assign(s.exchanges.find(x => x.id === exchangeId), data);
             });
             onClose();
