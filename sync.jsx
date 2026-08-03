@@ -250,11 +250,13 @@ function deserializeFromSheet(pulledData) {
     // Close-out HUD money figures are sticky: a stale app build pushes blank
     // cells for columns it doesn't know, and "blank wins" was erasing recorded
     // figures (cashReceivedAtClose etc.) — silently corrupting net profit.
-    // If the Sheet says blank but this device has a value, keep ours. These
-    // are legitimately cleared only via the close-out dialog, which pushes
-    // the full row itself.
+    // So a blank from the server does not overwrite a local value UNLESS the
+    // server row is newer — otherwise clearing one of these on another device
+    // could never reach this one (the same class of bug as the cash-out
+    // auto-fill: a clear that never lands).
+    const serverNewer = out.updatedAt && local.updatedAt && String(out.updatedAt) > String(local.updatedAt);
     for (const k of ['cashReceivedAtClose', 'cashToClose', 'grossProfit', 'saleDDCollected', 'acqDDFee']) {
-      if (out[k] == null && local[k] != null) out[k] = local[k];
+      if (out[k] == null && local[k] != null && !serverNewer) out[k] = local[k];
     }
     // Stage history isn't synced anymore — keep local, or seed one entry for a fresh import.
     // Stage history — synced tab authoritative; else keep local; else seed one entry.

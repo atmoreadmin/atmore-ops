@@ -288,9 +288,12 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
           <div className="grow"></div>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn kind="primary" onClick={() => {
+            // `x || null` would turn a real 0 (0% rate, $0 cash-out) into a blank,
+            // so test for the empty string instead of falsiness.
+            const numOrNull = v => (v === '' || v == null) ? null : Number(v);
             const patch = { propertyId, status, lender, applicationDate, appraisalDate: appraisalDate || null,
-              appraisedValue: appraisedValue || null, newLoanAmount: newLoanAmount || null,
-              interestRate: interestRate || null, cashOut: cashOut || null,
+              appraisedValue: numOrNull(appraisedValue), newLoanAmount: numOrNull(newLoanAmount),
+              interestRate: numOrNull(interestRate), cashOut: numOrNull(cashOut),
               targetClose: targetClose || null, actualClose: actualClose || null, notes };
             if (adding) addRefi(patch);
             else updateRefi(refi.id, patch);

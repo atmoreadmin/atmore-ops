@@ -207,16 +207,21 @@ const SP = {
     }
     return this._types[tabName];
   },
-  _fieldsFor(tabName, row) {
+  // opts.clearEmpty: emit an explicit null for fields the user blanked out. Without
+  // it an empty value is simply absent from the PATCH, SharePoint keeps whatever it
+  // had, and the next pull "auto-fills" the field the user just cleared. Creates
+  // (POST) leave empties out entirely — there is nothing there to clear.
+  _fieldsFor(tabName, row, opts) {
+    const clearEmpty = !!(opts && opts.clearEmpty);
     const fields = { Title: this._titleFor(row) };
     const types = this._typeMap(tabName);
     const skip = (this.config.skipFields || {})[tabName] || [];
     for (const [k, v] of Object.entries(row)) {
-      if (v == null || v === '') continue;
       if (skip.includes(spField(k))) continue;   // column SharePoint keeps rejecting
+      if (v == null || v === '') { if (clearEmpty && types[k] !== undefined) fields[spField(k)] = null; continue; }
       const t = types[k];
       let out;
-      if (Array.isArray(v)) out = v.join(',');
+      if (Array.isArray(v)) { if (!v.length) { if (clearEmpty && types[k] !== undefined) fields[spField(k)] = null; continue; } out = v.join(','); }
       else if (t === 'money' || t === 'number') { out = Number(String(v).replace(/[$,]/g, '')); if (!isFinite(out)) continue; }
       else if (t === 'bool') out = (v === true || v === 'TRUE' || v === 'true' || v === 1);
       else out = String(v);
@@ -547,13 +552,14 @@ const SPSync = {
           live.add(id);
           const sig = JSON.stringify(r);
           if (m.get(id) === sig) continue;
-          let fields = SP._fieldsFor(t, r);
-          if (idx.has(id)) {
+          const isUpdate = idx.has(id);
+          let fields = SP._fieldsFor(t, r, { clearEmpty: isUpdate });
+          if (isUpdate) {
             // PATCH only the fields that actually changed — smaller payloads, cheaper server cost.
             const oldSig = m.get(id);
             if (oldSig) {
               try {
-                const oldFields = SP._fieldsFor(t, JSON.parse(oldSig));
+                const oldFields = SP._fieldsFor(t, JSON.parse(oldSig), { clearEmpty: true });
                 const diff = {};
                 for (const [k, v] of Object.entries(fields)) if (JSON.stringify(v) !== JSON.stringify(oldFields[k])) diff[k] = v;
                 if (Object.keys(diff).length === 0) { m.set(id, sig); continue; }
@@ -1038,15 +1044,18 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b4</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b5</span>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
               await SP.provision(addLog);
               SP.saveConfig({ skipFields: {} });
               // Duplicate ids make two rows fight over one record — re-mint before pushing.
               let dupFixed = 0;
-              Store.update(s => { dupFixed = dedupeIds(s); });
-              if (dupFixed) addLog('Repaired ' + dupFixed + ' duplicate record id(s).');
+              Store.update(s => { dupFixed = dedupeIds(s, { deep: true }); });
+              if (dupFixed) {
+                addLog('Repaired ' + dupFixed + ' duplicate record id(s):');
+                idRepairLog(Store.state).slice(-dupFixed).forEach(c => addLog('  ' + c.coll + ': ' + c.from + ' → ' + c.to + ' (children stayed with the original ' + c.from + ')'));
+              }
               const n = SPSync.backfillFields(drift.findings, addLog);
               addLog(n ? 'Re-push started — watch Recent sync activity, then Re-check.' : 'Nothing queued.');
             })}>{busy === 'backfill' ? 'Backfilling…' : 'Create columns & backfill'}</Btn>}
