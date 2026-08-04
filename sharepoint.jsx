@@ -357,7 +357,12 @@ const SP_DETAIL_MERGE = {
   ContractorTen99:   { key: r => (r.contractorId && r.taxYear != null) ? r.contractorId + '|' + r.taxYear : '', fields: ['status', 'issuedDate', 'amountReported'] },
 };
 
-const SP_COLL = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'tasks', Maintenance: 'maintenance', WebAccounts: 'webAccounts' };
+// Sheet-tab name -> Store collection name (conflict resolution and tombstones
+// write back through this). Overlaid with sync.jsx's MERGED_COLLECTIONS where
+// available so the two maps cannot drift apart — they did: Tasks lives in
+// state.reminders, and a stale 'tasks' here silently disabled both features.
+const SP_COLL = Object.assign({ Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'reminders', Maintenance: 'maintenance', WebAccounts: 'webAccounts' },
+  (typeof MERGED_COLLECTIONS !== 'undefined' ? MERGED_COLLECTIONS : null));
 
 const SPSync = {
   _sigs: null,        // tab -> Map(recId -> row JSON) — change detection between saves
@@ -449,6 +454,9 @@ const SPSync = {
     const newState = deserializeFromSheet({ tabs });
     this._lastPullAt = Date.now();
     this._ready = true;
+    // Rows this device deleted that the server still has. Drop them from the
+    // snapshot (otherwise they reappear) and remember to re-send the delete.
+    const revived = this._dropTombstoned(newState);
     if (SyncEngine.dirty) {
       // Edits landed while we were pulling, or this device has unsaved work.
       // Taking the remote snapshot wholesale would erase our edits; keeping
@@ -465,6 +473,7 @@ const SPSync = {
       Store.notify();
       SyncEngine._applyingRemote = false;
       this._baseline(newState);
+      this._reissueDeletes(revived);
       if (merged.tookTheirs) this.logLine('Merged ' + merged.tookTheirs + ' field(s) changed by someone else');
       if (merged.conflicts) this.logLine('\u26a0 ' + merged.conflicts + ' field(s) changed in two places at once — kept yours, flagged for review (Settings \u2192 Integration)');
       this._set('dirty', 'Saving…');
@@ -478,6 +487,13 @@ const SPSync = {
     SyncEngine._applyingRemote = false;
     this._baseline();
     SyncEngine.dirty = false;
+    if (this._reissueDeletes(revived)) {
+      SyncEngine.dirty = true;
+      this.logLine('Re-sending ' + revived.length + ' deletion' + (revived.length === 1 ? '' : 's') + ' SharePoint still had');
+      this._set('dirty', 'Saving…');
+      this._queueFlush(500);
+      return;
+    }
     // Rows this device had that SharePoint didn't (a push that failed, was
     // throttled, or was interrupted — e.g. a bank import). deserializeFromSheet
     // kept them; drop them from the fresh baseline so the diff sees them as new
@@ -759,6 +775,55 @@ const SPSync = {
     return true;
   },
 
+  // Deletions this device has made. Kept in the app's own state (so they ride
+  // along to other machines) and honoured on every pull.
+  noteTombstone(tab, id) {
+    const coll = SP_COLL[tab]; if (!coll) return;
+    const s = Store.state; if (!s) return;
+    s.tombstones = s.tombstones || [];
+    const key = coll + ':' + String(id);
+    if (s.tombstones.some(t => (t.coll + ':' + t.id) === key)) return;
+    s.tombstones.push({ coll, id: String(id), at: new Date().toISOString() });
+  },
+
+  // Strip rows a tombstone says were deleted here. Returns the removed rows as
+  // {tab, id} so the delete can be re-sent to a server that still has them.
+  _dropTombstoned(state) {
+    const tombs = (Store.state && Store.state.tombstones) || [];
+    if (!tombs.length) return [];
+    const tabFor = {};
+    Object.entries(SP_COLL).forEach(([tab, coll]) => { tabFor[coll] = tab; });
+    const byColl = {};
+    tombs.forEach(t => { (byColl[t.coll] = byColl[t.coll] || new Set()).add(String(t.id)); });
+    const removed = [];
+    for (const [coll, ids] of Object.entries(byColl)) {
+      const arr = state[coll];
+      if (!Array.isArray(arr)) continue;   // resolve against real state, not the tab table
+      const kept = arr.filter(r => {
+        if (r && ids.has(String(r.id))) {
+          // Only rows whose tab we know can have their DELETE re-sent; the row
+          // is dropped either way so it cannot reappear on screen.
+          if (tabFor[coll]) removed.push({ tab: tabFor[coll], id: String(r.id) });
+          return false;
+        }
+        return true;
+      });
+      if (kept.length !== arr.length) state[coll] = kept;
+    }
+    return removed;
+  },
+
+  // Put a deleted row's id back in the baseline so the next flush sees
+  // "baseline has it, live state doesn't" and issues the DELETE.
+  _reissueDeletes(revived) {
+    if (!revived || !revived.length) return 0;
+    revived.forEach(({ tab, id }) => {
+      const m = this._sigs && this._sigs[tab];
+      if (m && !m.has(id)) m.set(id, '\u0000deleted');
+    });
+    return revived.length;
+  },
+
   _baseline(state) {
     const payload = serializeForSheet(state || Store.state).tabs;
     this._sigs = {}; this._childSigs = {}; this._cfgSigs = {};
@@ -837,6 +902,10 @@ const SPSync = {
         }
         for (const id of [...m.keys()]) {
           if (live.has(id)) continue;
+          // Record the deletion locally as well as sending it. The baseline drops
+          // the id once the DELETE succeeds, so without a tombstone a later pull
+          // that still carries the row reads it as "new to us" and re-adopts it.
+          this.noteTombstone(t, id);
           if (idx.has(id)) ops.push({ method: 'DELETE', url: '/sites/' + sid + '/lists/' + lid + '/items/' + idx.get(id), tab: t, recId: id, del: true });
           else m.delete(id);
         }
@@ -1363,7 +1432,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b15</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b17</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');

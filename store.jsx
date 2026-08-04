@@ -1507,16 +1507,33 @@ function tagTransaction(txId, fields) {
 // two rows share one id, and every sync/round-trip collapses them (the later row
 // wins, the earlier row's fields look "lost"). Take max existing suffix + 1 and
 // verify uniqueness before returning.
+// Max-suffix+1 is only unique on ONE machine: two people adding a task at the
+// same time both compute rm151, and the sync then merges two unrelated records
+// into one (each seeing a blend of the other's fields). A short per-device tag
+// makes concurrently-minted ids distinct — rm151k3 vs rm151b7.
+const DEVICE_TAG = (() => {
+  try {
+    let t = localStorage.getItem('device_tag');
+    if (!t || !/^[a-z0-9]{2}$/.test(t)) {
+      t = Math.random().toString(36).slice(2, 4).replace(/[^a-z0-9]/g, 'q');
+      localStorage.setItem('device_tag', t);
+    }
+    return t;
+  } catch (e) { return 'zz'; }
+})();
 function nextId(list, prefix, start) {
   const rows = Array.isArray(list) ? list : [];
   const used = new Set(rows.map(r => String(r && r.id || '')));
+  // No trailing $ — ids now carry a device tag after the number, and the
+  // high-water mark must still see them or numbers would be handed out twice.
+  const rx = new RegExp('^' + prefix + '(\\d+)');
   let n = start;
   for (const r of rows) {
-    const m = String(r && r.id || '').match(new RegExp('^' + prefix + '(\\d+)$'));
+    const m = String(r && r.id || '').match(rx);
     if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
   }
-  while (used.has(prefix + n)) n++;
-  return prefix + n;
+  while (used.has(prefix + n) || used.has(prefix + n + DEVICE_TAG)) n++;
+  return prefix + n + DEVICE_TAG;
 }
 // Repairs rows that already collided. Only the LATER holder of an id is re-minted,
 // so every existing propertyId/tenantId reference keeps pointing at the first row —
