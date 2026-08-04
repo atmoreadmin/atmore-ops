@@ -55,6 +55,20 @@ function SettingsScreen() {
 
       {active !== 'integration' && (
       <Card className="mt-24">
+        <CardHead title="Reconcile with SharePoint"/>
+        <div className="card__body col gap-12">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6}}>
+            Compare this computer against SharePoint record by record and field by field. Use it when a number
+            looks different here than it does on another machine. Nothing changes until you choose a winner.
+          </div>
+          <div className="row gap-8">
+            <Btn onClick={() => nav('/reconcile')}>Compare with SharePoint</Btn>
+          </div>
+        </div>
+      </Card>
+      )}
+      {active !== 'integration' && (
+      <Card className="mt-24">
         <CardHead title="Backup & restore"/>
         <div className="card__body col gap-12">
           <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6}}>

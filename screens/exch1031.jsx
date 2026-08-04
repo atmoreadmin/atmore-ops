@@ -324,6 +324,9 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
   const [closed, setClosed] = useState(e?.closedPropIds || []);
   const [notes, setNotes] = useState(e?.notes || '');
   const [status, setStatus] = useState(e?.status || 'active');
+  // A pull can land while this modal is open; the fields above were seeded once at
+  // open, so a blind save would overwrite newer values from another computer.
+  const openedStamp = React.useRef(e ? (e.updatedAt || '') : '');
 
   // Computed reconciliation
   const sp = parseFloat(salePrice) || 0;
@@ -599,6 +602,11 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn kind="primary" onClick={() => {
+            if (!isNew) {
+              const live = (Store.state.exchanges || []).find(x => x.id === exchangeId);
+              if (live && (live.updatedAt || '') !== openedStamp.current &&
+                  !confirm('This exchange was updated on another computer while you had it open.\n\nSaving now overwrites those changes with what is on this screen. Cancel instead to close and reopen with the latest.')) return;
+            }
             const cleanDraws = draws
               .map(d => ({ propId: d.propId || '', amount: parseFloat(d.amount) || 0, date: d.date || '', note: d.note || '' }))
               .filter(d => d.amount);

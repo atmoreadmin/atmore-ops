@@ -412,6 +412,27 @@ const SPSync = {
     SyncEngine._applyingRemote = false;
     this._baseline();
     SyncEngine.dirty = false;
+    // Rows this device had that SharePoint didn't (a push that failed, was
+    // throttled, or was interrupted — e.g. a bank import). deserializeFromSheet
+    // kept them; drop them from the fresh baseline so the diff sees them as new
+    // records to create, then flush. Without this they'd look already-saved and
+    // silently disappear on the next pull.
+    const resc = newState._rescued;
+    if (resc) {
+      delete Store.state._rescued;
+      let n = 0;
+      for (const [tab, ids] of Object.entries(resc)) {
+        const m = this._sigs && this._sigs[tab];
+        if (m) ids.forEach(id => { m.delete(String(id)); n++; });
+      }
+      if (n) {
+        SyncEngine.dirty = true;
+        this.logLine('Kept ' + n + ' record' + (n === 1 ? '' : 's') + ' SharePoint did not have yet — saving them now');
+        this._set('dirty', 'Saving…');
+        this._queueFlush(500);
+        return;
+      }
+    }
     SyncEngine.lastSyncedAt = new Date().toISOString();
     if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
     else this._set('synced', doneMsg);
@@ -523,6 +544,7 @@ const SPSync = {
     this._set('syncing', 'Saving…');
     try {
       const sid = await SP.siteId();
+      await this._retrySkipped();
       const listIds = SP.config.listIds || {};
       const payload = serializeForSheet(Store.state).tabs;
       // Collect every parent-tab operation, then send in $batch chunks — bank
@@ -732,6 +754,30 @@ const SPSync = {
     return n;
   },
 
+  // Skipped columns must never be permanent. A rejection is usually a column that is
+  // missing or was provisioned with the wrong type — both fixed by re-provisioning.
+  // Left alone, the field keeps saving locally and silently stops leaving this device,
+  // which reads to the user as "my 1031/refi data erases itself on the other computer".
+  async _retrySkipped() {
+    const cfg = SP.config || {};
+    const skip = cfg.skipFields || {};
+    const tabs = Object.keys(skip).filter(t => (skip[t] || []).length);
+    if (!tabs.length) return;
+    const last = this._skipRetryAt || Date.parse(cfg.skipFieldsAt || '') || 0;
+    if (Date.now() - last < 20 * 60000) return;
+    this._skipRetryAt = Date.now();
+    this.logLine('Re-creating ' + tabs.length + ' skipped column set(s) in SharePoint…');
+    try { await SP.provision(() => {}); } catch (e) { return; }
+    SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
+    // Force a full re-push of those tabs: keep the keys so pending deletions still
+    // fire, but invalidate every signature so each row rewrites all of its fields.
+    for (const t of tabs) {
+      const m = this._sigs && this._sigs[t];
+      if (m) for (const k of [...m.keys()]) m.set(k, '\u0000retry');
+    }
+    this.logLine('Skipped columns cleared — re-sending those records ✓');
+  },
+
   _queueFlush(ms) { clearTimeout(this._pushTimer); this._pushTimer = setTimeout(() => this.flush(), ms); },
   _set(status, message) { SyncEngine._set(status, message); },
 
@@ -794,7 +840,7 @@ const SPSync = {
       }
       out.push({ ...op, body: op.method === 'POST' ? { fields: clean() } : clean() });
     }
-    SP.saveConfig({ skipFields: skipCfg });
+    SP.saveConfig({ skipFields: skipCfg, skipFieldsAt: Object.keys(skipCfg).length ? new Date().toISOString() : null });
     return out;
   },
 
@@ -1044,7 +1090,8 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b5</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b8</span>
+            <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
               await SP.provision(addLog);
@@ -1067,7 +1114,9 @@ function SharePointView() {
               {drift.findings.map(f => f.fields.map(x => (
                 <div key={f.tab + x.field}>{x.dup
                   ? f.tab + ' · duplicate record id — ' + x.count + ' id(s) used twice (' + x.sample + '); rows overwrite each other on sync'
-                  : f.tab + ' · ' + x.field + ' — lost on ' + x.count + ' of ' + f.records + ' record(s)' + (x.inSchema ? ' (column exists — pull is dropping it)' : ' (no SharePoint column)')}</div>
+                  : f.tab + ' · ' + x.field + ' — ' + (x.serverMissing
+                    ? 'SharePoint returned no column on the last pull for ' + x.count + ' record(s); kept from this device only — other computers show it blank'
+                    : 'lost on ' + x.count + ' of ' + f.records + ' record(s)' + (x.inSchema ? ' (column exists — pull is dropping it)' : ' (no SharePoint column)'))}</div>
               )))}
             </div>
           )}
@@ -1078,7 +1127,7 @@ function SharePointView() {
       <Card>
         <CardHead title="Columns not syncing" right={<Tag tone="ochre">needs attention</Tag>}/>
         <div className="card__body col gap-8">
-          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>SharePoint refused these columns, so the app skips them to keep everything else saving. The data is safe in the app — it just isn’t mirrored to SharePoint for these fields.</div>
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>SharePoint refused these columns, so the app skips them to keep everything else saving. The data is safe in this browser but is <b>not</b> reaching SharePoint — another computer will show these fields blank. The app now re-creates them and retries automatically every 20 minutes; use the button to retry immediately.</div>
           <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.8}}>
             {Object.entries(cfg.skipFields || {}).map(([t, names]) => <div key={t}>{t} — {names.join(', ')}</div>)}
           </div>
@@ -1086,8 +1135,14 @@ function SharePointView() {
             <Btn kind="ghost" disabled={!!busy} onClick={() => run('fixcols', async () => {
               addLog('Re-checking skipped columns…');
               await SP.provision(addLog);
-              SP.saveConfig({ skipFields: {} });
-              addLog('Cleared — the next save will try those columns again ✓');
+              SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
+              SPSync._skipRetryAt = 0;
+              for (const t of Object.keys(cfg.skipFields || {})) {
+                const m = SPSync._sigs && SPSync._sigs[t];
+                if (m) for (const k of [...m.keys()]) m.set(k, '\u0000retry');
+              }
+              SPSync._queueFlush(400);
+              addLog('Cleared — re-sending every record in those lists ✓');
             })}>{busy === 'fixcols' ? 'Re-checking…' : 'Repair columns & try again'}</Btn>
           </div>
         </div>

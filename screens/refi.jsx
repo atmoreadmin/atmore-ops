@@ -189,6 +189,9 @@ function RefiCard({ refi, onClick, today }) {
 }
 
 function RefiEditor({ refi, adding, kProps, onClose }) {
+  // A pull can land while this modal is open. The fields below were seeded once at
+  // open, so saving would write pre-pull values back over the newer record.
+  const openedStamp = React.useRef(refi ? (refi.updatedAt || '') : '');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [propertyId, setPropertyId] = useState(refi?.propertyId || (kProps && kProps[0]?.id) || Store.state.properties[0]?.id || '');
   const [status, setStatus] = useState(refi?.status || 'applied');
@@ -296,7 +299,12 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
               interestRate: numOrNull(interestRate), cashOut: numOrNull(cashOut),
               targetClose: targetClose || null, actualClose: actualClose || null, notes };
             if (adding) addRefi(patch);
-            else updateRefi(refi.id, patch);
+            else {
+              const live = (Store.state.refis || []).find(r => r.id === refi.id);
+              if (live && (live.updatedAt || '') !== openedStamp.current &&
+                  !confirm('This refi was updated on another computer while you had it open.\n\nSaving now overwrites those changes with what is on this screen. Cancel instead to close and reopen with the latest.')) return;
+              updateRefi(refi.id, patch);
+            }
             onClose();
           }}>{adding ? 'Start refi' : 'Save'}</Btn>
         </div>

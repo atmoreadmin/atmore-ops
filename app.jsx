@@ -225,6 +225,8 @@ function App() {
     screen = <ReportsScreen />;
   } else if (top === 'tax-binder') {
     screen = <TaxBinderScreen />;
+  } else if (top === 'reconcile') {
+    screen = <ReconcileScreen />;
   } else if (top === 'settings') {
     screen = <SettingsScreen />;
   } else if (top === 'integration') {

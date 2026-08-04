@@ -117,7 +117,7 @@ const DRIFT_IGNORE = new Set([
 function auditSyncFields() {
   const src = Store.state;
   let round;
-  try { round = deserializeFromSheet(serializeForSheet(src)); }
+  try { round = deserializeFromSheet(serializeForSheet(src), { audit: true }); }
   catch (e) { return { error: e.message || String(e), findings: [] }; }
   const findings = [];
   const filled = v => v != null && v !== '' && !(Array.isArray(v) && v.length === 0);
@@ -160,13 +160,100 @@ function auditSyncFields() {
     if (dupIds.size) lost.set('id', { field: 'id', count: dupIds.size, inSchema: true, dup: true, sample: [...dupIds].join(', ') });
     if (lost.size) findings.push({ tab: tabName, collection: coll, records: before.length, fields: [...lost.values()].sort((a, b) => b.count - a.count) });
   }
+  // Direction 3 — the server itself never returned the column. Not visible to the
+  // round-trip above (which serializes through the local schema, so every column is
+  // always present); only a real pull can see it. Recorded by preserveMissingKeys.
+  for (const [tabName, fields] of Object.entries(RestoreLog.all())) {
+    const coll = MERGED_COLLECTIONS[tabName]; if (!coll) continue;
+    const rows = Object.entries(fields).map(([field, count]) => ({ field, count, inSchema: true, serverMissing: true, sample: '' }));
+    if (!rows.length) continue;
+    const hit = findings.find(f => f.tab === tabName);
+    if (hit) hit.fields = [...hit.fields.filter(f => !fields[f.field]), ...rows];
+    else findings.push({ tab: tabName, collection: coll, records: (src[coll] || []).length, fields: rows });
+  }
   return { error: null, findings, checkedAt: new Date().toISOString() };
 }
 
+// ─── Server-acknowledged row ids ───
+// "Has the server ever confirmed this row exists?" — deliberately NOT the same
+// question as SyncEngine._rowSigs, which is a local-edit signature map: it gains
+// a row the moment it is saved locally, long before any push succeeds. Only two
+// things add to this set: a row that came back in a pull, and a row a push
+// confirmed. That makes "absent here" a reliable proof of never-pushed, which is
+// what the pull's rescue pass needs to tell a failed import from a remote delete.
+const ServerAck = {
+  _m: null,
+  _load() {
+    if (this._m) return this._m;
+    this._m = {};
+    try {
+      const raw = JSON.parse(localStorage.getItem('sync_acked_v1') || '{}');
+      for (const [t, ids] of Object.entries(raw)) this._m[t] = new Set(ids.map(String));
+    } catch (e) {}
+    return this._m;
+  },
+  _persist() {
+    try {
+      const out = {};
+      for (const [t, s] of Object.entries(this._m || {})) out[t] = [...s];
+      localStorage.setItem('sync_acked_v1', JSON.stringify(out));
+    } catch (e) {}
+  },
+  known(tab) { const m = this._load(); return m[tab] || null; },
+  add(tab, ids) {
+    const m = this._load();
+    const s = m[tab] || (m[tab] = new Set());
+    (ids || []).forEach(id => { if (id != null) s.add(String(id)); });
+    this._persist();
+  },
+  // A pull is the authoritative picture of what the server holds for that tab.
+  syncTab(tab, ids) {
+    const m = this._load();
+    m[tab] = new Set((ids || []).filter(id => id != null).map(String));
+    this._persist();
+  },
+  reset() { this._m = {}; this._persist(); },
+};
+
+// ─── Restored-from-local log ───
+// When a pulled row is MISSING a key the local copy has, the deserializer keeps the
+// local value so a stale bridge can't wipe it. That rescue is also a trap: this
+// device looks fine forever while a second device — with nothing local to restore
+// from — shows the field blank. Every restore is recorded here so the field check
+// can report it instead of it staying invisible.
+const RestoreLog = {
+  m: {},
+  note(tab, field) {
+    const t = this.m[tab] || (this.m[tab] = {});
+    t[field] = (t[field] || 0) + 1;
+  },
+  reset() { this.m = {}; },
+  all() { return this.m; },
+};
+window.__pullRestores = RestoreLog;
+
+// Keep a pulled row's fields, but restore any key the server did not return at all
+// from this device's copy. Blank cells come back as null (key present), so a missing
+// key means the column does not exist server-side or is being skipped on push.
+function preserveMissingKeys(serverRow, localRow, tabName, audit, skip) {
+  const out = { ...serverRow };
+  for (const k of Object.keys(localRow || {})) {
+    if (skip && skip.includes(k)) continue;
+    if (k in serverRow) continue;
+    const v = localRow[k];
+    if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
+    out[k] = v;
+    if (!audit) RestoreLog.note(tabName, k);
+  }
+  return out;
+}
+
 // Convert pulled { tabs: {...} } → app state shape
-function deserializeFromSheet(pulledData) {
+function deserializeFromSheet(pulledData, opts) {
+  const audit = !!(opts && opts.audit);
   if (!pulledData || !pulledData.tabs) throw new Error('Empty or malformed response');
   const tabs = pulledData.tabs;
+  if (!audit) RestoreLog.reset();
   const state = JSON.parse(JSON.stringify(window.SEED));  // start from seed shape
   state.uiState = Store.state.uiState || { selectedPropertyId: null, propertyTab: 'summary' };
   // Deletion records ride along so this device honors deletes made elsewhere.
@@ -390,7 +477,14 @@ function deserializeFromSheet(pulledData) {
     return out;
   });
 
-  state.refis = tabPresent('Refis') ? tabs.Refis : (Store.state.refis || []);
+  // Refis: same absent-column fail-safe as Exchanges below. Without it, a column the
+  // server never returns (never provisioned, or dropped into skipFields after a
+  // rejection) blanks the field on EVERY device on the next pull.
+  const localRefi = {};
+  (Store.state.refis || []).forEach(r => { localRefi[r.id] = r; });
+  state.refis = tabPresent('Refis')
+    ? tabs.Refis.map(r => preserveMissingKeys(r, localRefi[r.id] || {}, 'Refis', audit))
+    : (Store.state.refis || []);
   // Exchanges: a stale/un-migrated bridge must never wipe newer fields. Preserve any
   // local field the Sheet didn't return a column for, and keep local draws if the
   // ExchangeDraws tab is absent — mirrors the Insurance/Loan/Tax fail-safe above.
@@ -399,12 +493,7 @@ function deserializeFromSheet(pulledData) {
   const hasDrawsTab = Array.isArray(tabs.ExchangeDraws);
   state.exchanges = !tabPresent('Exchanges') ? (Store.state.exchanges || []) : (tabs.Exchanges).map(e => {
     const local = localExch[e.id] || {};
-    const out = { ...e };
-    // Flat fields: if the Sheet has no column for it, the pulled row won't have the key
-    // at all (blank cells come back as null). In that case keep the local value.
-    for (const k of Object.keys(local)) {
-      if (k !== 'draws' && !(k in e)) out[k] = local[k];
-    }
+    const out = preserveMissingKeys(e, local, 'Exchanges', audit, ['draws']);
     // Draws live in their own tab. Tab PRESENT → authoritative (even if empty for this
     // exchange). Tab ABSENT (old bridge) → preserve whatever is on this device.
     if (hasDrawsTab) {
@@ -513,6 +602,51 @@ function deserializeFromSheet(pulledData) {
     }));
   } else if (Array.isArray(Store.state && Store.state.autoTagRules)) {
     state.autoTagRules = Store.state.autoTagRules;
+  }
+
+  // ─── Never-synced local rows survive a pull ───
+  // Every collection above rebuilds itself from the pulled rows, so a row that
+  // exists ONLY on this device — an import whose push failed, was throttled, or
+  // was interrupted — vanished on the next pull even though it was never on the
+  // server to delete. (The earlier guards covered a MISSING or EMPTY tab, not
+  // individual local-only rows.)
+  //
+  // A local row missing from the pull is one of two things:
+  //   deleted elsewhere → the server has acknowledged it before (it's in ServerAck)
+  //   never pushed      → the server has never confirmed it
+  // Keep only the second kind, skipping anything tombstoned. The rescued ids are
+  // recorded on the state so the caller can drop them from its post-pull baseline
+  // (otherwise they'd look already-saved and never get written) and flush.
+  //
+  // In SharePoint mode SPSync._items[tab] is an even stronger signal: it maps
+  // RecID → SharePoint item id only for rows that genuinely exist server-side.
+  const spItems = (window.SPSync && SPSync.liveOn && SPSync.liveOn() && SPSync._items) || null;
+  {
+    const tombed = new Set((Store.state.tombstones || []).map(t => t.coll + ':' + t.id));
+    const rescued = {};
+    for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
+      if (!Array.isArray(tabs[tab]) || !Array.isArray(state[coll])) continue;
+      const pulled = new Set(state[coll].map(r => String(r && r.id)));
+      // Every row the server just handed us is confirmed; anything it no longer
+      // lists is no longer confirmed. Do this BEFORE the test below so the very
+      // first pull bootstraps an accurate picture.
+      const ackedBefore = ServerAck.known(tab);
+      const spIdx = spItems && spItems[tab];
+      ServerAck.syncTab(tab, [...pulled]);
+      // No prior knowledge and no SharePoint index: can't distinguish a remote
+      // delete from a failed push, so keep the old conservative behaviour.
+      if (!ackedBefore && !spIdx) continue;
+      for (const r of (Store.state[coll] || [])) {
+        if (!r || r.id == null) continue;
+        const id = String(r.id);
+        if (pulled.has(id) || tombed.has(tab + ':' + id)) continue;
+        const serverHadIt = spIdx ? spIdx.has(id) : ackedBefore.has(id);
+        if (serverHadIt) continue;          // genuinely deleted elsewhere
+        state[coll].push(r);
+        (rescued[tab] = rescued[tab] || []).push(id);
+      }
+    }
+    if (Object.keys(rescued).length) state._rescued = rescued;
   }
 
   return state;
@@ -695,6 +829,11 @@ const SyncEngine = {
         return;
       }
       this.dirty = false;
+      // The Sheet now holds these rows — record the acknowledgement so a later
+      // pull can tell a remote delete from a push that never landed.
+      for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
+        ServerAck.add(tab, (Store.state[coll] || []).map(r => r && r.id).filter(id => id != null));
+      }
       this.lastSyncedAt = new Date().toISOString();
       this.lastSheetPropCount = (Store.state.properties || []).length;  // Sheet now matches local
       // Record the sheet's new timestamp so our own write isn't later mistaken for
@@ -732,6 +871,24 @@ const SyncEngine = {
       this._applyingRemote = false;
       this._initSigs();   // pulled rows are the new baseline — must not restamp as local edits
       this.dirty = false;
+      // Rows this device had that the Sheet didn't (a push that failed or was
+      // interrupted — e.g. a bank import). deserializeFromSheet kept them; open a
+      // baseline gap so they're stamped and pushed instead of adopted as synced.
+      const resc = newState._rescued;
+      if (resc) {
+        delete Store.state._rescued;
+        let n = 0;
+        for (const [tab, ids] of Object.entries(resc)) {
+          const m = this._rowSigs && this._rowSigs[tab];
+          if (m) ids.forEach(id => { m.delete(String(id)); n++; });
+        }
+        if (n) {
+          this.dirty = true;
+          this._set('dirty', 'Saving ' + n + ' unsaved record' + (n === 1 ? '' : 's') + '…');
+          clearTimeout(this._pushTimer);
+          this._pushTimer = setTimeout(() => this.pushNow(), 600);
+        }
+      }
       this.lastSyncedAt = new Date().toISOString();
       try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties; } catch (e) {}
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
@@ -820,6 +977,7 @@ Sync.loadConfig();
 window.Sync = Sync;
 window.SyncEngine = SyncEngine;
 window.deserializeFromSheet = deserializeFromSheet;
+window.ServerAck = ServerAck;
 window.serializeForSheet = serializeForSheet;
 window.auditSyncFields = auditSyncFields;
 window.downloadBackup = downloadBackup;
