@@ -226,9 +226,11 @@ const SP = {
         out = Number(String(v).replace(/[$,]/g, ''));
         // Not a number — the value cannot go into a SharePoint number column. It
         // used to be dropped in silence, which is how date-shaped junk in a money
-        // field stayed local-only forever. Say so once per field per session.
+        // field stayed local-only forever. Record it so Integration can show it,
+        // and say so once per field per session.
         if (!isFinite(out)) {
           const key = tabName + '.' + k;
+          this.noteUnsaved(tabName, row.id, k, v);
           this._badNumLogged = this._badNumLogged || new Set();
           if (!this._badNumLogged.has(key) && window.SPSync) {
             this._badNumLogged.add(key);
@@ -236,6 +238,7 @@ const SP = {
           }
           continue;
         }
+        this.clearUnsaved(tabName, row.id, k);
       }
       else if (t === 'bool') out = (v === true || v === 'TRUE' || v === 'true' || v === 1);
       else out = String(v);
@@ -245,6 +248,25 @@ const SP = {
     if (yk && row[yk]) { const y = parseInt(String(row[yk]).slice(0, 4), 10); if (y) fields.Yr = y; }
     return fields;
   },
+
+  // Values that silently could not be written. Persisted so the warning survives
+  // a reload — a field that never reaches SharePoint is invisible otherwise.
+  _unsaved: (() => { try { return JSON.parse(localStorage.getItem('sp_unsaved') || '{}'); } catch (e) { return {}; } })(),
+  _saveUnsaved() { try { localStorage.setItem('sp_unsaved', JSON.stringify(this._unsaved)); } catch (e) {} },
+  noteUnsaved(tab, id, field, value) {
+    const k = tab + '|' + id + '|' + field;
+    const prev = this._unsaved[k];
+    if (prev && prev.value === String(value)) return;
+    this._unsaved[k] = { tab, id: String(id), field, value: String(value), at: Date.now() };
+    this._saveUnsaved();
+  },
+  clearUnsaved(tab, id, field) {
+    const k = tab + '|' + id + '|' + field;
+    if (!this._unsaved[k]) return;
+    delete this._unsaved[k];
+    this._saveUnsaved();
+  },
+  unsavedList() { return Object.values(this._unsaved); },
 
   async listItemCount(tabName) {
     const sid = await this.siteId();
@@ -1104,7 +1126,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b8</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b9</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
@@ -1134,6 +1156,21 @@ function SharePointView() {
               )))}
             </div>
           )}
+        </div>
+      </Card>
+      )}
+      {!!SP.unsavedList().length && (
+      <Card>
+        <CardHead title="Values that cannot save" right={<Tag tone="brick">{SP.unsavedList().length} field{SP.unsavedList().length === 1 ? '' : 's'}</Tag>}/>
+        <div className="card__body col gap-8">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>These fields hold something that is not a number, so SharePoint rejects them and the app skips them. They stay on this computer only. Fix the value — Reconcile can recover date-shaped amounts automatically — and it saves on the next change.</div>
+          <div className="mono tiny" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', maxHeight: 220, overflowY: 'auto', lineHeight: 1.8}}>
+            {SP.unsavedList().map(u => <div key={u.tab + u.id + u.field}>{u.tab} · {u.id} · {u.field} = "{u.value.slice(0, 24)}"</div>)}
+          </div>
+          <div className="row gap-8">
+            <Btn kind="primary" onClick={() => nav('/reconcile')}>Open Reconcile…</Btn>
+            <Btn kind="ghost" onClick={() => { SP._unsaved = {}; SP._saveUnsaved(); addLog('Cleared the cannot-save list — it repopulates on the next save if the values are still bad.'); }}>Clear list</Btn>
+          </div>
         </div>
       </Card>
       )}
