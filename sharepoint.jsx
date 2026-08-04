@@ -343,6 +343,8 @@ SP.loadConfig();
 const SP_CONFIG_TABS = ['Lists', 'Statuses', 'AutoTagRules', 'CompletedEvents'];
 const SP_CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
 const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts'];
+// Sheet-tab name -> Store collection name (conflict resolution writes back through this).
+const SP_COLL = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'tasks', Maintenance: 'maintenance', WebAccounts: 'webAccounts' };
 
 const SPSync = {
   _sigs: null,        // tab -> Map(recId -> row JSON) — change detection between saves
@@ -432,11 +434,23 @@ const SPSync = {
     const newState = deserializeFromSheet({ tabs });
     this._lastPullAt = Date.now();
     if (SyncEngine.dirty) {
-      // Edits landed while we were pulling (typically during the slow initial
-      // load). Applying the remote snapshot would erase them — instead keep
-      // local state, baseline against the REMOTE rows, and flush: the diff
-      // then writes exactly the local edits to SharePoint.
+      // Edits landed while we were pulling, or this device has unsaved work.
+      // Taking the remote snapshot wholesale would erase our edits; keeping
+      // local wholesale would revert everyone else's (the old behaviour — the
+      // next flush pushed every field where we merely DIFFERED from the server,
+      // not the fields we actually changed). Three-way merge instead: the
+      // baseline is what the server last told us, so per field we can tell
+      // "I changed it" from "they changed it" and only genuine both-changed
+      // collisions need a human.
+      const merged = this._merge3(newState);
+      SyncEngine._applyingRemote = true;
+      Store.state = merged.state;
+      Store.save();
+      Store.notify();
+      SyncEngine._applyingRemote = false;
       this._baseline(newState);
+      if (merged.tookTheirs) this.logLine('Merged ' + merged.tookTheirs + ' field(s) changed by someone else');
+      if (merged.conflicts) this.logLine('\u26a0 ' + merged.conflicts + ' field(s) changed in two places at once — kept yours, flagged for review (Settings \u2192 Integration)');
       this._set('dirty', 'Saving…');
       this._queueFlush(500);
       return;
@@ -554,6 +568,88 @@ const SPSync = {
     }
     this.logLine('Picked up ' + changed + ' change' + (changed === 1 ? '' : 's') + ' from SharePoint');
     this._finishPull(tabs, [], 'Updated from SharePoint');
+  },
+
+  // Field-level three-way merge of local edits against a freshly pulled remote
+  // snapshot. base = the rows the server last handed us (this._sigs), so for
+  // every field we can distinguish "I changed it" from "they changed it".
+  //   mine === base  -> I didn't touch it, take theirs
+  //   theirs === base -> they didn't touch it, keep mine
+  //   both moved     -> real collision: keep mine, flag it for review
+  _merge3(remoteState) {
+    const eq = (a, b) => {
+      const n = v => (v == null || v === '') ? '' : (Array.isArray(v) ? v.join(',') : String(v));
+      return n(a) === n(b);
+    };
+    const localTabs = serializeForSheet(Store.state).tabs;
+    const remoteTabs = serializeForSheet(remoteState).tabs;
+    const outTabs = {};
+    let conflicts = 0, tookTheirs = 0;
+    for (const t of Object.keys(remoteTabs)) {
+      if (!SP_PARENT_TABS.includes(t)) { outTabs[t] = localTabs[t] || remoteTabs[t]; continue; }
+      const base = (this._sigs && this._sigs[t]) || new Map();
+      const loc = new Map((localTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
+      const rem = new Map((remoteTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
+      const rows = [];
+      for (const [id, r] of rem) {
+        const mineRow = loc.get(id);
+        if (!mineRow) {
+          // Gone locally. If the baseline had it we deleted it on purpose —
+          // let the delete stand. If not, it is new to us: take it.
+          if (!base.has(id)) rows.push(r);
+          continue;
+        }
+        let baseRow = null;
+        try { const s = base.get(id); if (s && s[0] !== '\u0000') baseRow = JSON.parse(s); } catch (e) {}
+        const out = { ...r };
+        const keys = new Set([...Object.keys(mineRow), ...Object.keys(r)]);
+        for (const k of keys) {
+          const mine = mineRow[k], theirs = r[k];
+          if (eq(mine, theirs)) { out[k] = mine; continue; }
+          if (!baseRow) { out[k] = mine; continue; }   // no baseline to reason from — don't discard local
+          const was = baseRow[k];
+          if (eq(mine, was)) { out[k] = theirs; tookTheirs++; continue; }
+          if (eq(theirs, was)) { out[k] = mine; continue; }
+          out[k] = mine;
+          this.noteConflict(t, id, k, mine, theirs, was);
+          conflicts++;
+        }
+        rows.push(out);
+      }
+      for (const [id, r] of loc) if (!rem.has(id)) rows.push(r);   // created here, not pushed yet
+      outTabs[t] = rows;
+    }
+    for (const t of Object.keys(localTabs)) if (!(t in outTabs)) outTabs[t] = localTabs[t];
+    if (conflicts) this._saveConflicts();
+    return { state: deserializeFromSheet({ tabs: outTabs }), conflicts, tookTheirs };
+  },
+
+  // Both-sides-changed collisions, kept until a human resolves them.
+  _conflicts: (() => { try { return JSON.parse(localStorage.getItem('sp_conflicts') || '{}'); } catch (e) { return {}; } })(),
+  _saveConflicts() { try { localStorage.setItem('sp_conflicts', JSON.stringify(this._conflicts)); } catch (e) {} },
+  noteConflict(tab, id, field, mine, theirs, was) {
+    this._conflicts[tab + '|' + id + '|' + field] = {
+      tab, id: String(id), field,
+      mine: mine == null ? '' : String(mine),
+      theirs: theirs == null ? '' : String(theirs),
+      was: was == null ? '' : String(was),
+      at: Date.now(),
+    };
+  },
+  conflictList() { return Object.values(this._conflicts).sort((a, b) => b.at - a.at); },
+  resolveConflict(key, take) {
+    const c = this._conflicts[key]; if (!c) return;
+    if (take === 'theirs') {
+      const coll = SP_COLL[c.tab];
+      const col = ((window.SHEET_SCHEMA[c.tab] || {}).columns || []).find(x => x.key === c.field);
+      let v = c.theirs;
+      if (col && (col.type === 'money' || col.type === 'number')) v = v === '' ? null : Number(v);
+      else if (col && col.type === 'bool') v = (v === 'true' || v === 'TRUE' || v === '1');
+      else if (col && col.type === 'array') v = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (coll) Store.update(s => { const rec = (s[coll] || []).find(x => String(x.id) === c.id); if (rec) rec[c.field] = v; });
+    }
+    delete this._conflicts[key];
+    this._saveConflicts();
   },
 
   _baseline(state) {
@@ -1126,7 +1222,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b9</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b10</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
@@ -1156,6 +1252,26 @@ function SharePointView() {
               )))}
             </div>
           )}
+        </div>
+      </Card>
+      )}
+      {!!SPSync.conflictList().length && (
+      <Card>
+        <CardHead title="Changed in two places" right={<Tag tone="brick">{SPSync.conflictList().length} to review</Tag>}/>
+        <div className="card__body col gap-8">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>Someone else changed these fields while you were changing them too. <b>Your value was kept</b> and theirs is shown alongside — nothing was lost, but one of the two is wrong. Pick the right one.</div>
+          <div className="col gap-8" style={{maxHeight: 320, overflowY: 'auto'}}>
+            {SPSync.conflictList().map(c => (
+              <div key={c.tab + c.id + c.field} className="row gap-8 items-center" style={{background: 'var(--paper-2)', border: '1px solid var(--rule)', borderRadius: 6, padding: '8px 10px', flexWrap: 'wrap'}}>
+                <div className="mono tiny" style={{minWidth: 210}}>{c.tab} · {c.id} · <b>{c.field}</b></div>
+                <div className="tiny" style={{color: 'var(--ink-2)'}}>yours <b>{c.mine || '(blank)'}</b> · theirs <b>{c.theirs || '(blank)'}</b> · was {c.was || '(blank)'}</div>
+                <div className="row gap-8" style={{marginLeft: 'auto'}}>
+                  <Btn sz="sm" kind="ghost" onClick={() => { SPSync.resolveConflict(c.tab + '|' + c.id + '|' + c.field, 'mine'); addLog('Kept your value for ' + c.field + ' on ' + c.id); }}>Keep mine</Btn>
+                  <Btn sz="sm" kind="ghost" onClick={() => { SPSync.resolveConflict(c.tab + '|' + c.id + '|' + c.field, 'theirs'); addLog('Took their value for ' + c.field + ' on ' + c.id); }}>Take theirs</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </Card>
       )}
