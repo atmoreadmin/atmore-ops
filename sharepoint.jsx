@@ -358,6 +358,8 @@ const SPSync = {
   _pushTimer: null,
   _flushing: false,
   _lastPullAt: 0,
+  _ready: false,       // first pull of the session has landed — edits are safe to merge
+  _offlineAck: false,  // user chose to work without reaching SharePoint
   _started: false,
 
   liveOn() { return !!(SP.config || SP.loadConfig()).liveSync && !!SP.config.migratedAt; },
@@ -433,6 +435,7 @@ const SPSync = {
   _finishPull(tabs, bigLists, doneMsg) {
     const newState = deserializeFromSheet({ tabs });
     this._lastPullAt = Date.now();
+    this._ready = true;
     if (SyncEngine.dirty) {
       // Edits landed while we were pulling, or this device has unsaved work.
       // Taking the remote snapshot wholesale would erase our edits; keeping
@@ -976,10 +979,24 @@ const SPSync = {
     return out;
   },
 
+  // True while this device must not be edited: live sync is on but we have not
+  // yet heard from SharePoint this session, so there is no merge baseline.
+  blocking() { return this.liveOn() && !this._ready && !this._offlineAck; },
+  workOffline() {
+    this._offlineAck = true;
+    this.logLine('\u26a0 Working without SharePoint \u2014 edits stay on this computer until it reconnects');
+    this._set('offline', 'Offline — changes held on this computer');
+  },
+
   _onLocalChange() {
     if (SyncEngine._applyingRemote) return;
     SyncEngine.dirty = true;
     this._set('dirty', 'Saving…');
+    // No baseline yet this session (first pull still in flight, or it failed).
+    // Without one the merge cannot tell "I changed it" from "it was always
+    // different", so a stale copy would push its whole worldview. Hold the
+    // write until the pull lands; the UI blocks editing during this window.
+    if (!this._ready) { this._queueFlush(4000); return; }
     // Stale-tab guard: this tab hasn't seen SharePoint in a while — re-baseline
     // against the server first so an old session can't save stale data. The
     // pull keeps the local edits and flushes them right after (dirty path).
@@ -1222,7 +1239,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b10</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b11</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');

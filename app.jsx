@@ -155,6 +155,35 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showSeedNote": true
 }/*EDITMODE-END*/;
 
+function SyncGate() {
+  const [, force] = React.useState(0);
+  React.useEffect(() => {
+    const off = SyncEngine.on(() => force(n => n + 1));
+    const t = setInterval(() => force(n => n + 1), 600);
+    return () => { off(); clearInterval(t); };
+  }, []);
+  if (typeof SPSync === 'undefined' || !SPSync.blocking()) return null;
+  const failed = SyncEngine.status === 'error' || SyncEngine.status === 'offline';
+  return (
+    <div style={{position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(28,26,23,0.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+      <div className="card" style={{maxWidth: 460, margin: 16}}>
+        <div className="card__body col gap-12">
+          <div style={{fontSize: 17, fontWeight: 600}}>{failed ? 'Cannot reach SharePoint' : 'Loading the latest from SharePoint…'}</div>
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6}}>
+            {failed
+              ? 'This computer has not been able to load current data. Editing now risks overwriting work done elsewhere, so saving is held until it reconnects.'
+              : 'Editing is paused for a moment so this computer knows what everyone else has changed. Without that, your first save could overwrite their work.'}
+          </div>
+          <div className="row gap-8">
+            {failed && <Btn kind="primary" onClick={() => SPSync.pull().catch(() => {})}>Try again</Btn>}
+            {failed && <Btn kind="ghost" onClick={() => { if (confirm('Work without SharePoint?\n\nYour changes stay on this computer and are not shared until it reconnects. If someone else edits the same records meanwhile, you will have conflicts to review.')) SPSync.workOffline(); }}>Work offline anyway</Btn>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const store = useStore();
   const route = useRoute();
@@ -237,6 +266,7 @@ function App() {
 
   return (
     <div className="app">
+      <SyncGate />
       <header className="topbar">
         <div className="topbar__row">
           <AtmoreLogo />
