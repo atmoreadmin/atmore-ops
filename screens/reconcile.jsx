@@ -10,7 +10,20 @@ const SP_VIEW_LIMIT = 5000;
 // Blank is blank however it is spelled. Numbers compare numerically so "1200" and
 // 1200 are not reported as a difference; everything else compares as trimmed text.
 function reconBlank(v) { return v == null || v === '' || (Array.isArray(v) && !v.length); }
+// SharePoint returns booleans as TRUE/FALSE, the app stores true/false, and an
+// unset checkbox reads as blank. All three mean the same thing — comparing them as
+// raw text buries the real differences under hundreds of false alarms.
+function reconBool(v) {
+  const s = String(v).trim().toLowerCase();
+  return s === 'true' ? true : s === 'false' ? false : null;
+}
 function reconSame(a, b) {
+  const ba = reconBool(a), bb = reconBool(b);
+  if (ba !== null || bb !== null) {
+    const na = ba !== null ? ba : (reconBlank(a) ? false : null);
+    const nb = bb !== null ? bb : (reconBlank(b) ? false : null);
+    if (na !== null && nb !== null) return na === nb;
+  }
   if (reconBlank(a) && reconBlank(b)) return true;
   if (reconBlank(a) !== reconBlank(b)) return false;
   if (Array.isArray(a) || Array.isArray(b)) {
@@ -34,6 +47,18 @@ function reconLabel(tab, row) {
   if (tab === 'Exchanges') return row.relinquishedAddress || row.id;
   if (tab === 'Tenants') return row.name || row.id;
   return row.name || row.title || row.address || row.id;
+}
+
+// Google Sheets stores a date as a day count from 1899-12-30. During the Sheets →
+// SharePoint migration some money values were tagged as dates, so $10,000 was written
+// as 1927-05-18. The conversion is exactly invertible (whole dollars — any cents were
+// the fractional part of the day and did not survive being written as a date).
+const RECON_SHEET_EPOCH = Date.UTC(1899, 11, 30);
+function reconDateToAmount(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v).trim());
+  if (!m) return null;
+  const days = Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - RECON_SHEET_EPOCH) / 86400000);
+  return (days >= 0 && days < 10000000) ? days : null;
 }
 
 function ReconcileScreen() {
@@ -77,8 +102,21 @@ function ReconcileScreen() {
           }
         }
         for (const [id, s] of server) if (!seen.has(id)) missingHere.push({ id, label: reconLabel(t, s) });
+        // Money/number columns holding something that isn't a number are dropped
+        // silently on push (Number('1927-05-18') is NaN), so they can never reach
+        // SharePoint and nothing ever reports it. Surface them explicitly.
+        const numCols = ((window.SHEET_SCHEMA[t] || {}).columns || []).filter(c => c.type === 'money' || c.type === 'number');
+        const badNums = [];
+        for (const r of localRows) {
+          for (const c of numCols) {
+            const v = r[c.key];
+            if (reconBlank(v) || Array.isArray(v)) continue;
+            if (isFinite(Number(String(v).replace(/[$,]/g, '')))) continue;
+            badNums.push({ id: String(r.id), label: reconLabel(t, r), field: c.key, value: v, recovered: reconDateToAmount(v) });
+          }
+        }
         totalDiff += diffs.length; onlyHere += missingThere.length; onlyThere += missingHere.length;
-        tabs.push({ tab: t, here: localRows.length, there: server.size, diffs, missingThere, missingHere });
+        tabs.push({ tab: t, here: localRows.length, there: server.size, diffs, missingThere, missingHere, badNums });
       }
       setReport({ tabs, totalDiff, onlyHere, onlyThere, at: new Date().toLocaleString() });
     } catch (e) {
@@ -112,6 +150,16 @@ function ReconcileScreen() {
     setReport(rep => rep && ({ ...rep, tabs: rep.tabs.map(t => t.tab !== tab ? t : ({ ...t, diffs: (t.diffs || []).filter(d => !pred(d)) })) }));
   }
 
+  // Write the recovered dollar amount back over the date-shaped value.
+  function repairNum(tab, id, field, amount) {
+    const coll = RECON_COLL[tab]; if (!coll) return;
+    Store.update(s => {
+      const rec = (s[coll] || []).find(x => String(x.id) === String(id));
+      if (rec) rec[field] = amount;
+    });
+    setReport(rep => rep && ({ ...rep, tabs: rep.tabs.map(t => t.tab !== tab ? t : ({ ...t, badNums: (t.badNums || []).filter(b => !(b.id === id && b.field === field)) })) }));
+  }
+
   function exportCsv() {
     if (!report) return;
     const q = v => '"' + String(reconShow(v)).replace(/"/g, '""') + '"';
@@ -132,15 +180,16 @@ function ReconcileScreen() {
   const clean = report && report.totalDiff === 0 && report.onlyHere === 0 && report.onlyThere === 0;
 
   return (
-    <div className="screen col gap-16">
-      <div className="col gap-4">
-        <h1 className="h1">Reconcile</h1>
+    <div className="page col gap-16">
+      <div className="section-h"><div>
+        <div className="crumbs">Settings</div>
+        <h1>Reconcile</h1>
         <div className="small" style={{color: 'var(--ink-2)', maxWidth: 760, lineHeight: 1.6}}>
           Compares what this computer holds against what SharePoint holds, record by record and field by field.
           Nothing changes until you choose a winner. Run this on each computer before any migration — the results
           tell us which machine to trust.
         </div>
-      </div>
+      </div></div>
 
       <Card>
         <CardHead title="Compare" right={report ? <Tag tone={clean ? 'sage' : 'ochre'}>{clean ? 'in agreement' : report.totalDiff + report.onlyHere + report.onlyThere + ' to review'}</Tag> : null}/>
@@ -160,7 +209,7 @@ function ReconcileScreen() {
       <Card>
         <CardHead title="Record counts" right={<span className="tiny" style={{color: 'var(--ink-3)'}}>SharePoint view limit is {SP_VIEW_LIMIT.toLocaleString()} per list</span>}/>
         <div className="card__body">
-          <table className="table">
+          <table className="tbl">
             <thead><tr><th>List</th><th className="num">This computer</th><th className="num">SharePoint</th><th className="num">Differing fields</th><th>Status</th></tr></thead>
             <tbody>
               {report.tabs.map(t => {
@@ -182,6 +231,44 @@ function ReconcileScreen() {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      )}
+
+      {report && !!report.tabs.some(t => (t.badNums || []).length) && (
+      <Card>
+        <CardHead title="Values SharePoint can never accept" right={<Tag tone="brick">needs a decision</Tag>}/>
+        <div className="card__body col gap-8">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 760}}>
+            These are money fields holding something that isn’t a number. The save skips them silently, so they
+            have never reached SharePoint and never will — which is why they look fine here and blank everywhere else.
+            Anything showing a recovered amount was a dollar figure written as a date during the Google Sheets
+            migration; repairing converts it back (whole dollars — cents did not survive being stored as a date).
+          </div>
+          {!!report.tabs.some(t => (t.badNums || []).some(b => b.recovered != null)) && (
+            <div className="row gap-8">
+              <Btn kind="primary" onClick={() => {
+                const all = report.tabs.flatMap(t => (t.badNums || []).filter(b => b.recovered != null).map(b => ({ ...b, tab: t.tab })));
+                if (!confirm('Repair ' + all.length + ' value(s) back to dollar amounts?\n\nEach is converted from its date form. You can review them individually first if you prefer.')) return;
+                all.forEach(b => repairNum(b.tab, b.id, b.field, b.recovered));
+              }}>Repair all recoverable values</Btn>
+            </div>
+          )}
+          <table className="tbl">
+            <thead><tr><th>List</th><th>Record</th><th>Field</th><th>Value stored here</th><th className="num">Recovered</th><th></th></tr></thead>
+            <tbody>
+              {report.tabs.flatMap(t => (t.badNums || []).map((b, i) => (
+                <tr key={t.tab + b.id + b.field + i}>
+                  <td className="small">{t.tab}</td>
+                  <td><div className="small">{b.label}</div><div className="tiny mono" style={{color: 'var(--ink-3)'}}>{b.id}</div></td>
+                  <td className="mono tiny">{b.field}</td>
+                  <td className="small" style={{color: 'var(--brick)'}}>{reconShow(b.value)}</td>
+                  <td className="num small">{b.recovered != null ? '$' + b.recovered.toLocaleString() : '—'}</td>
+                  <td>{b.recovered != null && <Btn sz="sm" kind="ghost" onClick={() => repairNum(t.tab, b.id, b.field, b.recovered)}>Repair</Btn>}</td>
+                </tr>
+              )))}
             </tbody>
           </table>
         </div>
@@ -214,7 +301,7 @@ function ReconcileScreen() {
             </div>
           )}
           {!!(t.diffs || []).length && (
-            <table className="table">
+            <table className="tbl">
               <thead><tr><th>Record</th><th>Field</th><th>This computer</th><th>SharePoint</th><th>Keep</th></tr></thead>
               <tbody>
                 {t.diffs.map((d, i) => (

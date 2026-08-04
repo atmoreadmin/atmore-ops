@@ -222,7 +222,21 @@ const SP = {
       const t = types[k];
       let out;
       if (Array.isArray(v)) { if (!v.length) { if (clearEmpty && types[k] !== undefined) fields[spField(k)] = null; continue; } out = v.join(','); }
-      else if (t === 'money' || t === 'number') { out = Number(String(v).replace(/[$,]/g, '')); if (!isFinite(out)) continue; }
+      else if (t === 'money' || t === 'number') {
+        out = Number(String(v).replace(/[$,]/g, ''));
+        // Not a number — the value cannot go into a SharePoint number column. It
+        // used to be dropped in silence, which is how date-shaped junk in a money
+        // field stayed local-only forever. Say so once per field per session.
+        if (!isFinite(out)) {
+          const key = tabName + '.' + k;
+          this._badNumLogged = this._badNumLogged || new Set();
+          if (!this._badNumLogged.has(key) && window.SPSync) {
+            this._badNumLogged.add(key);
+            SPSync.logLine('\u26a0 ' + key + ' holds "' + String(v).slice(0, 24) + '", which is not a number — that field cannot save to SharePoint until it is corrected (Settings → Reconcile lists them)');
+          }
+          continue;
+        }
+      }
       else if (t === 'bool') out = (v === true || v === 'TRUE' || v === 'true' || v === 1);
       else out = String(v);
       fields[spField(k)] = out;
