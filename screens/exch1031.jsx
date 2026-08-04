@@ -315,7 +315,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
   const [funds, setFunds] = useState(e?.exchangeFunds || '');
   const [draws, setDraws] = useState(
     e?.draws && e.draws.length
-      ? e.draws.map(d => ({ propId: d.propId || '', amount: d.amount ?? '', date: d.date || '', note: d.note || '' }))
+      ? e.draws.map(d => ({ drawId: d.drawId, propId: d.propId || '', amount: d.amount ?? '', date: d.date || '', note: d.note || '' }))
       : (e?.fundsDeployed ? [{ propId: '', amount: e.fundsDeployed, date: e?.relinquishedSoldDate || '', note: 'prior draw' }] : [])
   );
   const [qi, setQi] = useState(e?.qi || '');
@@ -375,7 +375,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
   const drawTotal = draws.reduce((a, d) => a + (parseFloat(d.amount) || 0), 0);
   const drawRemaining = fundsNum - drawTotal;
   function updateDraw(i, patch) { setDraws(prev => prev.map((d, idx) => idx === i ? { ...d, ...patch } : d)); }
-  function addDraw() { setDraws(prev => [...prev, { propId: idProps.find(p => !prev.some(d => d.propId === p.id))?.id || '', amount: '', date: '', note: '' }]); }
+  function addDraw() { setDraws(prev => [...prev, { drawId: 'dw' + Math.random().toString(36).slice(2, 9), propId: idProps.find(p => !prev.some(d => d.propId === p.id))?.id || '', amount: '', date: '', note: '' }]); }
   function removeDraw(i) { setDraws(prev => prev.filter((_, idx) => idx !== i)); }
 
   function toggleIdentified(id) {
@@ -608,7 +608,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
                   !confirm('This exchange was updated on another computer while you had it open.\n\nSaving now overwrites those changes with what is on this screen. Cancel instead to close and reopen with the latest.')) return;
             }
             const cleanDraws = draws
-              .map(d => ({ propId: d.propId || '', amount: parseFloat(d.amount) || 0, date: d.date || '', note: d.note || '' }))
+              .map(d => ({ drawId: d.drawId || ('dw' + Math.random().toString(36).slice(2, 9)), propId: d.propId || '', amount: parseFloat(d.amount) || 0, date: d.date || '', note: d.note || '' }))
               .filter(d => d.amount);
             const data = {
               relinquishedAddress: addr,

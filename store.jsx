@@ -64,6 +64,10 @@ const Store = {
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
       if (dedupeIds(this.state)) this.save();
+      // Draws used to be identified by position, so two people appending one both
+      // made "row 3" and a sync replaced the group wholesale. Give every draw a
+      // stable id so they can be merged individually.
+      if (stampRowIds(this.state)) this.save();
       if (!this.state._offersSeeded) { seedOffers(this.state); this.state._offersSeeded = true; this.save(); }
       if (!Array.isArray(this.state.statuses) || !this.state.statuses.length) { this.state.statuses = defaultStatuses(); this.save(); }
       if (this.state.lists && !this.state.lists.propertyTypes) {
@@ -469,6 +473,7 @@ const Store = {
 
   save() {
     try {
+      stampRowIds(this.state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ _v:12, data: this.state }));
     } catch (e) { console.warn('persist failed', e); }
   },
@@ -1522,6 +1527,22 @@ function nextId(list, prefix, start) {
 // change in state._idRepairs so the reassignment is visible instead of silent.
 // Specs live inside the function: Store.load() runs at top level, before any
 // module-scope const below it is initialized.
+// Detail rows (draws, fee items, splits, histories) used to be identified by
+// their position in the list, so two people appending one both made "row 3"
+// and a sync replaced the whole group. Give every one a permanent id instead.
+// Runs on load AND on every save, so rows created anywhere in the UI get one
+// without each editor having to know about it.
+function stampRowIds(state) {
+  const nid = () => 'rw' + Math.random().toString(36).slice(2, 9);
+  let n = 0;
+  const mark = (arr, key) => (arr || []).forEach(r => { if (r && !r[key]) { r[key] = key === 'drawId' ? 'dw' + Math.random().toString(36).slice(2, 9) : nid(); n++; } });
+  (state.exchanges || []).forEach(e => mark(e.draws, 'drawId'));
+  (state.properties || []).forEach(p => { mark(p.stageHistory, 'rowId'); mark(p.purchaseFeeItems, 'rowId'); mark(p.saleFeeItems, 'rowId'); });
+  (state.transactions || []).forEach(t => mark(t.splits, 'rowId'));
+  (state.tenants || []).forEach(t => mark(t.rentHistory, 'rowId'));
+  return n;
+}
+
 function dedupeIds(state, opts) {
   const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
   const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100],['exchanges','ex',100]];

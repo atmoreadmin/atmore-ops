@@ -344,6 +344,19 @@ const SP_CONFIG_TABS = ['Lists', 'Statuses', 'AutoTagRules', 'CompletedEvents'];
 const SP_CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
 const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts'];
 // Sheet-tab name -> Store collection name (conflict resolution writes back through this).
+// Detail lists that merge row-by-row instead of the whole group being replaced.
+// key() must be stable across machines: either a minted id, or a natural key
+// that cannot collide (utilities are one per type; 1099s one per tax year).
+const SP_DETAIL_MERGE = {
+  ExchangeDraws:     { key: r => r.drawId ? String(r.drawId) : '', fields: ['exchangeId', 'propId', 'amount', 'date', 'note'], ordBy: r => String(r.exchangeId || '') },
+  StageHistory:      { key: r => r.rowId ? String(r.rowId) : '', fields: ['propertyId', 'from', 'to', 'at', 'note', 'by'], ordBy: r => String(r.propertyId || '') },
+  FeeItems:          { key: r => r.rowId ? String(r.rowId) : '', fields: ['propertyId', 'kind', 'label', 'amount'], ordBy: r => String(r.propertyId || '') + '|' + String(r.kind || '') },
+  TransactionSplits: { key: r => r.rowId ? String(r.rowId) : '', fields: ['txId', 'project', 'category', 'amount', 'bucket'], ordBy: r => String(r.txId || '') },
+  TenantRentHistory: { key: r => r.rowId ? String(r.rowId) : '', fields: ['tenantId', 'effectiveDate', 'amount', 'note'], ordBy: r => String(r.tenantId || '') },
+  Utilities:         { key: r => (r.propertyId && r.type) ? r.propertyId + '|' + r.type : '', fields: ['provider', 'account', 'status'] },
+  ContractorTen99:   { key: r => (r.contractorId && r.taxYear != null) ? r.contractorId + '|' + r.taxYear : '', fields: ['status', 'issuedDate', 'amountReported'] },
+};
+
 const SP_COLL = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'tasks', Maintenance: 'maintenance', WebAccounts: 'webAccounts' };
 
 const SPSync = {
@@ -589,6 +602,41 @@ const SPSync = {
     const outTabs = {};
     let conflicts = 0, tookTheirs = 0;
     for (const t of Object.keys(remoteTabs)) {
+      const det = SP_DETAIL_MERGE[t];
+      if (det) {
+        // Detail rows with a stable identity: merge row-by-row rather than
+        // letting one side's whole group win. Added here → keep; added there →
+        // adopt; deleted here (present in the baseline, gone locally) → stays
+        // deleted; edited on both sides → keep mine and flag it.
+        const base = new Map();
+        try { JSON.parse((this._detailBase || {})[t] || '[]').forEach(r => base.set(det.key(r), r)); } catch (e) {}
+        const loc = new Map((localTabs[t] || []).filter(r => r && det.key(r)).map(r => [det.key(r), r]));
+        const rem = new Map((remoteTabs[t] || []).filter(r => r && det.key(r)).map(r => [det.key(r), r]));
+        const rows = [];
+        for (const [k, r] of rem) {
+          const mine = loc.get(k);
+          if (!mine) { if (!base.has(k)) rows.push(r); continue; }
+          const was = base.get(k);
+          const out = { ...r };
+          for (const f of det.fields) {
+            if (eq(mine[f], r[f])) { out[f] = mine[f]; continue; }
+            if (!was) { out[f] = mine[f]; continue; }
+            if (eq(mine[f], was[f])) { out[f] = r[f]; tookTheirs++; continue; }
+            if (eq(r[f], was[f])) { out[f] = mine[f]; continue; }
+            out[f] = mine[f];
+            this.noteConflict(t, k, f, mine[f], r[f], was[f]);
+            conflicts++;
+          }
+          rows.push(out);
+        }
+        for (const [k, r] of loc) if (!rem.has(k)) rows.push(r);
+        if (det.ordBy) {
+          const seen = {};
+          rows.forEach(r => { const g = det.ordBy(r); r.ord = (seen[g] = (seen[g] == null ? 0 : seen[g] + 1)); });
+        }
+        outTabs[t] = rows;
+        continue;
+      }
       if (!SP_PARENT_TABS.includes(t)) { outTabs[t] = localTabs[t] || remoteTabs[t]; continue; }
       const base = (this._sigs && this._sigs[t]) || new Map();
       const loc = new Map((localTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
@@ -640,19 +688,75 @@ const SPSync = {
     };
   },
   conflictList() { return Object.values(this._conflicts).sort((a, b) => b.at - a.at); },
+  // Write a chosen value back into state. Parent records are top-level; detail
+  // rows are nested inside their parent and keyed by their stable id (or, for
+  // utilities and 1099s, by the composite natural key stored in the conflict).
+  _applyConflict(s, c, v) {
+    const id = String(c.id), f = c.field;
+    const findIn = (arr, k) => (arr || []).find(r => r && String(r[k]) === id);
+    const coll = SP_COLL[c.tab];
+    if (coll) {
+      const rec = (s[coll] || []).find(x => String(x.id) === id);
+      if (!rec) return false;
+      rec[f] = v; return true;
+    }
+    switch (c.tab) {
+      case 'ExchangeDraws':
+        for (const e of (s.exchanges || [])) { const r = findIn(e.draws, 'drawId'); if (r) { r[f] = v; return true; } }
+        return false;
+      case 'StageHistory':
+        for (const p of (s.properties || [])) { const r = findIn(p.stageHistory, 'rowId'); if (r) { r[f] = v; return true; } }
+        return false;
+      case 'FeeItems':
+        for (const p of (s.properties || [])) {
+          const r = findIn(p.purchaseFeeItems, 'rowId') || findIn(p.saleFeeItems, 'rowId');
+          if (r) { r[f] = v; return true; }
+        }
+        return false;
+      case 'TransactionSplits':
+        for (const tx of (s.transactions || [])) { const r = findIn(tx.splits, 'rowId'); if (r) { r[f] = v; return true; } }
+        return false;
+      case 'TenantRentHistory':
+        for (const tn of (s.tenants || [])) { const r = findIn(tn.rentHistory, 'rowId'); if (r) { r[f] = v; return true; } }
+        return false;
+      case 'Utilities': {
+        const [pid, type] = id.split('|');
+        const p = (s.properties || []).find(x => String(x.id) === pid);
+        if (!p || !type) return false;
+        p.utilities = p.utilities || {};
+        p.utilities[type] = p.utilities[type] || {};
+        p.utilities[type][f] = v;
+        return true;
+      }
+      case 'ContractorTen99': {
+        const [cid, yr] = id.split('|');
+        const con = (s.contractors || []).find(x => String(x.id) === cid);
+        const h = con && (con.ten99History || []).find(x => String(x.taxYear) === yr);
+        if (!h) return false;
+        h[f] = v; return true;
+      }
+    }
+    return false;
+  },
   resolveConflict(key, take) {
-    const c = this._conflicts[key]; if (!c) return;
-    if (take === 'theirs') {
-      const coll = SP_COLL[c.tab];
-      const col = ((window.SHEET_SCHEMA[c.tab] || {}).columns || []).find(x => x.key === c.field);
-      let v = c.theirs;
-      if (col && (col.type === 'money' || col.type === 'number')) v = v === '' ? null : Number(v);
-      else if (col && col.type === 'bool') v = (v === 'true' || v === 'TRUE' || v === '1');
-      else if (col && col.type === 'array') v = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
-      if (coll) Store.update(s => { const rec = (s[coll] || []).find(x => String(x.id) === c.id); if (rec) rec[c.field] = v; });
+    const c = this._conflicts[key]; if (!c) return true;
+    if (take !== 'theirs') { delete this._conflicts[key]; this._saveConflicts(); return true; }
+    const col = ((window.SHEET_SCHEMA[c.tab] || {}).columns || []).find(x => x.key === c.field);
+    let v = c.theirs;
+    if (col && (col.type === 'money' || col.type === 'number')) v = v === '' ? null : Number(v);
+    else if (col && col.type === 'bool') v = (v === 'true' || v === 'TRUE' || v === '1');
+    else if (col && col.type === 'array') v = v ? v.split(',').map(x => x.trim()).filter(Boolean) : [];
+    let applied = false;
+    Store.update(s => { applied = this._applyConflict(s, c, v); });
+    // A resolution that cannot find its row must NOT disappear — that would be
+    // the same silent failure this whole feature exists to prevent.
+    if (!applied) {
+      this.logLine('\u26a0 Could not apply their value for ' + c.tab + ' \u00b7 ' + c.field + ' \u2014 that row no longer exists here');
+      return false;
     }
     delete this._conflicts[key];
     this._saveConflicts();
+    return true;
   },
 
   _baseline(state) {
@@ -669,6 +773,10 @@ const SPSync = {
       this._childSigs[t] = groups;
     });
     SP_CONFIG_TABS.forEach(t => { this._cfgSigs[t] = JSON.stringify(payload[t] || []); });
+    // Per-row baseline for the detail lists: the merge needs each row's
+    // last-known server state to tell an add apart from a delete.
+    this._detailBase = {};
+    Object.keys(SP_DETAIL_MERGE).forEach(t => { this._detailBase[t] = JSON.stringify(payload[t] || []); });
   },
 
   // Diff current state against the baseline → per-item Graph operations.
@@ -1239,7 +1347,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b11</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b14</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
@@ -1284,7 +1392,7 @@ function SharePointView() {
                 <div className="tiny" style={{color: 'var(--ink-2)'}}>yours <b>{c.mine || '(blank)'}</b> · theirs <b>{c.theirs || '(blank)'}</b> · was {c.was || '(blank)'}</div>
                 <div className="row gap-8" style={{marginLeft: 'auto'}}>
                   <Btn sz="sm" kind="ghost" onClick={() => { SPSync.resolveConflict(c.tab + '|' + c.id + '|' + c.field, 'mine'); addLog('Kept your value for ' + c.field + ' on ' + c.id); }}>Keep mine</Btn>
-                  <Btn sz="sm" kind="ghost" onClick={() => { SPSync.resolveConflict(c.tab + '|' + c.id + '|' + c.field, 'theirs'); addLog('Took their value for ' + c.field + ' on ' + c.id); }}>Take theirs</Btn>
+                  <Btn sz="sm" kind="ghost" onClick={() => { SPSync.resolveConflict(c.tab + '|' + c.id + '|' + c.field, 'theirs') ? addLog('Took their value for ' + c.field + ' on ' + c.id) : addLog('\u2717 Could not apply their value for ' + c.field + ' on ' + c.id + ' — that row no longer exists here'); }}>Take theirs</Btn>
                 </div>
               </div>
             ))}

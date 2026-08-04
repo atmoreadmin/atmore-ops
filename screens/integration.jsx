@@ -438,11 +438,12 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.transactions || []).forEach(t => (t.splits || []).forEach((sp, i) => rows.push({
-        txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
+        rowId: sp.rowId || (t.id + '#sp' + i), txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
       })));
       return rows;
     },
     columns: [
+      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'txId',     label: 'Transaction ID', type: 'fk', required: true, notes: 'References Transactions.id' },
       { key: 'ord',      label: 'Ord',            type: 'number' },
       { key: 'project',  label: 'Project',        type: 'string' },
@@ -457,11 +458,12 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.tenants || []).forEach(t => (t.rentHistory || []).forEach((h, i) => rows.push({
-        tenantId: t.id, ord: i, effectiveDate: h.effectiveDate || '', amount: h.amount ?? null, note: h.note || '',
+        rowId: h.rowId || (t.id + '#rh' + i), tenantId: t.id, ord: i, effectiveDate: h.effectiveDate || '', amount: h.amount ?? null, note: h.note || '',
       })));
       return rows;
     },
     columns: [
+      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'tenantId',      label: 'Tenant ID',      type: 'fk', required: true, notes: 'References Tenants.id' },
       { key: 'ord',           label: 'Ord',            type: 'number' },
       { key: 'effectiveDate', label: 'Effective Date', type: 'date' },
@@ -494,11 +496,12 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.properties || []).forEach(p => (p.stageHistory || []).forEach((h, i) => rows.push({
-        propertyId: p.id, ord: i, from: h.from || '', to: h.to || '', at: h.at || '', note: h.note || '', by: h.by || '',
+        rowId: h.rowId || (p.id + '#sh' + i), propertyId: p.id, ord: i, from: h.from || '', to: h.to || '', at: h.at || '', note: h.note || '', by: h.by || '',
       })));
       return rows;
     },
     columns: [
+      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
       { key: 'from',       label: 'From',        type: 'string', notes: 'Status code moved from' },
@@ -514,12 +517,13 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.properties || []).forEach(p => {
-        (p.purchaseFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'purchase', ord: i, label: it.label || '', amount: it.amount ?? null }));
-        (p.saleFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'sale', ord: i, label: it.label || '', amount: it.amount ?? null }));
+        (p.purchaseFeeItems || []).forEach((it, i) => rows.push({ rowId: it.rowId || (p.id + '#pf' + i), propertyId: p.id, kind: 'purchase', ord: i, label: it.label || '', amount: it.amount ?? null }));
+        (p.saleFeeItems || []).forEach((it, i) => rows.push({ rowId: it.rowId || (p.id + '#sf' + i), propertyId: p.id, kind: 'sale', ord: i, label: it.label || '', amount: it.amount ?? null }));
       });
       return rows;
     },
     columns: [
+      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
       { key: 'kind',       label: 'Kind',        type: 'enum', notes: 'purchase / sale' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
@@ -562,15 +566,16 @@ const SHEET_SCHEMA = {
   },
   ExchangeDraws: {
     description: '1031 exchange fund draws — money deployed from an exchange into a replacement property. FK → Exchanges.id.',
-    pk: 'exchangeId+ord',
+    pk: 'drawId',
     rowSource: (s) => {
       const rows = [];
       (s.exchanges || []).forEach(e => (e.draws || []).forEach((d, i) => rows.push({
-        exchangeId: e.id, ord: i, propId: d.propId || '', amount: d.amount ?? null, date: d.date || '', note: d.note || '',
+        drawId: d.drawId || (e.id + '#' + i), exchangeId: e.id, ord: i, propId: d.propId || '', amount: d.amount ?? null, date: d.date || '', note: d.note || '',
       })));
       return rows;
     },
     columns: [
+      { key: 'drawId',     label: 'Draw ID',     type: 'string', required: true, notes: 'Permanent per-draw id — lets two people add draws at once' },
       { key: 'exchangeId', label: 'Exchange ID', type: 'fk', required: true, notes: 'References Exchanges.id' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
       { key: 'propId',     label: 'Property ID', type: 'fk', notes: 'References Properties.id' },

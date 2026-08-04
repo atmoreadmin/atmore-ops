@@ -349,7 +349,7 @@ function deserializeFromSheet(pulledData, opts) {
     // Stage history — synced tab authoritative; else keep local; else seed one entry.
     if (stageByP) {
       const sh = (stageByP[p.id] || []).slice().sort(byOrd)
-        .map(h => ({ from: h.from || null, to: h.to || null, at: h.at || '', note: h.note || '', by: h.by || '' }));
+        .map(h => ({ rowId: h.rowId, from: h.from || null, to: h.to || null, at: h.at || '', note: h.note || '', by: h.by || '' }));
       out.stageHistory = sh.length ? sh
         : [{ from: null, to: out.statusCode, at: out.purchaseDate || out.signingDate || out.ddDate || state.today, note: 'Imported', by: 'import' }];
     } else {
@@ -360,8 +360,8 @@ function deserializeFromSheet(pulledData, opts) {
     // Fee items — synced tab authoritative; else keep local.
     if (feesByP) {
       const items = feesByP[p.id] || [];
-      out.purchaseFeeItems = items.filter(r => r.kind === 'purchase').slice().sort(byOrd).map(r => ({ label: r.label || '', amount: r.amount ?? 0 }));
-      out.saleFeeItems = items.filter(r => r.kind === 'sale').slice().sort(byOrd).map(r => ({ label: r.label || '', amount: r.amount ?? 0 }));
+      out.purchaseFeeItems = items.filter(r => r.kind === 'purchase').slice().sort(byOrd).map(r => ({ rowId: r.rowId, label: r.label || '', amount: r.amount ?? 0 }));
+      out.saleFeeItems = items.filter(r => r.kind === 'sale').slice().sort(byOrd).map(r => ({ rowId: r.rowId, label: r.label || '', amount: r.amount ?? 0 }));
     } else {
       out.purchaseFeeItems = local.purchaseFeeItems || [];
       out.saleFeeItems = local.saleFeeItems || [];
@@ -413,7 +413,7 @@ function deserializeFromSheet(pulledData, opts) {
   state.tenants = !tabPresent('Tenants') ? (Store.state.tenants || []) : (tabs.Tenants).map(t => {
     const out = { ...t };
     out.rentHistory = rentHistByT
-      ? (rentHistByT[t.id] || []).slice().sort(byOrd).map(h => ({ effectiveDate: h.effectiveDate || '', amount: h.amount ?? 0, note: h.note || '' }))
+      ? (rentHistByT[t.id] || []).slice().sort(byOrd).map(h => ({ rowId: h.rowId, effectiveDate: h.effectiveDate || '', amount: h.amount ?? 0, note: h.note || '' }))
       : ((localTenants[t.id] && localTenants[t.id].rentHistory) || []);
     return out;
   });
@@ -447,7 +447,7 @@ function deserializeFromSheet(pulledData, opts) {
     const out = { ...tx };
     if (splitsByTx) {
       const sp = (splitsByTx[tx.id] || []).slice().sort(byOrd);
-      if (sp.length) out.splits = sp.map(x => ({ project: x.project || '', amount: x.amount ?? 0, category: x.category || '', bucket: x.bucket || '' }));
+      if (sp.length) out.splits = sp.map(x => ({ rowId: x.rowId, project: x.project || '', amount: x.amount ?? 0, category: x.category || '', bucket: x.bucket || '' }));
     } else if (localTx[tx.id] && localTx[tx.id].splits) {
       out.splits = localTx[tx.id].splits;
     }
@@ -499,7 +499,7 @@ function deserializeFromSheet(pulledData, opts) {
     if (hasDrawsTab) {
       const draws = tabs.ExchangeDraws
         .filter(d => d.exchangeId === e.id)
-        .map(d => ({ propId: d.propId || '', amount: d.amount, date: d.date || '', note: d.note || '' }));
+        .map(d => ({ drawId: d.drawId || (e.id + '#' + d.ord), propId: d.propId || '', amount: d.amount, date: d.date || '', note: d.note || '' }));
       if (draws.length) out.draws = draws; else delete out.draws;
     } else if (local.draws && local.draws.length) {
       out.draws = local.draws;
