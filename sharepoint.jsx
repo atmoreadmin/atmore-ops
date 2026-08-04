@@ -958,6 +958,7 @@ const SPSync = {
       }
       SyncEngine.dirty = false;
       SyncEngine.lastSyncedAt = new Date().toISOString();
+      this._provisionedForMissing = false;
       this._set('synced', 'All changes saved');
       const parts = [];
       if (ops.length) parts.push(ops.length + ' record change' + (ops.length === 1 ? '' : 's'));
@@ -967,6 +968,21 @@ const SPSync = {
       this._maybeBackup();
     } catch (e) {
       const auth = /token|sign|auth|login|interaction/i.test(String(e.message || e));
+      // A column the schema knows about but this SharePoint list has never seen
+      // (a new build adding a field). Create the missing columns once, then
+      // retry immediately instead of failing every save until someone notices.
+      const missingCol = /is not recognized|Field '\w+' is not/i.test(String(e.message || e));
+      if (missingCol && !auth && !this._provisionedForMissing) {
+        this._provisionedForMissing = true;
+        this.logLine('New column missing in SharePoint — creating it…');
+        try {
+          await SP.provision(m => this.logLine('  ' + m));
+          SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
+          this.logLine('Columns created — retrying the save');
+          this._queueFlush(600);
+          return;
+        } catch (pe) { this.logLine('\u2717 Could not create the column: ' + (pe.message || pe)); }
+      }
       this._set('error', auth ? 'Microsoft sign-in expired — click here to sign in again' : 'Save failed — retrying… (' + (e.message || e) + ')');
       this.logLine('\u2717 Save failed: ' + (e.message || e) + (auth ? ' — sign-in needed' : ' — will retry'));
       if (!auth) this._queueFlush(15000);
@@ -1347,7 +1363,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b14</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b15</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
