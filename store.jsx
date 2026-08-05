@@ -68,7 +68,12 @@ const Store = {
       // made "row 3" and a sync replaced the group wholesale. Give every draw a
       // stable id so they can be merged individually.
       if (stampRowIds(this.state)) this.save();
-      if (!this.state._offersSeeded) { seedOffers(this.state); this.state._offersSeeded = true; this.save(); }
+      if (!this.state._offersSeeded) {
+        // Only ever seed into an empty list — this replaces s.offers wholesale,
+        // and the flag has been lost across a sync before now.
+        if (!this.state.offers.length) seedOffers(this.state);
+        this.state._offersSeeded = true; this.save();
+      }
       if (!Array.isArray(this.state.statuses) || !this.state.statuses.length) { this.state.statuses = defaultStatuses(); this.save(); }
       if (this.state.lists && !this.state.lists.propertyTypes) {
         this.state.lists.propertyTypes = [
@@ -2847,8 +2852,9 @@ const CAL_CATS = {
   refi:      { label: 'Refi',          color: 'var(--blue-deep)' },
   exch:      { label: '1031',          color: 'var(--brick)'     },
   deal:      { label: 'Sale / closing',color: 'var(--blue-deep)' },
+  maint:     { label: 'Maintenance',   color: '#4f6d70'         },
 };
-const CAL_CAT_ORDER = ['task', 'rent', 'lease', 'insurance', 'tax', 'refi', 'exch', 'deal'];
+const CAL_CAT_ORDER = ['task', 'maint', 'rent', 'lease', 'insurance', 'tax', 'refi', 'exch', 'deal'];
 
 function buildCalendarEvents(fromIso, toIso) {
   const s = Store.state;
@@ -2868,6 +2874,24 @@ function buildCalendarEvents(fromIso, toIso) {
     });
   });
 
+  // Logged maintenance — the work log is dated, so it belongs on the calendar.
+  // Unlike derived milestones these carry their own status, so done-state reads
+  // from the record itself (not completedEvents) and checking one off writes back.
+  (s.maintenance || []).forEach(m => {
+    if (!m.date) return;
+    const prop = getProperty(m.propertyId);
+    const bits = [];
+    if (m.vendor) bits.push(m.vendor);
+    if (m.cost) bits.push(fmtMoney(m.cost));
+    if (prop) bits.unshift(prop.address);
+    push({
+      key: 'maint:' + m.id, cat: 'maint', date: m.date, maintId: m.id,
+      title: (m.description || m.category || 'Maintenance'),
+      sub: bits.join(' · '), propertyId: m.propertyId,
+      done: m.status === 'done',
+    });
+  });
+
   // Per-property dated milestones
   (s.properties || []).forEach(p => {
     if (p.insurance && p.insurance.renewalDate) {
@@ -2876,7 +2900,7 @@ function buildCalendarEvents(fromIso, toIso) {
         title: 'Insurance renewal' + (p.insurance.carrier ? ' · ' + p.insurance.carrier : ''),
         sub: p.address, propertyId: p.id, done: isEventDone(k) });
     }
-    if (p.taxes && p.taxes.dueDate && !p.taxes.escrowed) {
+    if (p.taxes && p.taxes.dueDate && !p.taxes.escrowed && !(p.loanDetail || {}).escrowedTaxes) {
       const k = 'tax:' + p.id + ':' + p.taxes.dueDate;
       push({ key: k, cat: 'tax', date: p.taxes.dueDate,
         title: 'Property tax due' + (p.taxes.annualAmount ? ' · ' + fmtMoney(p.taxes.annualAmount) : ''),
@@ -2967,6 +2991,7 @@ function getUpcomingCalendarEvents(withinDays = 21, daysPast = 14) {
 function completeCalendarEvent(e) {
   if (!e) return;
   if (e.taskId) completeReminder(e.taskId);
+  else if (e.maintId) updateMaintenance(e.maintId, { status: e.done ? 'open' : 'done' });
   else toggleEventDone(e.key);
 }
 

@@ -220,7 +220,7 @@ function EventLine({ e, showDate, onEditTask }) {
         </div>
       )}
       <span style={{width: 9, height: 9, borderRadius: '50%', background: catColor(e.cat), flexShrink: 0, marginTop: 5}}/>
-      <div className="grow clickable" style={{minWidth: 0}} onClick={() => e.propertyId ? nav('/property/' + e.propertyId + (e.taskId ? '/tasks' : '')) : (e.taskId && onEditTask && onEditTask(e.taskId))}>
+      <div className="grow clickable" style={{minWidth: 0}} onClick={() => e.propertyId ? nav('/property/' + e.propertyId + (e.taskId ? '/tasks' : e.maintId ? '/maintenance' : '')) : (e.taskId && onEditTask && onEditTask(e.taskId))}>
         <div className="row gap-8 items-center wrap">
           <span style={{fontWeight: 500, fontSize: 13, textDecoration: e.done ? 'line-through' : 'none'}}>{e.title}</span>
           {e.cat === 'task' && e.priority === 'high' && <span className="up" style={{fontSize: 9, color: 'var(--brick)', border: '1px solid var(--brick)', background: 'var(--brick-soft)', borderRadius: 4, padding: '1px 5px'}}>↑ High</span>}
