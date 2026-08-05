@@ -18,8 +18,6 @@ const SHEET_SCHEMA = {
         loanBalance: loan.currentBalance ?? null, loanRate: loan.interestRate ?? null, loanMaturity: loan.maturityDate || null,
         loanEscrowTaxes: loan.escrowedTaxes ?? null, loanEscrowIns: loan.escrowedInsurance ?? null, loanContact: loan.lenderContact || null,
         taxAnnual: tax.annualAmount ?? null, taxDueDate: tax.dueDate || null, taxEscrowed: tax.escrowed ?? null, taxParcel: tax.taxId || null,
-        carryMortgage: (p.rentalCarrying || {}).mortgage ?? null, carryHOA: (p.rentalCarrying || {}).hoa ?? null,
-        carryTax: (p.rentalCarrying || {}).tax ?? null, carryInsurance: (p.rentalCarrying || {}).insurance ?? null,
         hoa1Name: h1.name || null, hoa1Url: h1.website || null, hoa1User: h1.username || null, hoa1Pass: h1.password || null, hoa1Monthly: h1.monthly ?? null,
         hoa2Name: h2.name || null, hoa2Url: h2.website || null, hoa2User: h2.username || null, hoa2Pass: h2.password || null, hoa2Monthly: h2.monthly ?? null,
       };
@@ -76,7 +74,7 @@ const SHEET_SCHEMA = {
       { key: 'saleDDCollected',  label: 'DD Fee Collected',    type: 'money',  notes: 'Due diligence fee collected from buyer — counts as income' },
       { key: 'saleEarnest',      label: 'Buyer Earnest (Sale)',type: 'money',  notes: 'Buyer EMD — nets through closing, informational' },
       { key: 'exchangeFunds',    label: '1031 Funds Rolled Out (Sale)', type: 'money', notes: 'Relinquished side — sale proceeds rolled into the exchange when this property is sold' },
-      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'string' },
+      { key: 'saleAttorney',     label: 'Sale Closing Attorney', type: 'text' },
       { key: 'saleCreditsReceived', label: 'Sale Credits Received', type: 'money', notes: 'Credits paid to you at closing (tax prorations etc.) — adds to profit' },
       { key: 'interestCredit',   label: 'Interest Credit',     type: 'money', notes: 'Credit received back after closing on the loan — reduces interest cost' },
       { key: 'otherFees',        label: 'Other Fees',          type: 'money', notes: 'Miscellaneous deal costs' },
@@ -86,11 +84,6 @@ const SHEET_SCHEMA = {
       { key: 'buyerDDDate',      label: 'Buyer DD Deadline',   type: 'date' },
       { key: 'expectedCloseDate',label: 'Expected Close Date', type: 'date' },
       { key: 'utilityNote',      label: 'Utility Notes',       type: 'string', notes: 'Per-property note shown on the Utilities tab' },
-      // ── Rental P&L carrying costs, monthly (folded in) ──
-      { key: 'carryMortgage',label: 'Carry — Mortgage/mo', type: 'money', notes: 'Manual monthly carrying cost used by the Rental P&L' },
-      { key: 'carryHOA',     label: 'Carry — HOA/mo',      type: 'money' },
-      { key: 'carryTax',     label: 'Carry — Taxes/mo',    type: 'money' },
-      { key: 'carryInsurance',label: 'Carry — Insurance/mo',type: 'money' },
       // ── Insurance (folded in) ──
       { key: 'insCarrier',   label: 'Insurance Carrier',   type: 'string' },
       { key: 'insPolicy',    label: 'Insurance Policy #',  type: 'string' },
@@ -438,12 +431,11 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.transactions || []).forEach(t => (t.splits || []).forEach((sp, i) => rows.push({
-        rowId: sp.rowId || (t.id + '#sp' + i), txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
+        txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
       })));
       return rows;
     },
     columns: [
-      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'txId',     label: 'Transaction ID', type: 'fk', required: true, notes: 'References Transactions.id' },
       { key: 'ord',      label: 'Ord',            type: 'number' },
       { key: 'project',  label: 'Project',        type: 'string' },
@@ -458,12 +450,11 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.tenants || []).forEach(t => (t.rentHistory || []).forEach((h, i) => rows.push({
-        rowId: h.rowId || (t.id + '#rh' + i), tenantId: t.id, ord: i, effectiveDate: h.effectiveDate || '', amount: h.amount ?? null, note: h.note || '',
+        tenantId: t.id, ord: i, effectiveDate: h.effectiveDate || '', amount: h.amount ?? null, note: h.note || '',
       })));
       return rows;
     },
     columns: [
-      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'tenantId',      label: 'Tenant ID',      type: 'fk', required: true, notes: 'References Tenants.id' },
       { key: 'ord',           label: 'Ord',            type: 'number' },
       { key: 'effectiveDate', label: 'Effective Date', type: 'date' },
@@ -496,12 +487,11 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.properties || []).forEach(p => (p.stageHistory || []).forEach((h, i) => rows.push({
-        rowId: h.rowId || (p.id + '#sh' + i), propertyId: p.id, ord: i, from: h.from || '', to: h.to || '', at: h.at || '', note: h.note || '', by: h.by || '',
+        propertyId: p.id, ord: i, from: h.from || '', to: h.to || '', at: h.at || '', note: h.note || '', by: h.by || '',
       })));
       return rows;
     },
     columns: [
-      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
       { key: 'from',       label: 'From',        type: 'string', notes: 'Status code moved from' },
@@ -517,13 +507,12 @@ const SHEET_SCHEMA = {
     rowSource: (s) => {
       const rows = [];
       (s.properties || []).forEach(p => {
-        (p.purchaseFeeItems || []).forEach((it, i) => rows.push({ rowId: it.rowId || (p.id + '#pf' + i), propertyId: p.id, kind: 'purchase', ord: i, label: it.label || '', amount: it.amount ?? null }));
-        (p.saleFeeItems || []).forEach((it, i) => rows.push({ rowId: it.rowId || (p.id + '#sf' + i), propertyId: p.id, kind: 'sale', ord: i, label: it.label || '', amount: it.amount ?? null }));
+        (p.purchaseFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'purchase', ord: i, label: it.label || '', amount: it.amount ?? null }));
+        (p.saleFeeItems || []).forEach((it, i) => rows.push({ propertyId: p.id, kind: 'sale', ord: i, label: it.label || '', amount: it.amount ?? null }));
       });
       return rows;
     },
     columns: [
-      { key: 'rowId',         label: 'Row ID',         type: 'string', required: true, notes: 'Permanent per-row id — lets two people add rows at once' },
       { key: 'propertyId', label: 'Property ID', type: 'fk', required: true, notes: 'References Properties.id' },
       { key: 'kind',       label: 'Kind',        type: 'enum', notes: 'purchase / sale' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
@@ -566,16 +555,15 @@ const SHEET_SCHEMA = {
   },
   ExchangeDraws: {
     description: '1031 exchange fund draws — money deployed from an exchange into a replacement property. FK → Exchanges.id.',
-    pk: 'drawId',
+    pk: 'exchangeId+ord',
     rowSource: (s) => {
       const rows = [];
       (s.exchanges || []).forEach(e => (e.draws || []).forEach((d, i) => rows.push({
-        drawId: d.drawId || (e.id + '#' + i), exchangeId: e.id, ord: i, propId: d.propId || '', amount: d.amount ?? null, date: d.date || '', note: d.note || '',
+        exchangeId: e.id, ord: i, propId: d.propId || '', amount: d.amount ?? null, date: d.date || '', note: d.note || '',
       })));
       return rows;
     },
     columns: [
-      { key: 'drawId',     label: 'Draw ID',     type: 'string', required: true, notes: 'Permanent per-draw id — lets two people add draws at once' },
       { key: 'exchangeId', label: 'Exchange ID', type: 'fk', required: true, notes: 'References Exchanges.id' },
       { key: 'ord',        label: 'Ord',         type: 'number' },
       { key: 'propId',     label: 'Property ID', type: 'fk', notes: 'References Properties.id' },

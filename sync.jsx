@@ -69,6 +69,35 @@ const Sync = {
 const APP_BUILD = 3;
 window.APP_BUILD = APP_BUILD;
 
+// Checklists ride to SharePoint as JSON inside one text cell. A multiline column
+// provisioned as RICH text hands that value back HTML-encoded (&quot;) and wrapped
+// in <div>, so a straight JSON.parse throws and the checklist reads as EMPTY on
+// every other machine — the edit pushes fine, then vanishes on arrival. Decode and
+// unwrap before parsing; return null (not []) when a non-empty value still will not
+// parse, so the caller keeps what this device already has instead of blanking it.
+function unrichText(s) {
+  return String(s)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(?:div|p|span|font)[^>]*>/gi, '')
+    .replace(/&quot;|&#34;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').trim();
+}
+function parseChecklistCell(v) {
+  const clean = a => a.filter(c => c && c.id != null)
+    .map(c => ({ id: String(c.id), text: String(c.text == null ? '' : c.text), done: !!c.done }));
+  if (Array.isArray(v)) return clean(v);
+  const raw = (v == null ? '' : String(v)).trim();
+  if (!raw) return [];
+  const tryParse = s => { try { const a = JSON.parse(s); return Array.isArray(a) ? a : null; } catch (e) { return null; } };
+  const out = tryParse(raw) || tryParse(unrichText(raw));
+  if (!out) {
+    try { if (window.SPSync) SPSync.logLine('\u26a0 A task checklist came back from SharePoint in a form the app could not read \u2014 this device kept its own copy'); } catch (e) {}
+    return null;
+  }
+  return clean(out);
+}
+
 // Sheet tab → state collection for tabs merged row-by-row on updatedAt.
 // Child tabs (splits, fee items, histories…) live ON these parent objects, so
 // stamping the parent covers them; the bridge keeps children with the parent.
@@ -256,6 +285,10 @@ function deserializeFromSheet(pulledData, opts) {
   if (!audit) RestoreLog.reset();
   const state = JSON.parse(JSON.stringify(window.SEED));  // start from seed shape
   state.uiState = Store.state.uiState || { selectedPropertyId: null, propertyTab: 'summary' };
+  // Local-only flags a pull must not drop. _offersSeeded gates a one-time sample
+  // seed that REPLACES the offers array — losing the flag re-runs it on the next
+  // reload and wipes real offers.
+  state._offersSeeded = Store.state._offersSeeded || state._offersSeeded;
   // Deletion records ride along so this device honors deletes made elsewhere.
   state.tombstones = Array.isArray(tabs.Tombstones)
     ? tabs.Tombstones.filter(t => t && t.id != null).map(t => ({ coll: t.coll || '', id: String(t.id), at: t.at || '' }))
@@ -264,6 +297,7 @@ function deserializeFromSheet(pulledData, opts) {
   // so a remote refresh never wipes it. Tasks DO sync — see the Tasks tab below.
   // Tasks/reminders now sync via the Tasks tab. Fail-safe: if the tab is absent
   // (older bridge not yet migrated), keep this device's tasks so nothing is lost.
+  const localTaskById = new Map((Store.state.reminders || []).map(r => [String(r.id), r]));
   state.reminders = Array.isArray(tabs.Tasks)
     ? tabs.Tasks.map(r => ({
         id: r.id,
@@ -275,7 +309,12 @@ function deserializeFromSheet(pulledData, opts) {
         done: r.done === true || r.done === 'TRUE' || r.done === 'true',
         lastDone: r.lastDone || null,
         notes: r.notes || '',
-        checklist: (() => { try { const a = JSON.parse(r.checklist || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } })(),
+        checklist: (() => {
+          const parsed = parseChecklistCell(r.checklist);
+          if (parsed) return parsed;
+          const prev = localTaskById.get(String(r.id));
+          return (prev && Array.isArray(prev.checklist)) ? prev.checklist : [];
+        })(),
         updatedAt: r.updatedAt || null,
       }))
     : (Store.state.reminders || []);

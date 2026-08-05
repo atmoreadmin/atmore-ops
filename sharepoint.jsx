@@ -126,7 +126,9 @@ const SP = {
     // Multiline: single-line text caps at 255 chars; notes/URLs exceed it.
     // Exception: indexed columns must stay single-line (SharePoint can't index
     // multiline) — they're all short ids/dates, so the 255 cap is harmless.
-    else def.text = def.indexed ? {} : { allowMultipleLines: true };
+    // textType 'plain' is essential: rich text HTML-encodes and <div>-wraps what it
+    // stores, which corrupts JSON-in-a-cell values (task checklists) on the way back.
+    else def.text = def.indexed ? {} : { allowMultipleLines: true, textType: 'plain' };
     return def;
   },
 
@@ -179,20 +181,22 @@ const SP = {
     return listIds;
   },
 
-  // Lists provisioned before the multiline fix have 255-char text columns —
-  // PATCH them once so long values import.
+  // Lists provisioned before the multiline fix have 255-char text columns, and
+  // lists provisioned before the plain-text fix have rich-text columns that
+  // HTML-mangle stored JSON. PATCH both once.
   async repairTextColumns(onLog) {
-    if (this.config.textColsRepaired) return;
+    if (this.config.textColsRepairedV2) return;
     const sid = await this.siteId();
     for (const [tabName, lid] of Object.entries(this.config.listIds || {})) {
       const cols = await this.graph('/sites/' + sid + '/lists/' + lid + '/columns?$top=200');
-      const toFix = (cols.value || []).filter(c => c.text && !c.text.allowMultipleLines && !c.readOnly && !c.indexed && c.name !== 'Title');
+      const toFix = (cols.value || []).filter(c => c.text && !c.readOnly && !c.indexed && c.name !== 'Title'
+        && (!c.text.allowMultipleLines || c.text.textType !== 'plain'));
       for (const c of toFix) {
-        await this.graph('/sites/' + sid + '/lists/' + lid + '/columns/' + c.id, { method: 'PATCH', body: JSON.stringify({ text: { allowMultipleLines: true } }) }).catch(() => {});
+        await this.graph('/sites/' + sid + '/lists/' + lid + '/columns/' + c.id, { method: 'PATCH', body: JSON.stringify({ text: { allowMultipleLines: true, textType: 'plain' } }) }).catch(() => {});
       }
-      if (toFix.length) onLog(tabName + ' — ' + toFix.length + ' text columns widened');
+      if (toFix.length) onLog(tabName + ' — ' + toFix.length + ' text columns widened / set to plain text');
     }
-    this.saveConfig({ textColsRepaired: true });
+    this.saveConfig({ textColsRepaired: true, textColsRepairedV2: true });
   },
 
   _titleFor(row) {
@@ -389,8 +393,13 @@ const SPSync = {
     const row = {};
     const cols = ((window.SHEET_SCHEMA[tabName] || {}).columns || []);
     cols.forEach(c => {
-      const v = fields[spField(c.key)];
+      let v = fields[spField(c.key)];
       if (v == null || v === '') { row[c.key] = null; return; }
+      // A column that was rich text at some point returns HTML-encoded, <div>-wrapped
+      // text. Undo that here so values (notes, and JSON cells like the task checklist)
+      // read back exactly as they were written.
+      if (typeof v === 'string' && /<(?:div|p|br|span|font)\b|&(?:quot|amp|lt|gt|apos|nbsp|#34|#39);/i.test(v)
+          && typeof unrichText === 'function') v = unrichText(v);
       // deserializeFromSheet expects the Sheet's shapes: TRUE/FALSE strings for bools
       row[c.key] = (v === true) ? 'TRUE' : (v === false) ? 'FALSE' : v;
     });
@@ -539,6 +548,11 @@ const SPSync = {
     const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
     const bigLists = [];
     const sid = await SP.siteId();
+    // One-time column repair for lists provisioned as rich text (they HTML-mangle
+    // stored JSON, e.g. task checklists). No-op after the first successful pass.
+    if (!SP.config.textColsRepairedV2) {
+      try { await SP.repairTextColumns(l => this.logLine(l)); } catch (e) {}
+    }
     const listIds = SP.config.listIds || {};
     for (const tabName of allTabs) {
       const items = await this._fetchList(tabName);
@@ -1432,7 +1446,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b17</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b20</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
