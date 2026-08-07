@@ -65,6 +65,7 @@ const Store = {
       if (!this.state.offers) this.state.offers = [];
       if (dedupeIds(this.state)) this.save();
       if (collapseDuplicateRecords(this.state)) this.save();
+      if (clearContradictedTombstones(this.state)) this.save();
       // Draws used to be identified by position, so two people appending one both
       // made "row 3" and a sync replaced the group wholesale. Give every draw a
       // stable id so they can be merged individually.
@@ -420,7 +421,14 @@ const Store = {
     // Ensure newer top-level collections exist on older saved states.
     if (!Array.isArray(this.state.webAccounts)) { this.state.webAccounts = []; this.save(); }
     if (!Array.isArray(this.state.spendLog)) { this.state.spendLog = []; this.save(); }
-    if (!Array.isArray(this.state.employees)) { this.state.employees = defaultEmployees(); this.save(); }
+    // Seed the roster ONCE. Re-seeding on a synced device re-creates ids that a
+    // delete elsewhere may still be circulating, so the two machines fight over
+    // the same four people. The flag survives a pull (see deserializeFromSheet).
+    if (!Array.isArray(this.state.employees)) {
+      this.state.employees = this.state._employeesSeeded ? [] : defaultEmployees();
+      this.state._employeesSeeded = true;
+      this.save();
+    } else if (!this.state._employeesSeeded) { this.state._employeesSeeded = true; this.save(); }
     if (!Array.isArray(this.state.timeOff)) { this.state.timeOff = []; this.save(); }
     if (!Array.isArray(this.state.maintenance)) { this.state.maintenance = []; this.save(); }
     if (!Array.isArray(this.state.reminders)) {
@@ -522,6 +530,7 @@ const Store = {
       spendLog: [],
       employees: defaultEmployees(),
       timeOff: [],
+      _employeesSeeded: true,
       _offersSeeded: true,
       statuses: defaultStatuses(),
       completedEvents: {},       // calendar events marked done (keyed)
@@ -1619,8 +1628,41 @@ function dedupeIds(state, opts) {
   if (changes.length) state._idRepairs = (state._idRepairs || []).concat(changes).slice(-100);
   return changes.length;
 }
+// A tombstone whose record is still here is self-contradictory: the record was
+// re-created (or the delete was never real) and the delete is the stale half.
+// Left in place it removes that record on the next sync of EVERY device — and
+// takes anything hanging off it, like a person's time off. Drop those, and drop
+// deletes older than the record they name.
+function clearContradictedTombstones(state) {
+  const tombs = state.tombstones;
+  if (!Array.isArray(tombs) || !tombs.length) return 0;
+  // Inline for the same reason dedupeIds inlines its specs: Store.load() runs at
+  // top level, before sync.jsx (and MERGED_COLLECTIONS) exists.
+  const colls = ['properties', 'transactions', 'tenants', 'rentLedger', 'contractors',
+    'refis', 'exchanges', 'leads', 'offers', 'reminders', 'maintenance', 'webAccounts',
+    'spendLog', 'employees', 'timeOff'];
+  const live = {};
+  for (const coll of colls) {
+    if (!Array.isArray(state[coll])) continue;
+    const m = new Map();
+    state[coll].forEach(r => { if (r && r.id != null) m.set(String(r.id), String(r.updatedAt || '')); });
+    live[coll] = m;
+  }
+  const kept = tombs.filter(t => {
+    const m = live[t.coll];
+    if (!m) return true;
+    const rowAt = m.get(String(t.id));
+    if (rowAt === undefined) return true;             // record really is gone
+    return String(t.at || '') > rowAt;                // delete newer than record: still valid
+  });
+  if (kept.length === tombs.length) return 0;
+  const n = tombs.length - kept.length;
+  state.tombstones = kept;
+  return n;
+}
+
 function idRepairLog(state) { return ((state || {})._idRepairs || []); }
-Object.assign(window, { collapseDuplicateRecords });
+Object.assign(window, { collapseDuplicateRecords, clearContradictedTombstones });
 
 function setUI(patch) {
   Store.update(s => Object.assign(s.uiState, patch));

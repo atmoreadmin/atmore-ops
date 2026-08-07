@@ -957,7 +957,10 @@ const SPSync = {
     const s = Store.state; if (!s) return;
     s.tombstones = s.tombstones || [];
     const key = coll + ':' + String(id);
-    if (s.tombstones.some(t => (t.coll + ':' + t.id) === key)) return;
+    // Re-deleting a re-created record must refresh the timestamp, otherwise the
+    // stale original loses to the newer record and the delete never takes.
+    const existing = s.tombstones.find(t => (t.coll + ':' + t.id) === key);
+    if (existing) { existing.at = new Date().toISOString(); return; }
     s.tombstones.push({ coll, id: String(id), at: new Date().toISOString() });
   },
 
@@ -969,13 +972,23 @@ const SPSync = {
     const tabFor = {};
     Object.entries(SP_COLL).forEach(([tab, coll]) => { tabFor[coll] = tab; });
     const byColl = {};
-    tombs.forEach(t => { (byColl[t.coll] = byColl[t.coll] || new Set()).add(String(t.id)); });
+    tombs.forEach(t => {
+      const m = (byColl[t.coll] = byColl[t.coll] || new Map());
+      const prev = m.get(String(t.id));
+      if (!prev || String(t.at || '') > prev) m.set(String(t.id), String(t.at || ''));
+    });
     const removed = [];
     for (const [coll, ids] of Object.entries(byColl)) {
       const arr = state[coll];
       if (!Array.isArray(arr)) continue;   // resolve against real state, not the tab table
       const kept = arr.filter(r => {
         if (r && ids.has(String(r.id))) {
+          // A delete only wins if it is NEWER than the record it targets. Ids are
+          // reused (re-adding a removed person mints the same id), so an
+          // unconditional match would delete the re-created record forever — and
+          // silently take its children, like that person's time off, with it.
+          const deletedAt = ids.get(String(r.id));
+          if (deletedAt && String(r.updatedAt || '') > deletedAt) return true;   // re-created since
           // Only rows whose tab we know can have their DELETE re-sent; the row
           // is dropped either way so it cannot reappear on screen.
           if (tabFor[coll]) removed.push({ tab: tabFor[coll], id: String(r.id) });

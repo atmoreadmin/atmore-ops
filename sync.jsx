@@ -289,6 +289,9 @@ function deserializeFromSheet(pulledData, opts) {
   // seed that REPLACES the offers array — losing the flag re-runs it on the next
   // reload and wipes real offers.
   state._offersSeeded = Store.state._offersSeeded || state._offersSeeded;
+  // Same one-time-seed gate for the roster: losing it re-seeds four people who
+  // may have been deliberately removed, on every reload.
+  state._employeesSeeded = Store.state._employeesSeeded || state._employeesSeeded;
   // Deletion records ride along so this device honors deletes made elsewhere.
   state.tombstones = Array.isArray(tabs.Tombstones)
     ? tabs.Tombstones.filter(t => t && t.id != null).map(t => ({ coll: t.coll || '', id: String(t.id), at: t.at || '' }))
@@ -694,7 +697,11 @@ function deserializeFromSheet(pulledData, opts) {
   // RecID → SharePoint item id only for rows that genuinely exist server-side.
   const spItems = (window.SPSync && SPSync.liveOn && SPSync.liveOn() && SPSync._items) || null;
   {
-    const tombed = new Set((Store.state.tombstones || []).map(t => t.coll + ':' + t.id));
+    const tombAt = new Map();
+    (Store.state.tombstones || []).forEach(t => {
+      const k = t.coll + ':' + t.id, at = String(t.at || '');
+      if (!tombAt.has(k) || at > tombAt.get(k)) tombAt.set(k, at);
+    });
     const rescued = {};
     for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
       if (!Array.isArray(tabs[tab]) || !Array.isArray(state[coll])) continue;
@@ -711,7 +718,11 @@ function deserializeFromSheet(pulledData, opts) {
       for (const r of (Store.state[coll] || [])) {
         if (!r || r.id == null) continue;
         const id = String(r.id);
-        if (pulled.has(id) || tombed.has(tab + ':' + id)) continue;
+        if (pulled.has(id)) continue;
+        // A tombstone only suppresses the rescue if the delete is newer than the
+        // record; a re-created record outlives an older delete.
+        const tomb = tombAt.get(tab + ':' + id);
+        if (tomb != null && !(String(r.updatedAt || '') > tomb)) continue;
         const serverHadIt = spIdx ? spIdx.has(id) : ackedBefore.has(id);
         if (serverHadIt) continue;          // genuinely deleted elsewhere
         state[coll].push(r);

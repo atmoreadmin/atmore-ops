@@ -13,7 +13,8 @@ const TIME_OFF_LABEL = { pto: 'PTO', sick: 'Sick', unpaid: 'Unpaid', holiday: 'H
 const TIME_OFF_TONE = { pto: 'blue', sick: 'brick', unpaid: 'ghost', holiday: 'sage', bereavement: 'ghost' };
 
 function defaultEmployees() {
-  return ['Edward', 'David', 'Kerim', 'Anthony'].map((n, i) => ({ id: 'em' + (i + 1), name: n }));
+  const at = new Date().toISOString();
+  return ['Edward', 'David', 'Kerim', 'Anthony'].map((n, i) => ({ id: 'em' + (i + 1), name: n, updatedAt: at }));
 }
 
 // ─── Week helpers (weeks start Monday) ───
@@ -154,7 +155,12 @@ function addEmployee(name) {
   Store.update(s => {
     s.employees = s.employees || [];
     if (s.employees.some(e => e.name.toLowerCase() === n.toLowerCase())) return;
-    s.employees.push({ id: nextId(s.employees, 'em', 1), name: n });
+    const id = nextId(s.employees, 'em', 1);
+    // Ids get reused, and a stale delete for this id may still be circulating.
+    // Stamping the re-creation lets it outrank that older delete (see
+    // _dropTombstoned) instead of being silently removed on the next sync.
+    s.employees.push({ id, name: n, updatedAt: new Date().toISOString() });
+    s.tombstones = (s.tombstones || []).filter(t => !(t.coll === 'employees' && String(t.id) === String(id)));
   });
 }
 function renameEmployee(id, name) {
@@ -162,7 +168,7 @@ function renameEmployee(id, name) {
   if (!n) return;
   Store.update(s => {
     const e = (s.employees || []).find(x => x.id === id);
-    if (e) e.name = n;
+    if (e) { e.name = n; e.updatedAt = new Date().toISOString(); }
   });
 }
 // Removing someone takes their time-off records with them.
