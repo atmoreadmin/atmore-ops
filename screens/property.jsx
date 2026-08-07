@@ -571,7 +571,8 @@ function MonthlyCarryingCosts({ p, rent }) {
   const insMo = ins.premium ? ins.premium / 12 : 0;
   // Nothing entered at all → don't show the block.
   if (!mortgage && !taxMo && !insMo) return null;
-  const taxEscrowed = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  // Either escrow flag counts — they are two checkboxes for one fact.
+  const taxEscrowed = (!!ld.escrowedTaxes || !!tx.escrowed) && mortgage > 0 && taxMo > 0;
   const insEscrowed = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
   // Always show all three categories so a missing one is visible, not silently dropped.
   const rows = [
@@ -688,7 +689,7 @@ function PaymentHistory({ tenantId }) {
   const mortgage = ld.monthlyPayment || 0;
   const taxMo = ptx.annualAmount ? ptx.annualAmount / 12 : 0;
   const insMo = pins.premium ? pins.premium / 12 : 0;
-  const taxEsc = !!ld.escrowedTaxes && mortgage > 0 && taxMo > 0;
+  const taxEsc = (!!ld.escrowedTaxes || !!ptx.escrowed) && mortgage > 0 && taxMo > 0;
   const insEsc = !!ld.escrowedInsurance && mortgage > 0 && insMo > 0;
   const carrying = [
     mortgage > 0 && { tag: '_mtg', desc: 'Mortgage payment', category: 'Mortgage', amount: -mortgage },
@@ -1264,9 +1265,9 @@ function LoanInsurancePanel({ p, onEdit }) {
                 <KVPair label="Maturity" value={fmtDate(ld.maturityDate, {full: true})}/>
               </div>
               <div className="row gap-8 wrap">
-                {ld.escrowedTaxes && <Tag tone="blue">Taxes escrowed</Tag>}
+                {(ld.escrowedTaxes || (p.taxes || {}).escrowed) && <Tag tone="blue">Taxes escrowed</Tag>}
                 {ld.escrowedInsurance && <Tag tone="blue">Insurance escrowed</Tag>}
-                {!ld.escrowedTaxes && !ld.escrowedInsurance && <Tag tone="ghost">Nothing escrowed</Tag>}
+                {!ld.escrowedTaxes && !(p.taxes || {}).escrowed && !ld.escrowedInsurance && <Tag tone="ghost">Nothing escrowed</Tag>}
                 {ld.lenderContact && <Tag tone="ghost">📞 {ld.lenderContact}</Tag>}
               </div>
             </>
@@ -1314,6 +1315,8 @@ function LoanInsurancePanel({ p, onEdit }) {
 // ────── Taxes ──────
 function TaxesPanel({ p, onEdit }) {
   const tx = p.taxes;
+  // Either escrow checkbox counts — see the editor.
+  const escrowed = !!(tx && tx.escrowed) || !!(p.loanDetail || {}).escrowedTaxes;
   const today = TODAY();
   const dueDays = tx?.dueDate ? daysBetween(today, tx.dueDate) : null;
   return (
@@ -1321,14 +1324,14 @@ function TaxesPanel({ p, onEdit }) {
       <CardHead title="Property tax"
         right={
           <div className="row gap-8 items-center">
-            {dueDays != null && !tx.escrowed && <Tag tone={dueDays < 0 ? 'brick' : dueDays <= 30 ? 'ochre' : 'sage'}>{dueDays < 0 ? `Overdue ${Math.abs(dueDays)}d` : `Due in ${dueDays}d`}</Tag>}
+            {dueDays != null && !escrowed && <Tag tone={dueDays < 0 ? 'brick' : dueDays <= 30 ? 'ochre' : 'sage'}>{dueDays < 0 ? `Overdue ${Math.abs(dueDays)}d` : `Due in ${dueDays}d`}</Tag>}
             <Btn sz="sm" kind="ghost" onClick={onEdit}>Edit</Btn>
           </div>
         }/>
       <div className="card__body">
         {tx ? (
           <>
-            {!tx.escrowed && dueDays != null && dueDays >= 0 && dueDays <= 30 && (
+            {!escrowed && dueDays != null && dueDays >= 0 && dueDays <= 30 && (
               <div style={{background: 'var(--ochre-soft)', color: 'var(--ochre)', padding: '10px 14px', borderRadius: 6, marginBottom: 12, fontSize: 13, fontWeight: 500}}>
                 ⚠ Tax payment due in {dueDays} days — {fmtMoney(tx.annualAmount)} owed.
               </div>
@@ -1339,7 +1342,7 @@ function TaxesPanel({ p, onEdit }) {
               <KVPair label="Parcel / tax ID" value={tx.taxId || '—'} mono/>
             </div>
             <div className="row gap-8 wrap">
-              {tx.escrowed ? <Tag tone="blue">Escrowed by lender</Tag> : <Tag tone="ghost">You pay directly</Tag>}
+              {escrowed ? <Tag tone="blue">Escrowed by lender</Tag> : <Tag tone="ghost">You pay directly</Tag>}
             </div>
           </>
         ) : <Empty icon="🏛" title="No tax info on file" sub="Add tax info from Edit details to surface due-date alerts."/>}

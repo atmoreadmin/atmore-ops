@@ -9,7 +9,16 @@ const SP_VIEW_LIMIT = 5000;
 
 // Blank is blank however it is spelled. Numbers compare numerically so "1200" and
 // 1200 are not reported as a difference; everything else compares as trimmed text.
-function reconBlank(v) { return v == null || v === '' || (Array.isArray(v) && !v.length); }
+// '[]' / '{}' count as blank: a JSON-in-a-cell field (task checklist) serializes an
+// empty list to '[]', while SharePoint hands an empty cell back as null. Both mean
+// nothing is stored, so comparing them literally reports every task without a
+// checklist as a difference.
+function reconBlank(v) {
+  if (v == null || v === '') return true;
+  if (Array.isArray(v)) return !v.length;
+  const s = String(v).trim();
+  return s === '[]' || s === '{}';
+}
 // SharePoint returns booleans as TRUE/FALSE, the app stores true/false, and an
 // unset checkbox reads as blank. All three mean the same thing — comparing them as
 // raw text buries the real differences under hundreds of false alarms.
@@ -30,7 +39,11 @@ function reconSame(a, b) {
     const norm = x => (Array.isArray(x) ? x : String(x).split(',')).map(s => String(s).trim()).filter(Boolean).sort().join('|');
     return norm(a) === norm(b);
   }
-  const na = Number(a), nb = Number(b);
+  // Money is typed with currency punctuation but stored in SharePoint as a number,
+  // so "$1,200" and 1200 must compare equal or every hand-entered amount reads as a
+  // difference.
+  const num = v => Number(String(v).replace(/[$,\s]/g, ''));
+  const na = num(a), nb = num(b);
   if (!Number.isNaN(na) && !Number.isNaN(nb) && String(a).trim() !== '' && String(b).trim() !== '') return na === nb;
   return String(a).trim() === String(b).trim();
 }
@@ -328,3 +341,7 @@ function ReconcileScreen() {
     </div>
   );
 }
+
+// Shared with sync-health.jsx: one definition of "these two values mean the same
+// thing", so the health check cannot report boolean spelling as a data difference.
+Object.assign(window, { reconSame, reconBlank, reconBool });

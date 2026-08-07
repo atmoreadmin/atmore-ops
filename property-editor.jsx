@@ -34,7 +34,12 @@ function PropertyEditor({ property, onClose }) {
   const [lBalance, setLBalance] = useState(ld.currentBalance || '');
   const [lMaturity, setLMaturity] = useState(ld.maturityDate || '');
   const [lRate, setLRate] = useState(ld.interestRate || '');
-  const [lEscrowT, setLEscrowT] = useState(!!ld.escrowedTaxes);
+  // "Taxes escrowed" is asked twice in this editor — once under the loan, once
+  // under property tax — but it is ONE fact. They were separate state, and the
+  // Rental P&L only ever read the loan copy: checking the tax-section box left
+  // the P&L subtracting tax on top of a mortgage that already contained it.
+  // Both boxes now drive both fields.
+  const [lEscrowT, setLEscrowT] = useState(!!ld.escrowedTaxes || !!(p.taxes || {}).escrowed);
   const [lEscrowI, setLEscrowI] = useState(!!ld.escrowedInsurance);
   const [lContact, setLContact] = useState(ld.lenderContact || '');
 
@@ -45,7 +50,8 @@ function PropertyEditor({ property, onClose }) {
   const tx = p.taxes || {};
   const [tAnnual, setTAnnual] = useState(tx.annualAmount || '');
   const [tDue, setTDue] = useState(tx.dueDate || '');
-  const [tEscrowed, setTEscrowed] = useState(!!tx.escrowed);
+  const [tEscrowed, setTEscrowed] = useState(!!tx.escrowed || !!ld.escrowedTaxes);
+  const setTaxEscrowed = v => { setLEscrowT(v); setTEscrowed(v); };
   const [tParcel, setTParcel] = useState(tx.taxId || '');
   const [financingType, setFinancingType] = useState(p.financingType || '');
 
@@ -170,7 +176,7 @@ function PropertyEditor({ property, onClose }) {
               </div>
               <Field label="Escrow">
                 <div className="col gap-6">
-                  <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowT} onChange={e => setLEscrowT(e.target.checked)}/> Taxes escrowed by lender</label>
+                  <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowT} onChange={e => setTaxEscrowed(e.target.checked)}/> Taxes escrowed by lender</label>
                   <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowI} onChange={e => setLEscrowI(e.target.checked)}/> Insurance escrowed by lender</label>
                 </div>
               </Field>
@@ -220,10 +226,10 @@ function PropertyEditor({ property, onClose }) {
               <Field label="Parcel / tax ID"><input className="input mono" value={tParcel} onChange={e => setTParcel(e.target.value)} style={{width: 300}}/></Field>
               <Field label="">
                 <label className="row gap-6 items-center small" style={{cursor:'pointer'}}>
-                  <input type="checkbox" checked={tEscrowed} onChange={e => setTEscrowed(e.target.checked)}/>
+                  <input type="checkbox" checked={tEscrowed} onChange={e => setTaxEscrowed(e.target.checked)}/>
                   Taxes paid through escrow (lender handles)
                 </label>
-                <div className="tiny dim mt-4">If escrowed, the app won't surface tax-due alerts on the dashboard.</div>
+                <div className="tiny dim mt-4">Same setting as “Taxes escrowed by lender” under the loan. If escrowed, tax-due alerts are hidden and the Rental P&amp;L counts tax inside the mortgage payment instead of as its own line.</div>
               </Field>
 
               <div className="divider" style={{margin: '4px 0'}}/>

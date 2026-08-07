@@ -101,7 +101,7 @@ function parseChecklistCell(v) {
 // Sheet tab → state collection for tabs merged row-by-row on updatedAt.
 // Child tabs (splits, fee items, histories…) live ON these parent objects, so
 // stamping the parent covers them; the bridge keeps children with the parent.
-const MERGED_COLLECTIONS = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'reminders', Maintenance: 'maintenance', WebAccounts: 'webAccounts' };
+const MERGED_COLLECTIONS = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'reminders', Maintenance: 'maintenance', WebAccounts: 'webAccounts', SpendLog: 'spendLog', Employees: 'employees', TimeOff: 'timeOff' };
 
 // Convert app state → { tabs: { TabName: [rows] } } matching the Apps Script schema
 function serializeForSheet(state) {
@@ -604,6 +604,26 @@ function deserializeFromSheet(pulledData, opts) {
   state.webAccounts = Array.isArray(tabs.WebAccounts)
     ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', url: r.url || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '', updatedAt: r.updatedAt || null }))
     : (Store.state.webAccounts || []);
+
+  // Spend log — checks written and phone sales. Operational only: never feeds
+  // reports or P&L, which read imported bank transactions.
+  state.spendLog = Array.isArray(tabs.SpendLog)
+    ? tabs.SpendLog.map(r => ({ id: r.id, date: r.date || '', time: r.time || '', method: r.method === 'check' ? 'check' : 'phone',
+        amount: Number(r.amount) || 0, vendor: r.vendor || '', contractorId: r.contractorId || '', contractorName: r.contractorName || '',
+        propertyId: r.propertyId || '', cardLast4: r.cardLast4 == null ? '' : String(r.cardLast4), checkNumber: r.checkNumber == null ? '' : String(r.checkNumber),
+        note: r.note || '', voided: r.voided === true || r.voided === 'TRUE' || r.voided === 'true', updatedAt: r.updatedAt || null }))
+    : (Store.state.spendLog || []);
+
+  state.employees = Array.isArray(tabs.Employees)
+    ? tabs.Employees.map(r => ({ id: r.id, name: r.name || '', updatedAt: r.updatedAt || null }))
+    : (Store.state.employees || []);
+
+  state.timeOff = Array.isArray(tabs.TimeOff)
+    ? tabs.TimeOff.map(r => ({ id: r.id, employeeId: r.employeeId || '', type: r.type || 'pto',
+        startDate: r.startDate || '', endDate: r.endDate || r.startDate || '',
+        halfDay: r.halfDay === true || r.halfDay === 'TRUE' || r.halfDay === 'true',
+        note: r.note || '', updatedAt: r.updatedAt || null }))
+    : (Store.state.timeOff || []);
 
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.
   if (Array.isArray(tabs.Statuses) && tabs.Statuses.length) {

@@ -196,7 +196,9 @@ const SP = {
       }
       if (toFix.length) onLog(tabName + ' — ' + toFix.length + ' text columns widened / set to plain text');
     }
-    this.saveConfig({ textColsRepaired: true, textColsRepairedV2: true });
+    // Columns blacklisted for "value too long" are fine now that they are multiline.
+    this.saveConfig({ textColsRepaired: true, textColsRepairedV2: true, skipFields: {}, skipFieldsAt: null });
+    if (window.SPSync) { SPSync._skipRetryAt = 0; try { SPSync._resigAll(); } catch (e) {} }
   },
 
   _titleFor(row) {
@@ -220,12 +222,20 @@ const SP = {
     const fields = { Title: this._titleFor(row) };
     const types = this._typeMap(tabName);
     const skip = (this.config.skipFields || {})[tabName] || [];
+    // A column SharePoint refuses outright (wrong type, locked, corrupt) cannot be
+    // fixed in place — Graph will not change a column's type. Rather than lose the
+    // field forever we write it to a replacement column and read from there.
+    const alias = (this.config.fieldAlias || {})[tabName] || {};
     for (const [k, v] of Object.entries(row)) {
       if (skip.includes(spField(k))) continue;   // column SharePoint keeps rejecting
-      if (v == null || v === '') { if (clearEmpty && types[k] !== undefined) fields[spField(k)] = null; continue; }
+      // Resolve the destination column ONCE: a clear that still targets the original
+      // column leaves the alias holding the old text, which then wins on the next
+      // read and resurrects the value the user just deleted.
+      const dest = alias[spField(k)] || spField(k);
+      if (v == null || v === '') { if (clearEmpty && types[k] !== undefined) fields[dest] = null; continue; }
       const t = types[k];
       let out;
-      if (Array.isArray(v)) { if (!v.length) { if (clearEmpty && types[k] !== undefined) fields[spField(k)] = null; continue; } out = v.join(','); }
+      if (Array.isArray(v)) { if (!v.length) { if (clearEmpty && types[k] !== undefined) fields[dest] = null; continue; } out = v.join(','); }
       else if (t === 'money' || t === 'number') {
         out = Number(String(v).replace(/[$,]/g, ''));
         // Not a number — the value cannot go into a SharePoint number column. It
@@ -246,7 +256,7 @@ const SP = {
       }
       else if (t === 'bool') out = (v === true || v === 'TRUE' || v === 'true' || v === 1);
       else out = String(v);
-      fields[spField(k)] = out;
+      fields[dest] = out;
     }
     const yk = SP_YR_SOURCE[tabName];
     if (yk && row[yk]) { const y = parseInt(String(row[yk]).slice(0, 4), 10); if (y) fields.Yr = y; }
@@ -346,7 +356,8 @@ SP.loadConfig();
 // items round-trip the exact sheet-tab row shape).
 const SP_CONFIG_TABS = ['Lists', 'Statuses', 'AutoTagRules', 'CompletedEvents'];
 const SP_CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
-const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts'];
+const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts', 'SpendLog', 'Employees', 'TimeOff'];
+window.SP_PARENT_TABS_PUBLIC = SP_PARENT_TABS;   // sync-health.jsx compares these lists
 // Sheet-tab name -> Store collection name (conflict resolution writes back through this).
 // Detail lists that merge row-by-row instead of the whole group being replaced.
 // key() must be stable across machines: either a minted id, or a natural key
@@ -392,8 +403,16 @@ const SPSync = {
     const fields = item.fields || {};
     const row = {};
     const cols = ((window.SHEET_SCHEMA[tabName] || {}).columns || []);
+    const alias = (SP.config.fieldAlias || {})[tabName] || {};
     cols.forEach(c => {
-      let v = fields[spField(c.key)];
+      const sp = spField(c.key);
+      // Prefer the replacement column when the item carries one. This deliberately
+      // does NOT require local alias config: the device that created the alias is
+      // the only one that knows about it, so every other device has to discover it
+      // from the data itself or it would read the dead original column forever.
+      const altName = alias[sp] || (sp + 'Text');
+      const hasAlt = fields[altName] != null && fields[altName] !== '';
+      let v = hasAlt ? fields[altName] : fields[sp];
       if (v == null || v === '') { row[c.key] = null; return; }
       // A column that was rich text at some point returns HTML-encoded, <div>-wrapped
       // text. Undo that here so values (notes, and JSON cells like the task checklist)
@@ -405,6 +424,29 @@ const SPSync = {
     });
     if (fields.updatedAt) row.updatedAt = fields.updatedAt;
     return row;
+  },
+
+  // Learn aliases from the pulled rows: a device that had to move a field to a
+  // replacement column recorded that only in ITS OWN local config, so everyone
+  // else must pick it up from the items or they will keep writing to the dead
+  // original column and keep getting rejected.
+  _adoptAliases(tabName, items) {
+    if (!items || !items.length) return;
+    const seen = new Set();
+    items.slice(0, 25).forEach(it => Object.keys(it.fields || {}).forEach(k => seen.add(k)));
+    const cols = ((window.SHEET_SCHEMA[tabName] || {}).columns || []);
+    const cfg = { ...(SP.config.fieldAlias || {}) };
+    const forTab = { ...(cfg[tabName] || {}) };
+    let added = 0;
+    cols.forEach(c => {
+      const sp = spField(c.key);
+      if (forTab[sp]) return;
+      if (seen.has(sp + 'Text')) { forTab[sp] = sp + 'Text'; added++; }
+    });
+    if (!added) return;
+    cfg[tabName] = forTab;
+    SP.saveConfig({ fieldAlias: cfg });
+    this.logLine('Picked up ' + added + ' replacement column(s) for ' + tabName + ' \u2713');
   },
 
   async _fetchList(tabName) {
@@ -556,6 +598,7 @@ const SPSync = {
     const listIds = SP.config.listIds || {};
     for (const tabName of allTabs) {
       const items = await this._fetchList(tabName);
+      this._adoptAliases(tabName, items);
       // Tripwire: warn well before SharePoint's 5,000-item list view threshold
       // so there's time to partition (e.g. archive old Transactions by year).
       if (items.length >= 4000) bigLists.push(tabName + ' (' + items.length.toLocaleString() + ')');
@@ -609,6 +652,10 @@ const SPSync = {
     const tabs = {};
     for (const [t, raw] of Object.entries(this._rawItems)) {
       const items = [...raw.values()];
+      // Same as the full pull: a replacement column created on another machine is
+      // only discoverable from the data, and _rowFromItem below must already know
+      // about it or it reads the abandoned original column.
+      this._adoptAliases(t, items);
       tabs[t] = items.map(it => this._rowFromItem(t, it));
       this._indexTab(t, items);
     }
@@ -624,6 +671,11 @@ const SPSync = {
   //   both moved     -> real collision: keep mine, flag it for review
   _merge3(remoteState) {
     const eq = (a, b) => {
+      // Use Reconcile's comparison: the local side holds the app's shapes (true,
+      // "$1,200") and the remote side SharePoint's (TRUE, 1200). Comparing them as
+      // raw text made every checkbox and hand-typed amount look changed, which
+      // turned honest edits into bogus "changed in two places" review cards.
+      if (window.reconSame) return reconSame(a, b);
       const n = v => (v == null || v === '') ? '' : (Array.isArray(v) ? v.join(',') : String(v));
       return n(a) === n(b);
     };
@@ -687,7 +739,16 @@ const SPSync = {
         for (const k of keys) {
           const mine = mineRow[k], theirs = r[k];
           if (eq(mine, theirs)) { out[k] = mine; continue; }
-          if (!baseRow) { out[k] = mine; continue; }   // no baseline to reason from — don't discard local
+          if (!baseRow) {
+            // No baseline for this row (first pull of the session, or the row was
+            // re-baselined by a column repair). We cannot tell who changed what, so
+            // keep local — but this is exactly how an incoming edit used to vanish
+            // in silence, so flag it for review instead of deciding quietly.
+            out[k] = mine;
+            this.noteConflict(t, id, k, mine, theirs, '');
+            conflicts++;
+            continue;
+          }
           const was = baseRow[k];
           if (eq(mine, was)) { out[k] = theirs; tookTheirs++; continue; }
           if (eq(theirs, was)) { out[k] = mine; continue; }
@@ -890,17 +951,21 @@ const SPSync = {
         const m = this._sigs[t];
         const idx = this._items[t] || (this._items[t] = new Map());
         const live = new Set();
+        const forced = (this._forceRepush || {})[t] || null;
         for (const r of (payload[t] || [])) {
           if (r.id == null) continue;
           const id = String(r.id);
           live.add(id);
           const sig = JSON.stringify(r);
-          if (m.get(id) === sig) continue;
+          if (m.get(id) === sig && !(forced && forced.has(id))) continue;
           const isUpdate = idx.has(id);
           let fields = SP._fieldsFor(t, r, { clearEmpty: isUpdate });
           if (isUpdate) {
             // PATCH only the fields that actually changed — smaller payloads, cheaper server cost.
-            const oldSig = m.get(id);
+            // A FORCED row is the exception: its signature is unchanged by definition, so the
+            // diff would come out empty and nothing would be sent. Send every field instead —
+            // the whole point of forcing is to rewrite values SharePoint never received.
+            const oldSig = (forced && forced.has(id)) ? null : m.get(id);
             if (oldSig) {
               try {
                 const oldFields = SP._fieldsFor(t, JSON.parse(oldSig), { clearEmpty: true });
@@ -914,6 +979,7 @@ const SPSync = {
           }
           else ops.push({ method: 'POST', url: '/sites/' + sid + '/lists/' + lid + '/items', body: { fields }, tab: t, recId: id, sig });
         }
+        if (forced) delete this._forceRepush[t];   // one full rewrite per request, not every save
         for (const id of [...m.keys()]) {
           if (live.has(id)) continue;
           // Record the deletion locally as well as sending it. The baseline drops
@@ -1112,11 +1178,9 @@ const SPSync = {
     try { await SP.provision(() => {}); } catch (e) { return; }
     SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
     // Force a full re-push of those tabs: keep the keys so pending deletions still
-    // fire, but invalidate every signature so each row rewrites all of its fields.
-    for (const t of tabs) {
-      const m = this._sigs && this._sigs[t];
-      if (m) for (const k of [...m.keys()]) m.set(k, '\u0000retry');
-    }
+    // fire, but force a re-push so each row rewrites all of its fields. This must
+    // NOT overwrite the signatures — they are also the merge baseline.
+    this.forceRepush(tabs);
     this.logLine('Skipped columns cleared — re-sending those records ✓');
   },
 
@@ -1126,6 +1190,67 @@ const SPSync = {
   // A write SharePoint rejected with 400: figure out WHICH column it choked on.
   // Missing columns get created; a column that still fails on its own is
   // recorded and skipped from then on, so one bad column can't wedge all saves.
+  // A text column created as single-line caps at 255 characters. A checklist JSON
+  // grows past that as items are added, the PATCH 400s, and the old code blacklisted
+  // the whole column — so checklists synced while short and silently stopped once
+  // they grew. Widen the offending column in place and retry before giving up.
+  // Graph cannot change an existing column's type, so a column of the wrong type
+  // (or one SharePoint rejects for any other reason) is unusable forever. Create a
+  // fresh plain-text column and record it as this field's home; reads and writes
+  // both follow the alias from then on. Returns the new column name.
+  async _aliasColumn(base, tab, name) {
+    const cfg = { ...(SP.config.fieldAlias || {}) };
+    const forTab = { ...(cfg[tab] || {}) };
+    if (forTab[name]) return forTab[name];
+    let shape = '(unknown type)';
+    try {
+      const r = await SP.graph(base + '/columns?$select=name,text,number,boolean,dateTime,choice,calculated,readOnly&$top=250');
+      const col = (r.value || []).find(c => c.name === name);
+      if (col) shape = ['text','number','boolean','dateTime','choice','calculated'].filter(k => col[k]).join('/') + (col.readOnly ? ' read-only' : '');
+    } catch (e) {}
+    const alt = name + 'Text';
+    try {
+      await SP.graph(base + '/columns', { method: 'POST', body: JSON.stringify({ name: alt, text: { allowMultipleLines: true, textType: 'plain' } }) });
+    } catch (e) {
+      // Already there from an earlier attempt is fine; anything else is fatal.
+      if (!/exist|duplicate/i.test(String(e.message || e))) return null;
+    }
+    forTab[name] = alt; cfg[tab] = forTab;
+    SP.saveConfig({ fieldAlias: cfg });
+    this.logLine('\u26a0 ' + tab + '.' + name + ' in SharePoint is ' + shape + ' and cannot hold this value \u2014 moved to a new column "' + alt + '"; syncing resumes there \u2713');
+    this._types = null;
+    this.forceRepush([tab]);
+    return alt;
+  },
+
+  async _widenTextColumn(base, tab, name) {
+    try {
+      const r = await SP.graph(base + '/columns?$select=id,name,text,readOnly&$top=250');
+      const col = (r.value || []).find(c => c.name === name);
+      if (!col || !col.text || col.readOnly) return false;
+      if (col.text.allowMultipleLines && col.text.textType === 'plain') return false;
+      await SP.graph(base + '/columns/' + col.id, { method: 'PATCH', body: JSON.stringify({ text: { allowMultipleLines: true, textType: 'plain' } }) });
+      this.logLine('Widened ' + tab + '.' + name + ' in SharePoint (long values now fit) \u2713');
+      return true;
+    } catch (e) { return false; }
+  },
+
+  // Force a re-push of rows whose values may never have landed (after a column
+  // repair). Tracked SEPARATELY from _sigs: _sigs doubles as the three-way-merge
+  // baseline, so clobbering it with sentinels makes the next pull treat every
+  // remote edit as unattributable and keep local — silently dropping other
+  // people's work. Never overwrite a signature to force a write.
+  _forceRepush: null,
+  forceRepush(tabs) {
+    this._forceRepush = this._forceRepush || {};
+    for (const t of (tabs && tabs.length ? tabs : Object.keys(this._sigs || {}))) {
+      const m = this._sigs && this._sigs[t]; if (!m) continue;
+      this._forceRepush[t] = new Set([...m.keys()]);
+    }
+    this._queueFlush(800);
+  },
+  _resigAll() { this.forceRepush(); },
+
   async _repairFields(list) {
     const out = [];
     const skipCfg = { ...(SP.config.skipFields || {}) };
@@ -1174,7 +1299,24 @@ const SPSync = {
           for (const [k, v] of Object.entries(fields)) {
             if (k === 'Title') continue;
             try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify({ [k]: v }) }); }
-            catch (e2) { noteBad(tab, k, String(e2.message || e2).slice(0, 90)); }
+            catch (e2) {
+              // A rejected field is almost always the COLUMN's shape, not the data.
+              // Try to make the column fit before writing the field off: widen it,
+              // then fall back to a replacement column.
+              let saved = false;
+              if (typeof v === 'string' && await this._widenTextColumn(base, tab, k)) {
+                try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify({ [k]: v }) }); saved = true; }
+                catch (e4) {}
+              }
+              if (!saved && typeof v === 'string') {
+                const alt = await this._aliasColumn(base, tab, k);
+                if (alt) {
+                  try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify({ [alt]: v }) }); saved = true; }
+                  catch (e5) {}
+                }
+              }
+              if (!saved) noteBad(tab, k, String(e2.message || e2).slice(0, 90));
+            }
           }
           fields = clean();
           try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify(fields) }); } catch (e3) {}
@@ -1218,6 +1360,7 @@ const SPSync = {
   async start() {
     if (this._started) return;
     this._started = true;
+    if (window.SyncHealth) SyncHealth.schedule();
     if (!Store.__syncHooked) {
       const origSave = Store.save.bind(Store);
       Store.save = () => { SyncEngine._stampChanges(); origSave(); SPSync._onLocalChange(); };
@@ -1514,6 +1657,23 @@ function SharePointView() {
         </div>
       </Card>
       )}
+      {!!cfg.migratedAt && <SyncHealthCard nav={nav}/>}
+      {!!cfg.migratedAt && (
+      <Card>
+        <CardHead title="Re-send everything" right={<Tag tone="ghost">repair</Tag>}/>
+        <div className="card__body col gap-8">
+          <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6, maxWidth: 720}}>Rewrites every record to SharePoint, field by field, and clears any column the app had given up on. Use it when Sync health reports whole columns missing on the server.</div>
+          <div className="row gap-8">
+            <Btn kind="ghost" disabled={busy === 'resend'} onClick={() => run('resend', async () => {
+              SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
+              SPSync._skipRetryAt = 0;
+              addLog('Cleared the skip list — re-sending every record…');
+              SPSync.forceRepush();
+            })}>{busy === 'resend' ? 'Re-sending…' : 'Re-send all records'}</Btn>
+          </div>
+        </div>
+      </Card>
+      )}
       {!!cfg.migratedAt && !!Object.keys(cfg.skipFields || {}).length && (
       <Card>
         <CardHead title="Columns not syncing" right={<Tag tone="ochre">needs attention</Tag>}/>
@@ -1528,11 +1688,7 @@ function SharePointView() {
               await SP.provision(addLog);
               SP.saveConfig({ skipFields: {}, skipFieldsAt: null });
               SPSync._skipRetryAt = 0;
-              for (const t of Object.keys(cfg.skipFields || {})) {
-                const m = SPSync._sigs && SPSync._sigs[t];
-                if (m) for (const k of [...m.keys()]) m.set(k, '\u0000retry');
-              }
-              SPSync._queueFlush(400);
+              SPSync.forceRepush(Object.keys(cfg.skipFields || {}));
               addLog('Cleared — re-sending every record in those lists ✓');
             })}>{busy === 'fixcols' ? 'Re-checking…' : 'Repair columns & try again'}</Btn>
           </div>

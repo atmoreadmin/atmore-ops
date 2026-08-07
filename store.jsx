@@ -418,6 +418,9 @@ const Store = {
 
     // Ensure newer top-level collections exist on older saved states.
     if (!Array.isArray(this.state.webAccounts)) { this.state.webAccounts = []; this.save(); }
+    if (!Array.isArray(this.state.spendLog)) { this.state.spendLog = []; this.save(); }
+    if (!Array.isArray(this.state.employees)) { this.state.employees = defaultEmployees(); this.save(); }
+    if (!Array.isArray(this.state.timeOff)) { this.state.timeOff = []; this.save(); }
     if (!Array.isArray(this.state.maintenance)) { this.state.maintenance = []; this.save(); }
     if (!Array.isArray(this.state.reminders)) {
       // First run with reminders: pre-load a recurring quarterly inspection for each
@@ -515,6 +518,9 @@ const Store = {
       exchanges: [],
       leads: [],
       offers: [],
+      spendLog: [],
+      employees: defaultEmployees(),
+      timeOff: [],
       _offersSeeded: true,
       statuses: defaultStatuses(),
       completedEvents: {},       // calendar events marked done (keyed)
@@ -2853,8 +2859,9 @@ const CAL_CATS = {
   exch:      { label: '1031',          color: 'var(--brick)'     },
   deal:      { label: 'Sale / closing',color: 'var(--blue-deep)' },
   maint:     { label: 'Maintenance',   color: '#4f6d70'         },
+  timeoff:   { label: 'Time off',      color: '#6b5b95'          },
 };
-const CAL_CAT_ORDER = ['task', 'maint', 'rent', 'lease', 'insurance', 'tax', 'refi', 'exch', 'deal'];
+const CAL_CAT_ORDER = ['task', 'maint', 'rent', 'lease', 'insurance', 'tax', 'refi', 'exch', 'deal', 'timeoff'];
 
 function buildCalendarEvents(fromIso, toIso) {
   const s = Store.state;
@@ -2862,6 +2869,18 @@ function buildCalendarEvents(fromIso, toIso) {
   const out = [];
   const inRange = d => d && d >= fromIso && d <= toIso;
   const push = e => { if (inRange(e.date)) out.push(e); };
+
+  // Time off — one chip per day of each approved absence
+  (s.timeOff || []).forEach(t => {
+    const emp = (s.employees || []).find(e => e.id === t.employeeId);
+    if (!emp || !t.startDate) return;
+    const end = t.endDate || t.startDate;
+    for (let d = t.startDate, guard = 0; d <= end && guard < 90; d = addDaysISO(d, 1), guard++) {
+      push({ key: 'timeoff:' + t.id + ':' + d, cat: 'timeoff', date: d, timeOffId: t.id,
+        title: emp.name + ' — ' + (TIME_OFF_LABEL[t.type] || 'Time off') + (t.halfDay ? ' (half day)' : ''),
+        sub: t.note || '', done: false });
+    }
+  });
 
   // Tasks (reminders) — open only; recurring tasks show their next occurrence
   (s.reminders || []).forEach(r => {

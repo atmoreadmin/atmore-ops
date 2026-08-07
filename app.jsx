@@ -128,6 +128,8 @@ const NAV = [
   { sep: true },
   { path: '/transactions', label: 'Transactions' },
   { path: '/contractors',  label: 'Contractors' },
+  { path: '/spend-log',    label: 'Spend log' },
+  { path: '/team',         label: 'Team' },
   { path: '/reports',      label: 'Reports' },
   { path: '/tax-binder',   label: 'Tax Binder' },
 ];
@@ -244,6 +246,10 @@ function App() {
     screen = <BankImportScreen />;
   } else if (top === 'contractors') {
     screen = <ContractorsScreen />;
+  } else if (top === 'spend-log') {
+    screen = <SpendLogScreen />;
+  } else if (top === 'team') {
+    screen = <TeamScreen />;
   } else if (top === 'exch1031') {
     screen = <Exch1031Screen />;
   } else if (top === 'refi') {
