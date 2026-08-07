@@ -608,18 +608,18 @@ function deserializeFromSheet(pulledData, opts) {
   // Spend log — checks written and phone sales. Operational only: never feeds
   // reports or P&L, which read imported bank transactions.
   state.spendLog = Array.isArray(tabs.SpendLog)
-    ? tabs.SpendLog.map(r => ({ id: r.id, date: r.date || '', time: r.time || '', method: r.method === 'check' ? 'check' : 'phone',
+    ? tabs.SpendLog.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, date: r.date || '', time: r.time || '', method: r.method === 'check' ? 'check' : 'phone',
         amount: Number(r.amount) || 0, vendor: r.vendor || '', contractorId: r.contractorId || '', contractorName: r.contractorName || '',
         propertyId: r.propertyId || '', cardLast4: r.cardLast4 == null ? '' : String(r.cardLast4), checkNumber: r.checkNumber == null ? '' : String(r.checkNumber),
         note: r.note || '', voided: r.voided === true || r.voided === 'TRUE' || r.voided === 'true', updatedAt: r.updatedAt || null }))
     : (Store.state.spendLog || []);
 
   state.employees = Array.isArray(tabs.Employees)
-    ? tabs.Employees.map(r => ({ id: r.id, name: r.name || '', updatedAt: r.updatedAt || null }))
+    ? tabs.Employees.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, name: r.name || '', updatedAt: r.updatedAt || null }))
     : (Store.state.employees || []);
 
   state.timeOff = Array.isArray(tabs.TimeOff)
-    ? tabs.TimeOff.map(r => ({ id: r.id, employeeId: r.employeeId || '', type: r.type || 'pto',
+    ? tabs.TimeOff.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, employeeId: r.employeeId || '', type: r.type || 'pto',
         startDate: r.startDate || '', endDate: r.endDate || r.startDate || '',
         halfDay: r.halfDay === true || r.halfDay === 'TRUE' || r.halfDay === 'true',
         note: r.note || '', updatedAt: r.updatedAt || null }))
@@ -1041,3 +1041,4 @@ window.serializeForSheet = serializeForSheet;
 window.auditSyncFields = auditSyncFields;
 window.downloadBackup = downloadBackup;
 window.restoreBackupFromText = restoreBackupFromText;
+window.MERGED_COLLECTIONS = MERGED_COLLECTIONS;

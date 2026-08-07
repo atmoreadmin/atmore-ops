@@ -15,7 +15,8 @@ const SP_SCOPES = ['Sites.Manage.All', 'Sites.ReadWrite.All', 'User.Read'];
 // Bump whenever SHEET_SCHEMA gains a list or column. Every device re-runs the
 // idempotent provision once on its next sync and adopts the new shape.
 // 5 = added SpendLog, Employees, TimeOff.
-const SP_SCHEMA_VER = 5;
+// 6 = those three were created without their RecID column; re-provision + repair.
+const SP_SCHEMA_VER = 6;
 // 'id' collides with SharePoint's own item id — our record id lives in RecID.
 const SP_RENAME = { id: 'RecID', title: 'RecTitle' };
 const spField = k => SP_RENAME[k] || k;
@@ -162,24 +163,51 @@ const SP = {
       if (SP_YR_SOURCE[tabName]) cols.push({ name: 'Yr', indexed: true, number: {} });
       if (byName[tabName]) {
         listIds[tabName] = byName[tabName];
-        // add any columns the list doesn't have yet
-        const have = await this.graph('/sites/' + sid + '/lists/' + byName[tabName] + '/columns?$select=name&$top=200');
-        const haveNames = new Set((have.value || []).map(c => c.name));
-        for (const col of cols.filter(c => !haveNames.has(c.name))) {
-          await this.graph('/sites/' + sid + '/lists/' + byName[tabName] + '/columns', { method: 'POST', body: JSON.stringify(col) });
-        }
-        onLog(tabName + ' — exists ✓');
       } else {
+        // Create the list BARE, then add columns through the same verified path
+        // used below. Columns passed inline to list-creation are best-effort:
+        // Graph can silently drop ones it won't accept in that payload (notably
+        // anything marked indexed), and a list that comes back missing RecID has
+        // no record-id column — every later pull looks unrecognized and every push
+        // re-POSTs it, duplicating the whole list on each sync.
         let created;
         try {
           created = await this.graph('/sites/' + sid + '/lists', {
             method: 'POST',
-            body: JSON.stringify({ displayName: tabName, list: { template: 'genericList' }, columns: cols }),
+            body: JSON.stringify({ displayName: tabName, list: { template: 'genericList' } }),
           });
         } catch (e) { throw new Error('Creating list "' + tabName + '" failed: ' + (e.message || e)); }
         listIds[tabName] = created.id;
-        onLog(tabName + ' — created (' + cols.length + ' columns)');
+        onLog(tabName + ' — created');
       }
+
+      // Add whatever columns the list does not have yet, one at a time, and
+      // verify afterwards. Idempotent for both branches above.
+      const lid = listIds[tabName];
+      const have = await this.graph('/sites/' + sid + '/lists/' + lid + '/columns?$select=name&$top=200');
+      const haveNames = new Set((have.value || []).map(c => c.name));
+      let added = 0;
+      for (const col of cols.filter(c => !haveNames.has(c.name))) {
+        try {
+          await this.graph('/sites/' + sid + '/lists/' + lid + '/columns', { method: 'POST', body: JSON.stringify(col) });
+          added++;
+        } catch (e) {
+          // An indexed column can be refused on some sites; the index is an
+          // optimization, the column is not. Retry without it.
+          if (!col.indexed) throw new Error('Adding column "' + col.name + '" to "' + tabName + '" failed: ' + (e.message || e));
+          const plain = { ...col }; delete plain.indexed;
+          await this.graph('/sites/' + sid + '/lists/' + lid + '/columns', { method: 'POST', body: JSON.stringify(plain) });
+          added++;
+        }
+      }
+      // RecID carries our record identity. Without it the list cannot be synced
+      // at all, so fail loudly here rather than duplicating rows later.
+      if (added) {
+        const after = await this.graph('/sites/' + sid + '/lists/' + lid + '/columns?$select=name&$top=200');
+        const names = new Set((after.value || []).map(c => c.name));
+        if (!names.has('RecID')) throw new Error('List "' + tabName + '" is missing its RecID column and cannot sync safely.');
+      }
+      onLog(tabName + (added ? ' — ' + added + ' column' + (added === 1 ? '' : 's') + ' added ✓' : ' — ok ✓'));
     }
     this.saveConfig({ listIds, provisionedAt: new Date().toISOString() });
     return listIds;
@@ -203,6 +231,52 @@ const SP = {
     // Columns blacklisted for "value too long" are fine now that they are multiline.
     this.saveConfig({ textColsRepaired: true, textColsRepairedV2: true, skipFields: {}, skipFieldsAt: null });
     if (window.SPSync) { SPSync._skipRetryAt = 0; try { SPSync._resigAll(); } catch (e) {} }
+  },
+
+  // One-time repair for lists provisioned without their RecID column. Those rows
+  // carry no record identity: the server copies can never be matched to a local
+  // record, and each pull re-imported them as new. Delete the keyless server rows
+  // and drop the id-less local duplicates they produced, then let the next push
+  // upload the surviving records cleanly.
+  async repairKeylessRows(onLog) {
+    const log = onLog || (() => {});
+    if (this.config.keylessRepairedAt) return 0;
+    const sid = await this.siteId();
+    let removed = 0;
+    for (const t of SP_PARENT_TABS) {
+      const lid = (this.config.listIds || {})[t];
+      if (!lid) continue;
+      let items = [];
+      try { items = await SPSync._fetchList(t); } catch (e) { continue; }
+      const keyless = items.filter(it => (it.fields || {}).RecID == null);
+      // Every row keyless on a non-empty list = the column was missing entirely.
+      // A few keyless rows on an otherwise healthy list are hand-added rows, and
+      // deleting those would destroy someone's manual entry — leave them alone.
+      if (!keyless.length || keyless.length !== items.length) continue;
+      for (const it of keyless) {
+        await this.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
+        removed++;
+      }
+      log(t + ' — cleared ' + keyless.length + ' unidentifiable row' + (keyless.length === 1 ? '' : 's'));
+    }
+    // Local side: drop records that came back id-less, and collapse any record
+    // duplicated under one id (last write wins, matching the merge elsewhere).
+    Store.update(s => {
+      for (const coll of Object.values(window.MERGED_COLLECTIONS || {})) {
+        if (!Array.isArray(s[coll])) continue;
+        const seen = new Map();
+        for (const r of s[coll]) {
+          const id = r && r.id != null ? String(r.id) : '';
+          if (!id) continue;
+          const prev = seen.get(id);
+          if (!prev || String(r.updatedAt || '') >= String(prev.updatedAt || '')) seen.set(id, r);
+        }
+        if (seen.size !== s[coll].length) s[coll] = [...seen.values()];
+      }
+    });
+    this.saveConfig({ keylessRepairedAt: new Date().toISOString() });
+    if (window.SPSync) { SPSync._sigs = {}; SPSync._brokenKey = {}; }
+    return removed;
   },
 
   _titleFor(row) {
@@ -492,6 +566,12 @@ const SPSync = {
     const idx = new Map();
     items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid != null) idx.set(String(rid), it.id); });
     this._items[tabName] = idx;
+    // A list holding rows where none carry a RecID has lost its record-id column.
+    // Nothing can be matched, so an unguarded push would POST every local row as
+    // new on every sync. Flag it; the push skips the tab and provision repairs it.
+    this._brokenKey = this._brokenKey || {};
+    if (items.length && idx.size === 0 && !SP_CHILD_TABS[tabName] && !SP_CONFIG_TABS.includes(tabName)) this._brokenKey[tabName] = true;
+    else delete this._brokenKey[tabName];
     const child = SP_CHILD_TABS[tabName];
     if (child) {
       const byParent = new Map();
@@ -952,6 +1032,8 @@ const SPSync = {
       }
       for (const t of SP_PARENT_TABS) {
         const lid = listIds[t]; if (!lid) continue;
+        // Key column broken (see _indexTab): pushing would duplicate every row.
+        if ((this._brokenKey || {})[t]) continue;
         const m = this._sigs[t];
         const idx = this._items[t] || (this._items[t] = new Map());
         const live = new Set();
@@ -1384,6 +1466,11 @@ const SPSync = {
         this._set('syncing', 'Updating lists…');
         await SP.provision(() => {});
         SP.saveConfig({ schemaVer: SP_SCHEMA_VER });
+        // Lists created by the build that provisioned them without a RecID column
+        // left unmatchable rows on the server and id-less copies locally. Clean
+        // both up once, now that provision has restored the column.
+        this._set('syncing', 'Repairing lists…');
+        await SP.repairKeylessRows(() => {}).catch(() => {});
         // A newly created list starts empty on the server. Clearing the push
         // signatures makes the next push send every local row instead of
         // diffing against a baseline that says "already up there".
