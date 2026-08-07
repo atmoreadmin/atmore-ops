@@ -1047,9 +1047,33 @@ const SPSync = {
         } catch (e) {}
       }
       for (const t of SP_PARENT_TABS) {
-        const lid = listIds[t]; if (!lid) continue;
-        // Key column broken (see _indexTab): pushing would duplicate every row.
-        if ((this._brokenKey || {})[t]) continue;
+        const lid = listIds[t];
+        if (!lid) { this.logLine(t + ' — no list on SharePoint yet; nothing saved for it. Run Create columns & backfill.'); continue; }
+        // Key column missing (see _indexTab): pushing as-is would duplicate every
+        // row, but skipping forever loses the list silently — which is exactly how
+        // a logged day off can vanish with no error anywhere. Repair in place:
+        // re-provision the column, clear the unidentifiable rows, then push the
+        // whole list fresh.
+        if ((this._brokenKey || {})[t]) {
+          this.logLine(t + ' — record-id column missing; repairing before saving…');
+          try {
+            await SP.provision(() => {});
+            const stale = await this._fetchList(t);
+            let cleared = 0;
+            for (const it of stale) {
+              if ((it.fields || {}).RecID != null) continue;
+              await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
+              cleared++;
+            }
+            delete this._brokenKey[t];
+            this._sigs[t] = new Map();          // nothing up there is trusted — re-send all
+            this._items[t] = new Map();
+            this.logLine(t + ' — repaired' + (cleared ? ', cleared ' + cleared + ' unidentifiable row' + (cleared === 1 ? '' : 's') : '') + '; re-sending every row ✓');
+          } catch (e) {
+            this.logLine(t + ' — could not repair (' + (e.message || e) + '). Nothing was saved for this list.');
+            continue;
+          }
+        }
         // Extra server items sharing one record id, spotted while indexing. Left
         // alone they reappear on every pull as a duplicate record.
         const dups = ((this._dupItems || {})[t] || []);

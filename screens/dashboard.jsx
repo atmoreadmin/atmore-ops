@@ -76,7 +76,7 @@ function DashboardScreen() {
   const activeCount = store.properties.filter(p => p.statusCode !== 'I' && p.statusCode !== 'J').length;
 
   // MTD cash out — from transactions, current month, negative amounts
-  const mtdCashOut = store.transactions.filter(t => t.date.startsWith(month) && t.amount < 0)
+  const mtdCashOut = store.transactions.filter(t => t.date && t.date.startsWith(month) && t.amount < 0)
     .reduce((a,t) => a + Math.abs(t.amount), 0);
   // MTD rent in — sum of paid in monthLedger
   const mtdRentIn = totalPaid;
