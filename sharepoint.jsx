@@ -12,6 +12,10 @@ const SP_TENANT = {
 // Sites.Manage.All: Graph's create-list call requires it (ReadWrite.All only
 // covers items in existing lists — reads succeed, provisioning gets denied).
 const SP_SCOPES = ['Sites.Manage.All', 'Sites.ReadWrite.All', 'User.Read'];
+// Bump whenever SHEET_SCHEMA gains a list or column. Every device re-runs the
+// idempotent provision once on its next sync and adopts the new shape.
+// 5 = added SpendLog, Employees, TimeOff.
+const SP_SCHEMA_VER = 5;
 // 'id' collides with SharePoint's own item id — our record id lives in RecID.
 const SP_RENAME = { id: 'RecID', title: 'RecTitle' };
 const spField = k => SP_RENAME[k] || k;
@@ -1369,13 +1373,21 @@ const SPSync = {
     SyncEngine._initSigs();
     try {
       if (!SP.account()) { this._set('error', 'SharePoint sign-in needed — open Integration → SharePoint'); return; }
-      // One-time schema catch-up: lists provisioned by an older build may lack
-      // columns this build writes (e.g. updatedAt). provision() is idempotent
-      // and only adds what's missing.
-      if (SP.config.schemaVer !== 4) {
-        this._set('syncing', 'Updating list columns…');
+      // Schema catch-up: lists provisioned by an older build may lack columns
+      // this build writes (e.g. updatedAt), or may be missing entirely (a new
+      // build added SpendLog / Employees / TimeOff). provision() is idempotent
+      // and only creates what's absent. A version bump forces every device to
+      // run it once; the missing-list check is the safety net for when someone
+      // forgets to bump — without it a whole new list silently never syncs.
+      const schemaMissingList = Object.keys(window.SHEET_SCHEMA || {}).some(t => !(SP.config.listIds || {})[t]);
+      if (SP.config.schemaVer !== SP_SCHEMA_VER || schemaMissingList) {
+        this._set('syncing', 'Updating lists…');
         await SP.provision(() => {});
-        SP.saveConfig({ schemaVer: 4 });
+        SP.saveConfig({ schemaVer: SP_SCHEMA_VER });
+        // A newly created list starts empty on the server. Clearing the push
+        // signatures makes the next push send every local row instead of
+        // diffing against a baseline that says "already up there".
+        this._sigs = {};
       }
       await this.pull();
       this._maybeBackup();
