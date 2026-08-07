@@ -247,7 +247,7 @@ const SP = {
       const lid = (this.config.listIds || {})[t];
       if (!lid) continue;
       let items = [];
-      try { items = await SPSync._fetchList(t); } catch (e) { continue; }
+      try { items = (await SPSync._fetchList(t)) || []; } catch (e) { continue; }
       const keyless = items.filter(it => (it.fields || {}).RecID == null);
       // Every row keyless on a non-empty list = the column was missing entirely.
       // A few keyless rows on an otherwise healthy list are hand-added rows, and
@@ -527,10 +527,16 @@ const SPSync = {
     this.logLine('Picked up ' + added + ' replacement column(s) for ' + tabName + ' \u2713');
   },
 
+  // Returns null when the list does not exist on this site — NOT an empty array.
+  // The difference matters enormously: a pull hands its tabs to
+  // deserializeFromSheet, which reads an empty array as "the server says this
+  // collection is empty" and wipes the local one, while an ABSENT tab correctly
+  // falls back to what this device already has. Returning [] for a missing list
+  // silently erased whole features on every pull.
   async _fetchList(tabName) {
     const sid = await SP.siteId();
     const lid = (SP.config.listIds || {})[tabName];
-    if (!lid) return [];
+    if (!lid) return null;
     let url = '/sites/' + sid + '/lists/' + lid + '/items?expand=fields&$top=500';
     const items = [];
     while (url) {
@@ -689,6 +695,7 @@ const SPSync = {
     this._items = {}; this._childItems = {}; this._rawItems = {}; this._delta = {};
     const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
     const bigLists = [];
+    const missing = [];
     const sid = await SP.siteId();
     // One-time column repair for lists provisioned as rich text (they HTML-mangle
     // stored JSON, e.g. task checklists). No-op after the first successful pass.
@@ -698,6 +705,13 @@ const SPSync = {
     const listIds = SP.config.listIds || {};
     for (const tabName of allTabs) {
       const items = await this._fetchList(tabName);
+      // No such list on the site yet. Leave the tab OUT of the snapshot so this
+      // device keeps its own rows instead of having them wiped by a phantom
+      // "server says empty", and say so plainly in the log.
+      if (items === null) {
+        missing.push(tabName);
+        continue;
+      }
       this._adoptAliases(tabName, items);
       // Tripwire: warn well before SharePoint's 5,000-item list view threshold
       // so there's time to partition (e.g. archive old Transactions by year).
@@ -709,7 +723,20 @@ const SPSync = {
       this._indexTab(tabName, items);
       if (listIds[tabName]) await this._grabDelta(tabName, sid, listIds[tabName]);
     }
-    this.logLine('Full reload from SharePoint (' + allTabs.length + ' lists)');
+    this.logLine('Full reload from SharePoint (' + (allTabs.length - missing.length) + ' of ' + allTabs.length + ' lists)');
+    if (missing.length) {
+      this.logLine('⚠ Not on SharePoint yet: ' + missing.join(', ') + ' — kept this device’s copy. Run Create columns & backfill to add them.');
+      // Provision is idempotent; create what is missing and push it up rather
+      // than leaving the two machines permanently out of step.
+      try {
+        await SP.provision(() => {});
+        this._sigs = {};
+        this.logLine('Created the missing list(s) — sending this device’s records up ✓');
+        this.schedulePush ? this.schedulePush(200) : this._queueFlush(200);
+      } catch (e) {
+        this.logLine('Could not create the missing list(s): ' + (e.message || e));
+      }
+    }
     this._finishPull(tabs, bigLists, 'Loaded from SharePoint');
   },
 
@@ -1053,7 +1080,7 @@ const SPSync = {
       for (const t of [...(this._recheck || new Set())]) {
         if (!listIds[t]) continue;
         try {
-          const items = await this._fetchList(t);
+          const items = (await this._fetchList(t)) || [];
           const idx = this._items[t] || (this._items[t] = new Map());
           items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid != null && !idx.has(String(rid))) idx.set(String(rid), it.id); });
           this._recheck.delete(t);
@@ -1071,7 +1098,7 @@ const SPSync = {
           this.logLine(t + ' — record-id column missing; repairing before saving…');
           try {
             await SP.provision(() => {});
-            const stale = await this._fetchList(t);
+            const stale = (await this._fetchList(t)) || [];
             let cleared = 0;
             for (const it of stale) {
               if ((it.fields || {}).RecID != null) continue;
@@ -1249,7 +1276,7 @@ const SPSync = {
         const sig = JSON.stringify(payload[t] || []);
         if (this._cfgSigs[t] === sig) continue;
         cfgTabs++;
-        const existing = await this._fetchList(t);
+        const existing = (await this._fetchList(t)) || [];
         for (const it of existing) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
         for (const r of (payload[t] || [])) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
         this._cfgSigs[t] = sig;
@@ -1594,7 +1621,7 @@ function SharePointView() {
       const groups = []; let scanned = 0;
       for (const t of SP_PARENT_TABS) {
         if (!listIds[t]) continue;
-        const items = await SPSync._fetchList(t); scanned++;
+        const items = (await SPSync._fetchList(t)) || []; scanned++;
         const byRid = new Map();
         items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid == null) return; const k = String(rid); if (!byRid.has(k)) byRid.set(k, []); byRid.get(k).push(it); });
         for (const [rid, list] of byRid) {
@@ -1614,7 +1641,7 @@ function SharePointView() {
       const payload = serializeForSheet(Store.state).tabs;
       for (const [t, [, fk]] of Object.entries(SP_CHILD_TABS)) {
         if (!listIds[t]) continue;
-        const items = await SPSync._fetchList(t); scanned++;
+        const items = (await SPSync._fetchList(t)) || []; scanned++;
         const fkSp = spField(fk);
         const cols = ((window.SHEET_SCHEMA[t] || {}).columns || []).map(c => spField(c.key));
         const localBy = new Map();
