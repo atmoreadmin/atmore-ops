@@ -564,7 +564,23 @@ const SPSync = {
 
   _indexTab(tabName, items) {
     const idx = new Map();
-    items.forEach(it => { const rid = (it.fields || {}).RecID; if (rid != null) idx.set(String(rid), it.id); });
+    // Two server items under one record id (what a list provisioned without its
+    // key column produced). The map can only point at one, so the other is
+    // invisible to every future push and gets re-imported on every pull. Keep
+    // the newest and queue the rest for deletion.
+    const byRid = new Map();
+    items.forEach(it => {
+      const rid = (it.fields || {}).RecID;
+      if (rid == null) return;
+      const k = String(rid);
+      const prev = byRid.get(k);
+      const stamp = it => String((it.fields || {}).updatedAt || (it.lastModifiedDateTime || ''));
+      if (!prev) { byRid.set(k, it); return; }
+      const [keep, drop] = stamp(it) >= stamp(prev) ? [it, prev] : [prev, it];
+      byRid.set(k, keep);
+      (this._dupItems = this._dupItems || {})[tabName] = (this._dupItems[tabName] || []).concat(drop.id);
+    });
+    byRid.forEach((it, rid) => idx.set(rid, it.id));
     this._items[tabName] = idx;
     // A list holding rows where none carry a RecID has lost its record-id column.
     // Nothing can be matched, so an unguarded push would POST every local row as
@@ -1034,6 +1050,16 @@ const SPSync = {
         const lid = listIds[t]; if (!lid) continue;
         // Key column broken (see _indexTab): pushing would duplicate every row.
         if ((this._brokenKey || {})[t]) continue;
+        // Extra server items sharing one record id, spotted while indexing. Left
+        // alone they reappear on every pull as a duplicate record.
+        const dups = ((this._dupItems || {})[t] || []);
+        if (dups.length) {
+          for (const itemId of dups) {
+            await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + itemId, { method: 'DELETE' }).catch(() => {});
+          }
+          this.logLine('Removed ' + dups.length + ' duplicate row' + (dups.length === 1 ? '' : 's') + ' from ' + t + ' ✓');
+          this._dupItems[t] = [];
+        }
         const m = this._sigs[t];
         const idx = this._items[t] || (this._items[t] = new Map());
         const live = new Set();

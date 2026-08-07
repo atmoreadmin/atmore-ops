@@ -605,24 +605,37 @@ function deserializeFromSheet(pulledData, opts) {
     ? tabs.WebAccounts.map(r => ({ id: r.id, org: r.org || '', url: r.url || '', username: r.username || '', password: r.password || '', email: r.email || '', notes: r.notes || '', updatedAt: r.updatedAt || null }))
     : (Store.state.webAccounts || []);
 
+  // A server list can hold two rows under one record id (a list provisioned
+  // without its key column produced exactly that). Importing both would show the
+  // same payment or absence twice, so collapse on the way in: newest write wins.
+  const keepLatestById = rows => {
+    const keep = new Map();
+    for (const r of rows) {
+      const id = String(r.id);
+      const prev = keep.get(id);
+      if (!prev || String(r.updatedAt || '') >= String(prev.updatedAt || '')) keep.set(id, r);
+    }
+    return [...keep.values()];
+  };
+
   // Spend log — checks written and phone sales. Operational only: never feeds
   // reports or P&L, which read imported bank transactions.
   state.spendLog = Array.isArray(tabs.SpendLog)
-    ? tabs.SpendLog.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, date: r.date || '', time: r.time || '', method: r.method === 'check' ? 'check' : 'phone',
+    ? keepLatestById(tabs.SpendLog.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, date: r.date || '', time: r.time || '', method: r.method === 'check' ? 'check' : 'phone',
         amount: Number(r.amount) || 0, vendor: r.vendor || '', contractorId: r.contractorId || '', contractorName: r.contractorName || '',
         propertyId: r.propertyId || '', cardLast4: r.cardLast4 == null ? '' : String(r.cardLast4), checkNumber: r.checkNumber == null ? '' : String(r.checkNumber),
-        note: r.note || '', voided: r.voided === true || r.voided === 'TRUE' || r.voided === 'true', updatedAt: r.updatedAt || null }))
+        note: r.note || '', voided: r.voided === true || r.voided === 'TRUE' || r.voided === 'true', updatedAt: r.updatedAt || null })))
     : (Store.state.spendLog || []);
 
   state.employees = Array.isArray(tabs.Employees)
-    ? tabs.Employees.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, name: r.name || '', updatedAt: r.updatedAt || null }))
+    ? keepLatestById(tabs.Employees.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, name: r.name || '', updatedAt: r.updatedAt || null })))
     : (Store.state.employees || []);
 
   state.timeOff = Array.isArray(tabs.TimeOff)
-    ? tabs.TimeOff.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, employeeId: r.employeeId || '', type: r.type || 'pto',
+    ? keepLatestById(tabs.TimeOff.filter(r => r && r.id != null && r.id !== '').map(r => ({ id: r.id, employeeId: r.employeeId || '', type: r.type || 'pto',
         startDate: r.startDate || '', endDate: r.endDate || r.startDate || '',
         halfDay: r.halfDay === true || r.halfDay === 'TRUE' || r.halfDay === 'true',
-        note: r.note || '', updatedAt: r.updatedAt || null }))
+        note: r.note || '', updatedAt: r.updatedAt || null })))
     : (Store.state.timeOff || []);
 
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.

@@ -64,6 +64,7 @@ const Store = {
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
       if (dedupeIds(this.state)) this.save();
+      if (collapseDuplicateRecords(this.state)) this.save();
       // Draws used to be identified by position, so two people appending one both
       // made "row 3" and a sync replaced the group wholesale. Give every draw a
       // stable id so they can be merged individually.
@@ -1571,6 +1572,32 @@ function stampRowIds(state) {
   return n;
 }
 
+// Collections whose ids are minted with a per-device tag, so two devices can
+// never mint the same id. A shared id here therefore means ONE record imported
+// twice — the fix is to collapse them (newest write wins), not to re-mint, which
+// would leave the same payment or absence showing twice.
+// The list is inline for the same reason dedupeIds inlines its specs: Store.load()
+// runs at top level, before any module-scope const below it is initialized.
+function collapseDuplicateRecords(state) {
+  const colls = ['spendLog', 'employees', 'timeOff'];
+  let removed = 0;
+  for (const coll of colls) {
+    const rows = state[coll];
+    if (!Array.isArray(rows) || !rows.length) continue;
+    const keep = new Map();
+    for (const r of rows) {
+      if (!r || r.id == null || r.id === '') { removed++; continue; }
+      const id = String(r.id);
+      const prev = keep.get(id);
+      if (!prev) { keep.set(id, r); continue; }
+      removed++;
+      if (String(r.updatedAt || '') >= String(prev.updatedAt || '')) keep.set(id, r);
+    }
+    if (keep.size !== rows.length) state[coll] = [...keep.values()];
+  }
+  return removed;
+}
+
 function dedupeIds(state, opts) {
   const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
   const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100],['exchanges','ex',100]];
@@ -1593,6 +1620,7 @@ function dedupeIds(state, opts) {
   return changes.length;
 }
 function idRepairLog(state) { return ((state || {})._idRepairs || []); }
+Object.assign(window, { collapseDuplicateRecords });
 
 function setUI(patch) {
   Store.update(s => Object.assign(s.uiState, patch));
