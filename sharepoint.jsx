@@ -16,7 +16,11 @@ const SP_SCOPES = ['Sites.Manage.All', 'Sites.ReadWrite.All', 'User.Read'];
 // idempotent provision once on its next sync and adopts the new shape.
 // 5 = added SpendLog, Employees, TimeOff.
 // 6 = those three were created without their RecID column; re-provision + repair.
-const SP_SCHEMA_VER = 6;
+// 7 = AppLocks list (multi-user record locking, presence.jsx).
+const SP_SCHEMA_VER = 7;
+// Coordination list — not app data, so it lives outside SHEET_SCHEMA and is
+// never serialized, pulled into state, or counted in sync totals.
+const SP_LOCK_LIST = { name: 'AppLocks', columns: ['RecID', 'Holder', 'Session', 'Label', 'AcquiredAt', 'HeartbeatAt'] };
 // 'id' collides with SharePoint's own item id — our record id lives in RecID.
 const SP_RENAME = { id: 'RecID', title: 'RecTitle' };
 const spField = k => SP_RENAME[k] || k;
@@ -84,7 +88,25 @@ const SP = {
     // with the CURRENT consent state (a cached token predating admin consent
     // keeps failing until it expires otherwise).
     try { return (await this.msalApp().acquireTokenSilent({ scopes: SP_SCOPES, account, forceRefresh: true })).accessToken; }
-    catch (e) { return (await this.msalApp().acquireTokenPopup({ scopes: SP_SCOPES, prompt: 'consent' })).accessToken; }
+    catch (e) {
+      // NON-INTERACTIVE BY DEFAULT. An interactive popup is only ever legitimate
+      // when the user just did something. Almost every caller here is a timer —
+      // the delta poll, the lock heartbeat every 6s, the debounced flush, the
+      // pagehide push — and from a timer the browser blocks the popup anyway (no
+      // user gesture) or, worse, flashes a sign-in window at someone who never
+      // clicked. Guarding those one at a time was whack-a-mole; the default is now
+      // "no popup" and gesture-driven paths opt in with SP.interactive(...).
+      if (!this._interactive) { const err = new Error('Sign-in needed'); err.needsSignIn = true; throw err; }
+      return (await this.msalApp().acquireTokenPopup({ scopes: SP_SCOPES, prompt: 'consent' })).accessToken;
+    }
+  },
+  _interactive: 0,
+  // Wrap a user-initiated flow so a token refresh inside it MAY prompt. Anything
+  // not wrapped is treated as unattended.
+  async interactive(fn) {
+    this._interactive++;
+    try { return await fn(); }
+    finally { this._interactive--; }
   },
 
   async graph(path, opts = {}, _attempt = 0) {
@@ -105,13 +127,32 @@ const SP = {
     }
     if (res.status === 204) return null;
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(((j.error && j.error.code) ? j.error.code + ': ' : '') + ((j.error && j.error.message) || ('Graph ' + res.status)));
+    if (!res.ok) {
+      const err = new Error(((j.error && j.error.code) ? j.error.code + ': ' : '') + ((j.error && j.error.message) || ('Graph ' + res.status)));
+      // Callers need to distinguish "already gone" (404 — a delete's goal state)
+      // from a real failure. The message alone carries the Graph error CODE, not
+      // the status, so expose the status explicitly.
+      err.status = res.status;
+      err.graphCode = (j.error && j.error.code) || '';
+      throw err;
+    }
     return j;
   },
 
+  // Resolved once per page load, then reused. It is still resolved BY PATH (a
+  // cached id can silently point at a previous site — reads on the path succeed
+  // while writes on the stale id get denied), just not on every single call:
+  // _fetchList asks for it per list, so a full pull was spending ~20 extra round
+  // trips here, and the lock poll adds two every few seconds. The in-flight
+  // promise is shared so parallel callers make one request, and a failure is not
+  // cached.
   async siteId() {
-    // Always resolve by path — a cached id can silently point at a previous
-    // site (reads on the path succeed while writes on the stale id get denied).
+    if (this._sidPath === SP_TENANT.sitePath && this._sidPromise) return this._sidPromise;
+    this._sidPath = SP_TENANT.sitePath;
+    this._sidPromise = this._resolveSiteId().catch(e => { this._sidPromise = null; throw e; });
+    return this._sidPromise;
+  },
+  async _resolveSiteId() {
     const s = await this.graph('/sites/' + this.config.siteHost + ':' + this.config.sitePath);
     if (this.config.siteId && this.config.siteId !== s.id) {
       // site changed → cached list ids belong to the old site
@@ -157,6 +198,7 @@ const SP = {
     const byName = {};
     (existing.value || []).forEach(l => { byName[l.displayName] = l.id; });
     const listIds = { ...(this.config.listIds || {}) };
+    const colNames = { ...(this.config.colNames || {}) };
     for (const [tabName, def] of Object.entries(window.SHEET_SCHEMA)) {
       const cols = def.columns.map(c => this._columnDef(c.key, c.type));
       cols.push({ name: 'updatedAt', text: {} });   // per-record edit stamp (live sync + Sheet export)
@@ -202,14 +244,41 @@ const SP = {
       }
       // RecID carries our record identity. Without it the list cannot be synced
       // at all, so fail loudly here rather than duplicating rows later.
+      let finalNames = haveNames;
       if (added) {
         const after = await this.graph('/sites/' + sid + '/lists/' + lid + '/columns?$select=name&$top=200');
         const names = new Set((after.value || []).map(c => c.name));
         if (!names.has('RecID')) throw new Error('List "' + tabName + '" is missing its RecID column and cannot sync safely.');
+        finalNames = names;
       }
+      // Record which columns this list ACTUALLY has. A serialized row cannot carry
+      // "this column does not exist server-side" — _rowFromItem fills every schema
+      // column with null whether the column is missing or merely blank — so the
+      // merge needs this out-of-band truth to avoid treating a non-existent column
+      // as a value someone cleared, and erasing the local value for good.
+      colNames[tabName] = [...finalNames];
       onLog(tabName + (added ? ' — ' + added + ' column' + (added === 1 ? '' : 's') + ' added ✓' : ' — ok ✓'));
     }
-    this.saveConfig({ listIds, provisionedAt: new Date().toISOString() });
+    // Coordination list for record locks. Plain text columns; RecID indexed so
+    // it behaves like every other list here.
+    {
+      const L = SP_LOCK_LIST;
+      if (!byName[L.name]) {
+        const created = await this.graph('/sites/' + sid + '/lists', { method: 'POST', body: JSON.stringify({ displayName: L.name, list: { template: 'genericList' } }) });
+        byName[L.name] = created.id;
+        onLog(L.name + ' — created');
+      }
+      listIds[L.name] = byName[L.name];
+      const have = await this.graph('/sites/' + sid + '/lists/' + listIds[L.name] + '/columns?$select=name&$top=200');
+      const haveNames = new Set((have.value || []).map(c => c.name));
+      for (const name of L.columns.filter(n => !haveNames.has(n))) {
+        const def = name === 'RecID' ? { name, indexed: true, text: {} } : { name, text: {} };
+        await this.graph('/sites/' + sid + '/lists/' + listIds[L.name] + '/columns', { method: 'POST', body: JSON.stringify(def) })
+          .catch(async () => { await this.graph('/sites/' + sid + '/lists/' + listIds[L.name] + '/columns', { method: 'POST', body: JSON.stringify({ name, text: {} }) }).catch(() => {}); });
+      }
+      onLog(L.name + ' — ok ✓');
+    }
+    this.saveConfig({ listIds, colNames, provisionedAt: new Date().toISOString() });
     return listIds;
   },
 
@@ -242,7 +311,7 @@ const SP = {
     const log = onLog || (() => {});
     if (this.config.keylessRepairedAt) return 0;
     const sid = await this.siteId();
-    let removed = 0;
+    let removed = 0, failed = 0;
     for (const t of SP_PARENT_TABS) {
       const lid = (this.config.listIds || {})[t];
       if (!lid) continue;
@@ -253,11 +322,19 @@ const SP = {
       // A few keyless rows on an otherwise healthy list are hand-added rows, and
       // deleting those would destroy someone's manual entry — leave them alone.
       if (!keyless.length || keyless.length !== items.length) continue;
+      // Per-tab counters for the message; the cumulative ones drive the return
+      // value and the keylessRepairedAt gate. Logging the cumulative totals on a
+      // per-tab line overstated the count and blamed later tabs for earlier tabs'
+      // failures — wrong numbers against the wrong list, in the log read to
+      // diagnose exactly these problems.
+      let tabRemoved = 0, tabFailed = 0;
       for (const it of keyless) {
-        await this.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
-        removed++;
+        try { await this.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }); tabRemoved++; }
+        catch (e) { if (_spGone(e)) tabRemoved++; else tabFailed++; }
       }
-      log(t + ' — cleared ' + keyless.length + ' unidentifiable row' + (keyless.length === 1 ? '' : 's'));
+      removed += tabRemoved; failed += tabFailed;
+      log(t + ' — cleared ' + tabRemoved + ' unidentifiable row' + (tabRemoved === 1 ? '' : 's')
+        + (tabFailed ? ' (' + tabFailed + ' could not be removed — will retry)' : ''));
     }
     // Local side: drop records that came back id-less, and collapse any record
     // duplicated under one id (last write wins, matching the merge elsewhere).
@@ -274,7 +351,11 @@ const SP = {
         if (seen.size !== s[coll].length) s[coll] = [...seen.values()];
       }
     });
-    this.saveConfig({ keylessRepairedAt: new Date().toISOString() });
+    // Only mark the repair done when nothing was left behind. Stamping it while
+    // unidentifiable rows survive retires the repair permanently (line 285 returns
+    // early forever after), leaving a list that can never be matched by RecID —
+    // so every push re-creates those rows as duplicates.
+    if (!failed) this.saveConfig({ keylessRepairedAt: new Date().toISOString() });
     if (window.SPSync) { SPSync._sigs = {}; SPSync._brokenKey = {}; }
     return removed;
   },
@@ -436,7 +517,8 @@ const SP_CONFIG_TABS = ['Lists', 'Statuses', 'AutoTagRules', 'CompletedEvents'];
 const SP_CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
 const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts', 'SpendLog', 'Employees', 'TimeOff'];
 window.SP_PARENT_TABS_PUBLIC = SP_PARENT_TABS;   // sync-health.jsx compares these lists
-// Sheet-tab name -> Store collection name (conflict resolution writes back through this).
+// Published for sync-health.jsx: it needs tab→collection to tell a record this
+// device deliberately deleted from one it simply never received.// Sheet-tab name -> Store collection name (conflict resolution writes back through this).
 // Detail lists that merge row-by-row instead of the whole group being replaced.
 // key() must be stable across machines: either a minted id, or a natural key
 // that cannot collide (utilities are one per type; 1099s one per tax year).
@@ -456,21 +538,43 @@ const SP_DETAIL_MERGE = {
 // state.reminders, and a stale 'tasks' here silently disabled both features.
 const SP_COLL = Object.assign({ Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors', Refis: 'refis', Exchanges: 'exchanges', Leads: 'leads', Offers: 'offers', Tasks: 'reminders', Maintenance: 'maintenance', WebAccounts: 'webAccounts' },
   (typeof MERGED_COLLECTIONS !== 'undefined' ? MERGED_COLLECTIONS : null));
+// SP_COLL decides which collections can record a deletion at all: noteTombstone
+// returns early for an unmapped tab, so a missing entry means deletes in that
+// collection never propagate and the row returns on the next pull. The newer
+// collections (SpendLog, Employees, TimeOff) arrive only via MERGED_COLLECTIONS,
+// which sync.jsx publishes on window — a cross-file dependency that would break
+// silently if the two scripts were ever reordered. Fail loudly instead.
+if (typeof MERGED_COLLECTIONS === 'undefined') {
+  console.error('SP_COLL built without MERGED_COLLECTIONS — sync.jsx must load before sharepoint.jsx, or deletes in SpendLog/Employees/TimeOff will not propagate.');
+}
+window.SP_COLL_PUBLIC = SP_COLL;
+
+// A delete whose target is already gone has achieved its goal — treat it as
+// success. Graph reports this as 404 / itemNotFound.
+function _spGone(e) {
+  return !!e && (e.status === 404 || /itemnotfound|resourcenotfound/i.test(String(e.graphCode || e.message || '')));
+}
 
 const SPSync = {
   _sigs: null,        // tab -> Map(recId -> row JSON) — change detection between saves
   _items: null,       // tab -> Map(recId -> SP item id)
   _childItems: null,  // childTab -> Map(parentId -> [SP item ids])
+  _childStale: {},    // childTab -> Map(parentId -> [ids awaiting deletion])
   _childSigs: null,   // childTab -> Map(parentId -> group JSON)
-  _cfgSigs: null,     // configTab -> whole-tab JSON
+  // An OBJECT from the start, unlike its siblings: it is only ever read with
+  // string comparisons and `delete`, both of which throw or mislead on null, and
+  // making the shape an invariant is safer than every caller remembering to guard.
+  _cfgSigs: {},       // configTab -> whole-tab JSON
   _rawItems: null,    // tab -> Map(SP item id -> {id, fields}) — cache delta merges into
   _delta: null,       // tab -> Graph deltaLink (relative) for incremental pulls
   _log: (() => { try { return JSON.parse(localStorage.getItem('sp_activity') || '[]'); } catch (e) { return []; } })(),
   _pushTimer: null,
+  _pushAt: 0,          // when the pending flush is due — keeps _queueFlush monotonic
   _flushing: false,
   _lastPullAt: 0,
   _ready: false,       // first pull of the session has landed — edits are safe to merge
   _offlineAck: false,  // user chose to work without reaching SharePoint
+  _pulledOnce: false,  // has this device loaded the server's copy this session?
   _started: false,
 
   liveOn() { return !!(SP.config || SP.loadConfig()).liveSync && !!SP.config.migratedAt; },
@@ -584,7 +688,11 @@ const SPSync = {
       if (!prev) { byRid.set(k, it); return; }
       const [keep, drop] = stamp(it) >= stamp(prev) ? [it, prev] : [prev, it];
       byRid.set(k, keep);
-      (this._dupItems = this._dupItems || {})[tabName] = (this._dupItems[tabName] || []).concat(drop.id);
+      // Deduped: this queue is rebuilt on every pull, and concat without a guard
+      // grew it without bound across a session.
+      const q = (this._dupItems = this._dupItems || {})[tabName] || [];
+      if (!q.includes(drop.id)) q.push(drop.id);
+      this._dupItems[tabName] = q;
     });
     byRid.forEach((it, rid) => idx.set(rid, it.id));
     this._items[tabName] = idx;
@@ -625,25 +733,43 @@ const SPSync = {
       // collisions need a human.
       const merged = this._merge3(newState);
       SyncEngine._applyingRemote = true;
-      Store.state = merged.state;
+      Store.state = Store.ensureShape(merged.state);
       Store.save();
       Store.notify();
       SyncEngine._applyingRemote = false;
       this._baseline(newState);
+      this._applyRepush();
       this._reissueDeletes(revived);
       if (merged.tookTheirs) this.logLine('Merged ' + merged.tookTheirs + ' field(s) changed by someone else');
       if (merged.conflicts) this.logLine('\u26a0 ' + merged.conflicts + ' field(s) changed in two places at once — kept yours, flagged for review (Settings \u2192 Integration)');
+      // Two very different reasons `dirty` can be set here. Normal case: unsaved
+      // work about to go up — show "Saving…" and flush promptly. Stuck case: work
+      // SharePoint keeps refusing, which now reaches this branch every ~10s because
+      // pulls are no longer gated on `dirty`. Resetting the status and timer there
+      // would bury the "couldn't be saved" message under a permanent "Saving…" and
+      // replace the 20s backoff with 500ms, hammering an endpoint already refusing.
+      // Keep the merge either way — that is how incoming changes keep arriving —
+      // but leave the stuck state's own status and backoff alone.
+      if (this._stuck) {
+        this._set('error', this._stuck + ' change' + (this._stuck === 1 ? '' : 's') + ' couldn\u2019t be saved to SharePoint — still on this computer and retrying. Other people\u2019s changes are still coming in normally. (Settings \u2192 Integration for details)');
+        this._queueFlush(20000);
+        return;
+      }
       this._set('dirty', 'Saving…');
       this._queueFlush(500);
       return;
     }
     SyncEngine._applyingRemote = true;
-    Store.state = newState;
+    Store.state = Store.ensureShape(newState);
     Store.save();
     Store.notify();
     SyncEngine._applyingRemote = false;
     this._baseline();
     SyncEngine.dirty = false;
+    // Not an early return: a rebuilt list still needs this device's pending
+    // deletions re-sent, and _reissueDeletes works again now that the reset
+    // leaves real (empty) Maps behind.
+    const repushed = this._applyRepush();
     if (this._reissueDeletes(revived)) {
       SyncEngine.dirty = true;
       this.logLine('Re-sending ' + revived.length + ' deletion' + (revived.length === 1 ? '' : 's') + ' SharePoint still had');
@@ -672,6 +798,9 @@ const SPSync = {
         return;
       }
     }
+    // A rebuilt list is mid-upload; leave the status on "Saving" for the flush
+    // _applyRepush queued rather than claiming everything is synced.
+    if (repushed) return;
     SyncEngine.lastSyncedAt = new Date().toISOString();
     if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
     else this._set('synced', doneMsg);
@@ -690,6 +819,16 @@ const SPSync = {
 
   // Pull every list, rebuild app state, rebaseline all signatures + item indexes.
   async pull() {
+    // Held for the whole pull so flush() can stand aside — a push built from the
+    // state this is about to replace would fight it. A COUNTER, not a flag:
+    // deltaPull falls back to a full pull from inside its own guard, and a plain
+    // boolean would be cleared by the inner call while the outer was still going.
+    this._pulling = (this._pulling || 0) + 1;
+    try { return await this._pull(); }
+    finally { this._pulling--; }
+  },
+
+  async _pull() {
     this._set('syncing', 'Loading from SharePoint…');
     const tabs = {};
     this._items = {}; this._childItems = {}; this._rawItems = {}; this._delta = {};
@@ -730,21 +869,34 @@ const SPSync = {
       // than leaving the two machines permanently out of step.
       try {
         await SP.provision(() => {});
-        this._sigs = {};
+        // Clearing the signatures HERE would be dead code: _finishPull runs
+        // _baseline() a moment later, which rebuilds every signature from local
+        // state and declares it all already-uploaded. Flag it instead; the reset
+        // is applied after the baseline (see _applyRepush).
+        this.markRepush(missing);
         this.logLine('Created the missing list(s) — sending this device’s records up ✓');
         this.schedulePush ? this.schedulePush(200) : this._queueFlush(200);
       } catch (e) {
         this.logLine('Could not create the missing list(s): ' + (e.message || e));
       }
     }
+    // Settings may now be pushed: this device has seen SharePoint's copy, so a
+    // diff against it is meaningful rather than a defaults-over-real-data wipe.
+    this._pulledOnce = true;
     this._finishPull(tabs, bigLists, 'Loaded from SharePoint');
   },
 
   // Incremental refresh: ask each list only for what changed since last time.
   // Falls back to a full pull if any cursor is missing or expired.
   async deltaPull() {
-    if (this._flushing) return;
-    if (!this._delta || !this._rawItems || !Object.keys(this._delta).length) return this.pull();
+    if (this._flushing || this._pulling) return;
+    this._pulling = (this._pulling || 0) + 1;
+    try { return await this._deltaPull(); }
+    finally { this._pulling--; }
+  },
+
+  async _deltaPull() {
+    if (!this._delta || !this._rawItems || !Object.keys(this._delta).length) { this._deltaBroken = Date.now(); return this.pull(); }
     const sid = await SP.siteId();
     const listIds = SP.config.listIds || {};
     let changed = 0;
@@ -760,7 +912,7 @@ const SPSync = {
             let fields = it.fields;
             if (!fields) {
               try { const full = await SP.graph('/sites/' + sid + '/lists/' + listIds[t] + '/items/' + it.id + '?expand=fields'); fields = full.fields; }
-              catch (e) { if (/404/.test(String(e.message || e))) { if (raw.delete(key)) changed++; continue; } throw e; }
+              catch (e) { if (_spGone(e)) { if (raw.delete(key)) changed++; continue; } throw e; }
             }
             raw.set(key, { id: it.id, fields: fields || {} });
             changed++;
@@ -772,8 +924,10 @@ const SPSync = {
       }
     } catch (e) {
       this.logLine('Quick refresh failed (' + (e.message || e) + ') — doing a full reload');
+      this._deltaBroken = Date.now();
       return this.pull();
     }
+    this._deltaBroken = 0;
     this._lastPullAt = Date.now();
     if (!changed) { if (SyncEngine.dirty) this._queueFlush(500); return; }
     const tabs = {};
@@ -796,6 +950,29 @@ const SPSync = {
   //   mine === base  -> I didn't touch it, take theirs
   //   theirs === base -> they didn't touch it, keep mine
   //   both moved     -> real collision: keep mine, flag it for review
+  // Fields that cannot round-trip through SharePoint for this tab, so a null coming
+  // back is the ABSENCE of a column rather than a value someone cleared. Two
+  // sources, both already maintained: skipFields (columns SharePoint refused, kept
+  // by the repair pass) and colNames (what provisioning actually found on the
+  // list). _rowFromItem fills every schema column with null either way, so without
+  // this the merge treats a missing column as a remote clear and erases the local
+  // value permanently — the column is unpushable, so nothing restores it.
+  _unbacked(tabName) {
+    const cfg = SP.config || {};
+    const out = new Set((cfg.skipFields || {})[tabName] || []);
+    const known = (cfg.colNames || {})[tabName];
+    if (known && known.length) {
+      const have = new Set(known);
+      const cols = ((window.SHEET_SCHEMA || {})[tabName] || {}).columns || [];
+      // spField maps a state key to its SharePoint column name.
+      cols.forEach(c => { if (!have.has(spField(c.key))) out.add(c.key); });
+    }
+    // skipFields holds SharePoint column names; map them back to state keys too.
+    const cols = ((window.SHEET_SCHEMA || {})[tabName] || {}).columns || [];
+    cols.forEach(c => { if (out.has(spField(c.key))) out.add(c.key); });
+    return out;
+  },
+
   _merge3(remoteState) {
     const eq = (a, b) => {
       // Use Reconcile's comparison: the local side holds the app's shapes (true,
@@ -819,15 +996,26 @@ const SPSync = {
         // deleted; edited on both sides → keep mine and flag it.
         const base = new Map();
         try { JSON.parse((this._detailBase || {})[t] || '[]').forEach(r => base.set(det.key(r), r)); } catch (e) {}
+        // Rows with no stable key cannot be matched — but they must NOT be dropped.
+        // They were filtered out of `loc` and never re-added, so any child row
+        // missing its key (one created before the key column existed, or added
+        // between a save and this merge) was silently deleted from state on the
+        // next pull. stampRowIds gives them a key on the next save; until then they
+        // ride along untouched.
+        const keyless = (localTabs[t] || []).filter(r => r && !det.key(r));
         const loc = new Map((localTabs[t] || []).filter(r => r && det.key(r)).map(r => [det.key(r), r]));
         const rem = new Map((remoteTabs[t] || []).filter(r => r && det.key(r)).map(r => [det.key(r), r]));
         const rows = [];
+        const unbackedDet = this._unbacked(t);
         for (const [k, r] of rem) {
           const mine = loc.get(k);
           if (!mine) { if (!base.has(k)) rows.push(r); continue; }
           const was = base.get(k);
           const out = { ...r };
           for (const f of det.fields) {
+            // Same rule as the parent branch: a null in a column that does not exist
+            // server-side is a missing column, not a cleared value.
+            if (!(f in r) || (unbackedDet.has(f) && (r[f] == null || r[f] === ''))) { out[f] = mine[f]; continue; }
             if (eq(mine[f], r[f])) { out[f] = mine[f]; continue; }
             if (!was) { out[f] = mine[f]; continue; }
             if (eq(mine[f], was[f])) { out[f] = r[f]; tookTheirs++; continue; }
@@ -839,6 +1027,8 @@ const SPSync = {
           rows.push(out);
         }
         for (const [k, r] of loc) if (!rem.has(k)) rows.push(r);
+        for (const r of keyless) rows.push(r);
+        if (keyless.length) this.logLine(keyless.length + ' ' + t + ' row(s) have no row id yet — kept as-is, they will be identified on the next save');
         if (det.ordBy) {
           const seen = {};
           rows.forEach(r => { const g = det.ordBy(r); r.ord = (seen[g] = (seen[g] == null ? 0 : seen[g] + 1)); });
@@ -848,6 +1038,15 @@ const SPSync = {
       }
       if (!SP_PARENT_TABS.includes(t)) { outTabs[t] = localTabs[t] || remoteTabs[t]; continue; }
       const base = (this._sigs && this._sigs[t]) || new Map();
+      // Do we have baseline KNOWLEDGE for this tab at all? An empty map means no
+      // (first pull of the session, or _applyRepush deliberately cleared it to
+      // re-upload a rebuilt list) — which is a statement about the whole tab, not
+      // evidence that any one row was tampered with. Flagging every differing
+      // field of every row as a human conflict in that case floods the review list
+      // with hundreds of bogus cards and buries the real collisions.
+      const haveBase = base.size > 0;
+      const unbacked = this._unbacked(t);
+      let keptBlind = 0;
       const loc = new Map((localTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
       const rem = new Map((remoteTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
       const rows = [];
@@ -865,15 +1064,23 @@ const SPSync = {
         const keys = new Set([...Object.keys(mineRow), ...Object.keys(r)]);
         for (const k of keys) {
           const mine = mineRow[k], theirs = r[k];
+          // ABSENT is not the same as BLANK. A blank cell comes back as null with
+          // the key present and is a real clear to honour. But a column that does
+          // not EXIST server-side also arrives as null (_rowFromItem fills every
+          // schema column), so the shape alone cannot tell them apart — that is what
+          // _unbacked is for. Adopting null there wiped the value locally, and since
+          // the column is unpushable nothing ever restored it: the field quietly
+          // erased itself, which is exactly the "my 1031/refi data disappears on the
+          // other computer" report.
+          if (!(k in r) || (unbacked.has(k) && (theirs == null || theirs === ''))) { out[k] = mine; continue; }
           if (eq(mine, theirs)) { out[k] = mine; continue; }
           if (!baseRow) {
-            // No baseline for this row (first pull of the session, or the row was
-            // re-baselined by a column repair). We cannot tell who changed what, so
-            // keep local — but this is exactly how an incoming edit used to vanish
-            // in silence, so flag it for review instead of deciding quietly.
+            // Keep local: without a baseline we cannot tell who changed what.
             out[k] = mine;
-            this.noteConflict(t, id, k, mine, theirs, '');
-            conflicts++;
+            // Only worth a human's attention when we DO have baseline knowledge for
+            // this tab and this row is the exception. Otherwise stay quiet.
+            if (haveBase) { this.noteConflict(t, id, k, mine, theirs, ''); conflicts++; }
+            else keptBlind++;
             continue;
           }
           const was = baseRow[k];
@@ -886,6 +1093,9 @@ const SPSync = {
         rows.push(out);
       }
       for (const [id, r] of loc) if (!rem.has(id)) rows.push(r);   // created here, not pushed yet
+      // Visibility without the flood: one line naming the scale, instead of a
+      // review card per field that nobody can act on.
+      if (keptBlind) this.logLine('No baseline for ' + t + ' yet — kept this device’s values for ' + keptBlind + ' field(s) and will re-check next sync');
       outTabs[t] = rows;
     }
     for (const t of Object.keys(localTabs)) if (!(t in outTabs)) outTabs[t] = localTabs[t];
@@ -904,6 +1114,14 @@ const SPSync = {
       was: was == null ? '' : String(was),
       at: Date.now(),
     };
+    // Bounded: this lives in localStorage, which is also where the app's DATA
+    // lives. Letting it grow without limit risks filling the quota and making
+    // Store.save() fail — losing real records to keep review cards nobody read.
+    const keys = Object.keys(this._conflicts);
+    if (keys.length > 300) {
+      keys.sort((a, b) => (this._conflicts[a].at || 0) - (this._conflicts[b].at || 0))
+        .slice(0, keys.length - 300).forEach(k => delete this._conflicts[k]);
+    }
   },
   conflictList() { return Object.values(this._conflicts).sort((a, b) => b.at - a.at); },
   // Write a chosen value back into state. Parent records are top-level; detail
@@ -986,6 +1204,11 @@ const SPSync = {
     const key = coll + ':' + String(id);
     // Re-deleting a re-created record must refresh the timestamp, otherwise the
     // stale original loses to the newer record and the delete never takes.
+    // Deletion records are replayed against every pull forever, so they cannot
+    // be allowed to accumulate without limit. Anything this old has long since
+    // been applied on every machine.
+    const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+    if (s.tombstones.length > 200) s.tombstones = s.tombstones.filter(t => String(t.at || '') > cutoff);
     const existing = s.tombstones.find(t => (t.coll + ':' + t.id) === key);
     if (existing) { existing.at = new Date().toISOString(); return; }
     s.tombstones.push({ coll, id: String(id), at: new Date().toISOString() });
@@ -1039,6 +1262,62 @@ const SPSync = {
     return revived.length;
   },
 
+  // Stable identity for a settings row, on either side of the wire. Categories
+  // and tag rules carry an id; statuses carry a code; everything else falls back
+  // to a name. Without this the diff cannot tell an edit from a delete+add.
+  _cfgKey(o) {
+    if (!o) return '';
+    const v = o.RecID ?? o.id ?? o.code ?? o.key ?? o.name ?? o.label;
+    return v == null ? '' : String(v);
+  },
+
+  // Lists we just created are EMPTY on the server, so every local row and every
+  // settings row has to be sent up. _baseline() rebuilds all signatures from
+  // local state ("already uploaded"), so this reset only works AFTER it has run —
+  // the same reason _rescued is handled post-baseline below.
+  _repushTabs: null,   // Set of tab names whose server copy is known to be empty
+  // Queue a full upload for named tabs. No argument = every tab, which should be
+  // rare: re-sending the whole database rewrites every row on every machine.
+  markRepush(tabs) {
+    const known = new Set([...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS]);
+    // AppLocks and anything else that isn't app data has no rows to upload.
+    const list = (tabs && tabs.length) ? tabs.filter(t => known.has(t)) : [...known];
+    if (!list.length) return;
+    this._repushTabs = this._repushTabs || new Set();
+    list.forEach(t => this._repushTabs.add(t));
+  },
+  _applyRepush() {
+    const want = this._repushTabs;
+    if (!want || !want.size) { this._repushTabs = null; return false; }
+    this._repushTabs = null;
+    // Reset to EMPTY BASELINES, not to nothing. flush() reads this._sigs[tab] as
+    // a Map and calls .get() on it unguarded, so handing it a bare {} throws on
+    // the first tab holding rows and puts the save into a permanent retry loop.
+    // An empty Map says "the server has none of these" — true for a list that was
+    // just created — so the diff sends every local row up. Only the named tabs
+    // are reset: every other list already matches the server, and rewriting those
+    // would push the whole database from every machine for nothing. (Rows that DO
+    // exist server-side are still PATCHed, not duplicated — flush decides create
+    // vs update from the item index, not from these signatures.)
+    this._sigs = this._sigs || {};
+    this._childSigs = this._childSigs || {};
+    this._detailBase = this._detailBase || {};
+    this._cfgSigs = this._cfgSigs || {};
+    for (const t of want) {
+      if (SP_PARENT_TABS.includes(t)) this._sigs[t] = new Map();
+      if (SP_CHILD_TABS[t]) this._childSigs[t] = new Map();
+      // Item ids from a list that was just recreated are meaningless.
+      if (SP_CHILD_TABS[t] && this._childStale[t]) this._childStale[t] = new Map();
+      if (SP_CONFIG_TABS.includes(t)) delete this._cfgSigs[t];
+      if (this._detailBase[t]) delete this._detailBase[t];
+    }
+    this.logLine('Uploading this device’s records for: ' + [...want].join(', '));
+    SyncEngine.dirty = true;
+    this._set('dirty', 'Saving…');
+    this._queueFlush(300);
+    return true;
+  },
+
   _baseline(state) {
     const payload = serializeForSheet(state || Store.state).tabs;
     this._sigs = {}; this._childSigs = {}; this._cfgSigs = {};
@@ -1063,6 +1342,12 @@ const SPSync = {
   async flush() {
     if (this._flushing) { this._queueFlush(800); return; }
     if (!this._sigs) { this._queueFlush(3000); return; }   // initial load still running — retry, never drop
+    // A pull replaces Store.state wholesale. Pushing a diff built from the state
+    // it is about to replace would send rows that no longer exist and miss rows
+    // that just arrived. deltaPull already yields to a running flush; this is the
+    // other half of that handshake, and it matters much more now that a refresh
+    // runs every ten seconds instead of every four minutes.
+    if (this._pulling) { this._queueFlush(1200); return; }
     this._flushing = true;
     this._set('syncing', 'Saving…');
     try {
@@ -1100,12 +1385,17 @@ const SPSync = {
             await SP.provision(() => {});
             const stale = (await this._fetchList(t)) || [];
             let cleared = 0;
+            let stuckRows = 0;
             for (const it of stale) {
               if ((it.fields || {}).RecID != null) continue;
-              await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
-              cleared++;
+              try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }); cleared++; }
+              catch (e) { if (_spGone(e)) cleared++; else stuckRows++; }
             }
-            delete this._brokenKey[t];
+            // Keep the broken-key marker while unidentifiable rows survive. Clearing
+            // it declares the list safe to push, and pushing against rows that can
+            // never be matched by RecID re-creates them as duplicates.
+            if (stuckRows) this.logLine('\u2717 ' + t + ': ' + stuckRows + ' unidentifiable row(s) could not be removed — leaving the list guarded');
+            else delete this._brokenKey[t];
             this._sigs[t] = new Map();          // nothing up there is trusted — re-send all
             this._items[t] = new Map();
             this.logLine(t + ' — repaired' + (cleared ? ', cleared ' + cleared + ' unidentifiable row' + (cleared === 1 ? '' : 's') : '') + '; re-sending every row ✓');
@@ -1118,11 +1408,19 @@ const SPSync = {
         // alone they reappear on every pull as a duplicate record.
         const dups = ((this._dupItems || {})[t] || []);
         if (dups.length) {
+          // Same contract as every other delete in this file: count what actually
+          // went, keep the failures queued, and never log a ✓ we didn't earn.
+          // (A survivor is re-detected on the next pull, so this self-heals — but
+          // claiming success while duplicates remain is how they go unnoticed.)
+          const stuck = [];
+          let removed = 0;
           for (const itemId of dups) {
-            await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + itemId, { method: 'DELETE' }).catch(() => {});
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + itemId, { method: 'DELETE' }); removed++; }
+            catch (e) { if (_spGone(e)) removed++; else stuck.push(itemId); }
           }
-          this.logLine('Removed ' + dups.length + ' duplicate row' + (dups.length === 1 ? '' : 's') + ' from ' + t + ' ✓');
-          this._dupItems[t] = [];
+          if (removed) this.logLine('Removed ' + removed + ' duplicate row' + (removed === 1 ? '' : 's') + ' from ' + t + ' \u2713');
+          if (stuck.length) this.logLine('\u2717 ' + stuck.length + ' duplicate row(s) in ' + t + ' could not be removed \u2014 will retry');
+          this._dupItems[t] = stuck;
         }
         const m = this._sigs[t];
         const idx = this._items[t] || (this._items[t] = new Map());
@@ -1166,7 +1464,7 @@ const SPSync = {
           else m.delete(id);
         }
       }
-      let pending = ops, attempt = 0, badOps = [], repairRounds = 0;
+      let pending = ops, attempt = 0, badOps = [], repairRounds = 0, unsent = 0;
       while (pending.length) {
         const next = [];
         for (let i = 0; i < pending.length; i += 20) {
@@ -1237,12 +1535,17 @@ const SPSync = {
           badOps = [];
           pending = retry;
         } else if (badOps.length) {
+          // Out of repair rounds. These changes are still on this device and the
+          // next flush retries them, but the status must NOT go on to say
+          // "All changes saved" — that is exactly how a save goes missing
+          // without anyone noticing until they sit down at another computer.
+          unsent += badOps.length;
           this.logLine('\u2717 ' + badOps.length + ' change(s) SharePoint would not accept — see column notes above');
           badOps = [];
         }
       }
       // Child rows: resync the whole group whenever a parent's children changed.
-      let childGroups = 0, cfgTabs = 0;
+      let childGroups = 0, cfgTabs = 0, childFailed = 0;
       for (const [t, [, fk]] of Object.entries(SP_CHILD_TABS)) {
         const lid = listIds[t]; if (!lid) continue;
         const groups = new Map();
@@ -1255,36 +1558,192 @@ const SPSync = {
         }
         const old = this._childSigs[t] || new Map();
         const itemsBy = this._childItems[t] || (this._childItems[t] = new Map());
+        // Rows known to need deletion, tracked SEPARATELY from the live set. These
+        // two roles used to share one array, so a failed delete left the group
+        // "not done" and the next attempt re-ran the CREATE loop — adding another
+        // full copy of the group on every retry, forever, while a transaction's
+        // splits summed to 2×, 3×, 4× its amount. Keeping them apart means a
+        // delete failure is a cleanup debt, never a reason to write the rows again.
+        const stale = this._childStale[t] || (this._childStale[t] = new Map());
+        for (const [sk, ids] of [...stale]) {
+          const left = [];
+          for (const iid of ids) {
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + iid, { method: 'DELETE' }); }
+            catch (e) { if (!_spGone(e)) left.push(iid); }
+          }
+          if (left.length) { stale.set(sk, left); childFailed++; } else stale.delete(sk);
+        }
         const keys = new Set([...groups.keys(), ...old.keys()]);
         for (const k of keys) {
           if (groups.get(k) === old.get(k)) continue;
+          // Leftovers still on the server for this group: rewriting now would stack
+          // duplicates on top of them. Wait until the drain above clears them.
+          if (stale.has(k)) continue;
           childGroups++;
-          for (const iid of (itemsBy.get(k) || [])) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + iid, { method: 'DELETE' }).catch(() => {});
-          const newIds = [];
+          const oldIds = itemsBy.get(k) || [];
+          // CREATE FIRST, THEN DELETE. This used to delete the group's server rows
+          // and then recreate them one by one, unprotected: a throttle, a dropped
+          // connection or one refused column part-way through left the server with
+          // NO rows for that parent while this device still had them. Any machine
+          // that pulled in that window adopted the emptiness as truth and lost its
+          // own copy — exactly the wipe-and-propagate cascade we have been chasing.
+          // Creating first means a mid-failure leaves the complete old set intact;
+          // the worst case is a transient duplicate that the next flush corrects,
+          // instead of permanent loss.
+          const created = [];
+          let failed = false;
           for (const r of (rowsBy.get(k) || [])) {
-            const created = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
-            newIds.push(created.id);
+            try {
+              const c = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
+              created.push(c.id);
+            } catch (e) { failed = true; break; }
           }
-          itemsBy.set(k, newIds);
+          if (failed) {
+            // The old rows are still live and correctly tracked; the partial new
+            // ones become cleanup debt so the retry removes them BEFORE recreating.
+            if (created.length) stale.set(k, [...(stale.get(k) || []), ...created]);
+            childFailed++;
+            continue;   // signature NOT advanced — the group is not yet correct
+          }
+          // Replacements are up, so the group is CORRECT on the server from here on.
+          // Any old row we fail to remove is surplus, not missing data — so the
+          // signature advances and the leftovers are retried as cleanup. That is what
+          // stops a refused delete from re-triggering the create loop forever.
+          const left = [];
+          for (const iid of oldIds) {
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + iid, { method: 'DELETE' }); }
+            catch (e) { if (!_spGone(e)) left.push(iid); }
+          }
+          itemsBy.set(k, created);
+          if (left.length) { stale.set(k, left); childFailed++; }
           if (groups.has(k)) old.set(k, groups.get(k)); else old.delete(k);
         }
         this._childSigs[t] = old;
       }
-      // Config tabs: low-volume settings — rewrite the list when anything changed.
+      if (childFailed) {
+        unsent += childFailed;
+        this.logLine('\u2717 ' + childFailed + ' detail group(s) could not be saved — kept the previous server copy, retrying');
+      }
+      // Config tabs: low-volume settings (categories, statuses, tag rules).
+      // These used to be pushed by deleting every server row and re-posting the
+      // local ones. On a machine that had just connected — a phone, a re-auth,
+      // a fresh browser — "the local ones" were the app's built-in defaults, so
+      // connecting silently overwrote everyone's real categories. Now: never
+      // push before this device has loaded the server's copy once, never let an
+      // empty local tab clear a populated server tab, and diff by row key so an
+      // unchanged setting is never deleted and re-created.
+      let cfgHeld = false;
       for (const t of SP_CONFIG_TABS) {
         const lid = listIds[t]; if (!lid) continue;
-        const sig = JSON.stringify(payload[t] || []);
+        const rows = payload[t] || [];
+        const sig = JSON.stringify(rows);
         if (this._cfgSigs[t] === sig) continue;
-        cfgTabs++;
+        if (!this._pulledOnce) { cfgHeld = true; this.logLine('Settings held back until this device has loaded SharePoint’s copy'); continue; }
         const existing = (await this._fetchList(t)) || [];
-        for (const it of existing) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }).catch(() => {});
-        for (const r of (payload[t] || [])) await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
+        if (!rows.length && existing.length) {
+          this.logLine('\u26a0 Kept SharePoint\u2019s ' + existing.length + ' ' + t + ' row(s) \u2014 this device has none');
+          continue;
+        }
+        const serverBy = new Map();
+        existing.forEach(it => { const k = this._cfgKey(it.fields || {}); if (k) serverBy.set(k, it); });
+        // A keyed diff is only safe when every row HAS a key. If any row on
+        // either side is keyless, matching would fail silently and each push
+        // would re-POST the whole tab, growing duplicates forever — fall back to
+        // the whole-tab rewrite, which the two guards above have made safe.
+        const keyed = rows.every(r => this._cfgKey(r)) && existing.length === serverBy.size;
+        if (!keyed) {
+          // Same create-then-delete ordering as the detail groups: deleting the
+          // server's settings first and then re-posting leaves a window where the
+          // tab is empty, and another machine pulling in that window adopts the
+          // emptiness. Post the replacements first, and only remove the old rows
+          // once they are safely up.
+          let ok = true;
+          for (const r of rows) {
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) }); }
+            catch (e) { ok = false; break; }
+          }
+          if (!ok) {
+            unsent++;
+            this.logLine('\u2717 ' + t + ' could not be saved — kept the previous server copy, retrying');
+            continue;   // signature not advanced: retried next flush
+          }
+          // Same asymmetry to avoid as the child path: a failed delete that we
+          // stop tracking while advancing the signature leaves duplicated settings
+          // rows forever. 404 = already gone = success.
+          let leftovers = 0;
+          for (const it of existing) {
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + it.id, { method: 'DELETE' }); }
+            catch (e) { if (!_spGone(e)) leftovers++; }
+          }
+          if (leftovers) {
+            unsent++;
+            this.logLine('\u2717 ' + t + ' — could not remove ' + leftovers + ' old row(s); retrying to avoid duplicates');
+            continue;   // signature NOT advanced — next flush re-reads and clears them
+          }
+          cfgTabs++;
+          this._cfgSigs[t] = sig;
+          continue;
+        }
+        let touched = 0, cfgBad = 0, cfgLeft = 0;
+        for (const r of rows) {
+          const k = this._cfgKey(r);
+          const hit = k && serverBy.get(k);
+          // clearEmpty for an UPDATE, exactly as the record path does. Without it a
+          // field the user blanked out (a category's kind, a rule's pattern) is
+          // simply absent from the PATCH, SharePoint keeps the old value, and the
+          // next pull restores it — "I cleared it and it came back". Creates leave
+          // empties out; there is nothing on the server to clear.
+          const fields = SP._fieldsFor(t, r, { clearEmpty: !!hit });
+          if (hit) {
+            serverBy.delete(k);
+            // With clearEmpty on, a blanked field is emitted as null and so IS among
+            // these keys — which is what makes the clear both detected here and sent
+            // below. (Deliberately not comparing over SharePoint's own key set: its
+            // system fields would never match and every row would PATCH forever.)
+            const same = Object.keys(fields).every(f => String((hit.fields || {})[f] ?? '') === String(fields[f] ?? ''));
+            if (same) continue;
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + hit.id + '/fields', { method: 'PATCH', body: JSON.stringify(fields) }); touched++; }
+            catch (e) { cfgBad++; continue; }
+          } else {
+            try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields }) }); touched++; }
+            catch (e) { cfgBad++; continue; }
+          }
+        }
+        // The DELETE side of the EVERYDAY settings path. This is where a removed
+        // category, status or auto-tag rule is cleared from the server. It used to
+        // swallow the failure and advance the signature anyway, which meant the
+        // tab was skipped on every later flush (the signature already matched) and
+        // the next pull rebuilt the deleted row from the server — so a category you
+        // deleted came back on every machine and stayed back.
+        for (const gone of serverBy.values()) {
+          try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + gone.id, { method: 'DELETE' }); touched++; }
+          catch (e) { if (!_spGone(e)) cfgLeft++; }
+        }
+        if (cfgBad || cfgLeft) {
+          unsent += cfgBad + cfgLeft;
+          this.logLine('\u2717 ' + t + ' — ' + (cfgBad ? cfgBad + ' change(s) refused' : '') + (cfgBad && cfgLeft ? ', ' : '') + (cfgLeft ? cfgLeft + ' old row(s) not removed' : '') + '; retrying');
+          continue;   // signature NOT advanced — the next flush re-reads and finishes the job
+        }
+        if (touched) cfgTabs++;
         this._cfgSigs[t] = sig;
       }
       SyncEngine.dirty = false;
-      SyncEngine.lastSyncedAt = new Date().toISOString();
+      // A settings change we deliberately held back has no other trigger — flush
+      // clears the dirty flag, so without this it would wait for an unrelated edit.
+      if (cfgHeld) this._queueFlush(3000);
+      // Only stamp a completed sync when everything actually landed — otherwise
+      // "Saved · 2m ago" would advance on a flush that partly failed.
+      if (!unsent) SyncEngine.lastSyncedAt = new Date().toISOString();
       this._provisionedForMissing = false;
-      this._set('synced', 'All changes saved');
+      if (unsent) {
+        SyncEngine.dirty = true;
+        this._stuck = unsent;
+        this._set('error', unsent + ' change' + (unsent === 1 ? '' : 's') + ' couldn\u2019t be saved to SharePoint — still on this computer and retrying. Other people\u2019s changes are still coming in normally. (Settings → Integration for details)');
+        this._queueFlush(20000);
+      } else {
+        this._stuck = 0;
+        this._set('synced', 'All changes saved');
+      }
       const parts = [];
       if (ops.length) parts.push(ops.length + ' record change' + (ops.length === 1 ? '' : 's'));
       if (childGroups) parts.push(childGroups + ' detail group' + (childGroups === 1 ? '' : 's'));
@@ -1360,7 +1819,19 @@ const SPSync = {
     this.logLine('Skipped columns cleared — re-sending those records ✓');
   },
 
-  _queueFlush(ms) { clearTimeout(this._pushTimer); this._pushTimer = setTimeout(() => this.flush(), ms); },
+  // MONOTONIC: never postpone a save that is already scheduled sooner. This used
+  // to replace whatever was pending, so a later caller could push an imminent
+  // flush further out — and with pulls running every ~10s arming a 20s retry, the
+  // deadline moved out of reach on every pull and no save ever left the machine.
+  // Same hazard for ordinary edits: a pull could delay a user's 2.5s save.
+  // Only an EARLIER deadline replaces a pending one.
+  _queueFlush(ms) {
+    const at = Date.now() + ms;
+    if (this._pushTimer && this._pushAt && at >= this._pushAt) return;
+    clearTimeout(this._pushTimer);
+    this._pushAt = at;
+    this._pushTimer = setTimeout(() => { this._pushTimer = null; this._pushAt = 0; this.flush(); }, ms);
+  },
   _set(status, message) { SyncEngine._set(status, message); },
 
   // A write SharePoint rejected with 400: figure out WHICH column it choked on.
@@ -1527,7 +1998,11 @@ const SPSync = {
     // pull keeps the local edits and flushes them right after (dirty path).
     if (this._lastPullAt && !this._flushing && Date.now() - this._lastPullAt > 30 * 60000) {
       this.logLine('Tab was idle — refreshing from SharePoint before saving');
-      this.deltaPull().catch(() => { this._queueFlush(2500); });
+      // ALWAYS re-arm the flush. deltaPull returns immediately and successfully
+      // when a pull is already running, so a .catch alone left this edit with no
+      // timer at all — it would sit on this computer until some later edit
+      // happened to queue one.
+      this.deltaPull().catch(() => {}).then(() => this._queueFlush(1500));
       return;
     }
     this._queueFlush(2500);
@@ -1537,11 +2012,15 @@ const SPSync = {
     if (this._started) return;
     this._started = true;
     if (window.SyncHealth) SyncHealth.schedule();
-    if (!Store.__syncHooked) {
-      const origSave = Store.save.bind(Store);
-      Store.save = () => { SyncEngine._stampChanges(); origSave(); SPSync._onLocalChange(); };
-      Store.__syncHooked = true;
-    }
+    // Its OWN hook, alongside the Sheets one rather than instead of it. Sharing a
+    // single __syncHooked boolean meant that connecting SharePoint mid-session left
+    // this uninstalled, so no local edit scheduled a SharePoint push until reload.
+    Store.onPreSave('stampRows', () => SyncEngine._stampChanges());
+    Store.onPostSave('sharepoint', () => SPSync._onLocalChange());
+    // …and the Sheet engine stands down, as it does when init() delegates here at
+    // load. Without this, connecting SharePoint mid-session would leave the Sheets
+    // hook registered too and every edit would push to both.
+    Store.offPostSave('sheets');
     SyncEngine._initSigs();
     try {
       if (!SP.account()) { this._set('error', 'SharePoint sign-in needed — open Integration → SharePoint'); return; }
@@ -1550,10 +2029,17 @@ const SPSync = {
       // build added SpendLog / Employees / TimeOff). provision() is idempotent
       // and only creates what's absent. A version bump forces every device to
       // run it once; the missing-list check is the safety net for when someone
-      // forgets to bump — without it a whole new list silently never syncs.
-      const schemaMissingList = Object.keys(window.SHEET_SCHEMA || {}).some(t => !(SP.config.listIds || {})[t]);
+      // forgets to bump — without it a whole new list silently never syncs. The
+      // lock list counts too: if it is missing, locking silently switches off and
+      // two machines can edit the same record again.
+      const schemaMissingList = Object.keys(window.SHEET_SCHEMA || {}).some(t => !(SP.config.listIds || {})[t])
+        || !(SP.config.listIds || {})[SP_LOCK_LIST.name];
       if (SP.config.schemaVer !== SP_SCHEMA_VER || schemaMissingList) {
         this._set('syncing', 'Updating lists…');
+        // Which lists existed BEFORE provisioning: only the ones it creates start
+        // empty on the server and need this device's rows uploaded. A version
+        // bump on its own must not trigger a full-database rewrite.
+        const hadLists = new Set(Object.keys(SP.config.listIds || {}));
         await SP.provision(() => {});
         SP.saveConfig({ schemaVer: SP_SCHEMA_VER });
         // Lists created by the build that provisioned them without a RecID column
@@ -1561,10 +2047,11 @@ const SPSync = {
         // both up once, now that provision has restored the column.
         this._set('syncing', 'Repairing lists…');
         await SP.repairKeylessRows(() => {}).catch(() => {});
-        // A newly created list starts empty on the server. Clearing the push
-        // signatures makes the next push send every local row instead of
-        // diffing against a baseline that says "already up there".
-        this._sigs = {};
+        // A newly created list starts empty on the server, so every local row has
+        // to go up. The pull below rebuilds the baseline from local state, so the
+        // reset must happen after it — flag it and let _applyRepush do it.
+        const fresh = Object.keys(SP.config.listIds || {}).filter(t => !hadLists.has(t));
+        if (fresh.length) this.markRepush(fresh);
       }
       await this.pull();
       this._maybeBackup();
@@ -1572,20 +2059,53 @@ const SPSync = {
       this._set('error', 'SharePoint unreachable: ' + (e.message || e));
       this.logLine('\u2717 SharePoint unreachable: ' + (e.message || e));
     }
-    // Adopt other people's edits: re-pull when the tab regains focus after
-    // being idle, and on a slow interval — delta cursors make each check a
-    // handful of tiny \u201cwhat changed?\u201d requests, never a full reload.
-    const freshen = () => {
-      if (SyncEngine.dirty || this._flushing) return;
-      if (Date.now() - this._lastPullAt < 3 * 60000) return;
+    // Adopt other people's edits. Near-live while someone is actually using the
+    // tab (delta cursors make each check a handful of tiny "what changed?"
+    // requests), backing off to a slow beat when the tab is hidden or idle so
+    // several machines together don't get throttled by Graph.
+    let lastTouch = Date.now();
+    ['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, () => { lastTouch = Date.now(); }, true));
+    const freshen = force => {
+      // Deliberately NOT gated on SyncEngine.dirty. That flag means "local changes
+      // are not yet on the server", which includes changes that can NEVER be sent
+      // (a refused column, a 403 on a delete). Treating it as a reason to skip the
+      // pull meant one stuck change made the machine permanently deaf to everyone
+      // else's edits until a reload — the exact "doesn't sync between computers"
+      // symptom, now silent. Pulling with unsaved work is already safe: _finishPull
+      // has a dedicated dirty branch that three-way merges against the baseline to
+      // preserve local edits, and _pulling/_flushing prevent interleaving.
+      if (this._flushing || this._pulling) return;
+      if (document.hidden && force !== true) return;
+      const active = Date.now() - lastTouch < 2 * 60000;
+      // Without usable delta cursors every refresh is a FULL reload of every
+      // list. At the near-live cadence that would hammer the site, so fall back
+      // to a slow beat until cursors work again.
+      const noDelta = this._deltaBroken && Date.now() - this._deltaBroken < 10 * 60000;
+      const wait = force === true ? 0 : (noDelta ? 120000 : (active ? 10000 : 60000));
+      if (Date.now() - this._lastPullAt < wait) return;
       this.deltaPull().catch(() => {});
       this._maybeBackup();
     };
-    window.addEventListener('focus', freshen);
-    setInterval(freshen, 4 * 60000);
+    window.addEventListener('focus', () => freshen(true));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) freshen(true); });
+    setInterval(() => freshen(false), 5000);
     window.addEventListener('beforeunload', e => {
       if (SyncEngine.dirty) { this.flush(); e.preventDefault(); e.returnValue = ''; }
     });
+    // Saves are debounced a couple of seconds. Close the laptop, switch tabs, or
+    // background the app inside that window and beforeunload is too late — the
+    // page is already being torn down and the request never leaves. These two
+    // events fire while the page is still alive and are the reliable ones on
+    // mobile, so push straight away instead of waiting out the debounce.
+    const flushNow = () => {
+      if (!SyncEngine.dirty || this._flushing) return;
+      clearTimeout(this._pushTimer);
+      this._pushTimer = null; this._pushAt = 0;   // the deadline is being met now
+      this.flush();
+    };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) flushNow(); });
+    window.addEventListener('pagehide', flushNow);
+    window.addEventListener('blur', flushNow);
   },
 };
 window.SPSync = SPSync;
@@ -1606,7 +2126,9 @@ function SharePointView() {
 
   async function run(name, fn) {
     setBusy(name);
-    try { await fn(); }
+    // Every step here is behind a button the user just pressed, so a token refresh
+    // inside one may legitimately prompt — token() is otherwise non-interactive.
+    try { await SP.interactive(fn); }
     catch (e) { addLog('✗ ' + (e.message || e)); }
     finally { setBusy(''); setProgress(null); }
   }
@@ -1675,7 +2197,7 @@ function SharePointView() {
       let ok = 0, fail = 0;
       for (const x of extras) {
         try { await SP.graph('/sites/' + sid + '/lists/' + listIds[x.tab] + '/items/' + x.id, { method: 'DELETE' }); ok++; }
-        catch (e) { if (/404/.test(String(e.message || e))) ok++; else fail++; }
+        catch (e) { if (_spGone(e)) ok++; else fail++; }
       }
       addLog('Duplicate cleanup: removed ' + ok + (fail ? ' \u2014 ' + fail + ' failed (rescan and retry)' : ' \u2713'));
       SPSync.logLine('Duplicate cleanup: removed ' + ok + ' extra cop' + (ok === 1 ? 'y' : 'ies'));

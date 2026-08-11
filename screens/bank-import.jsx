@@ -219,13 +219,29 @@ function BankImportScreen() {
     setStep(3);
   }
   function commit() {
-    const toAdd = taggedRows.filter(r => !r.skip).map(r => ({
+    // Re-check duplicates at COMMIT time, not only when the file was loaded. Those
+    // flags were computed against state as it stood on the review screen, and a
+    // sync can land in between — someone else importing the same bank export, or
+    // this machine pulling their import. Committing stale flags doubles the ledger,
+    // and duplicated money is the hardest kind of error to notice later.
+    // Rows the user DELIBERATELY un-skipped after seeing the "dup" tag are left
+    // alone: that is an explicit decision to import anyway.
+    const skipped = [];
+    const keep = taggedRows.filter(r => !r.skip).filter(r => {
+      if (r.duplicate) return true;   // already flagged; the user chose to import it
+      if (isDuplicateTransaction(r.date, r.amount, r.desc)) { skipped.push(r); return false; }
+      return true;
+    });
+    const toAdd = keep.map(r => ({
       date: r.date, acct: r.acct, desc: r.desc, amount: r.amount,
       payee: r.payee, category: r.category, project: r.project,
       batch: 'import-' + TODAY(),
     }));
     commitImportRows(toAdd);
     setCommitted(toAdd.length);
+    if (skipped.length) {
+      alert(skipped.length + ' row' + (skipped.length === 1 ? '' : 's') + ' already showed up in your transactions while you were reviewing — most likely someone else imported the same file. They were skipped so the amounts are not counted twice.');
+    }
     setStep(5);
   }
 

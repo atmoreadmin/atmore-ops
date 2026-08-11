@@ -79,7 +79,7 @@ function SplitTransactionModal({ tx, onClose }) {
   }
 
   return (
-    <Modal title={`Split transaction · ${fmtMoney(tx.amount, {sign: true})}`} onClose={onClose}>
+    <Modal lockKey={tx?.id ? 'transactions:' + tx.id : null} lockLabel="this transaction" title={`Split transaction · ${fmtMoney(tx.amount, {sign: true})}`} onClose={onClose}>
       <div className="col gap-14">
         <div style={{padding: '12px 14px', background: 'var(--paper-3)', borderRadius: 4}}>
           <div className="row gap-12 items-baseline">
@@ -192,7 +192,7 @@ function SplitTransactionModal({ tx, onClose }) {
             </span>
           )}
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!isBalanced || splits.filter(s => s.project).length < 2} onClick={save}>
+          <Btn className="lock-save" kind="primary" disabled={!isBalanced || splits.filter(s => s.project).length < 2} onClick={save}>
             Save split
           </Btn>
         </div>
@@ -229,7 +229,7 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
   const [convertToK, setConvertToK] = useState(!editing && p?.statusCode !== 'K');
 
   return (
-    <Modal title={editing ? `Edit lease · ${p?.address}` : `Start lease · ${p?.address}`} onClose={onClose}>
+    <Modal lockKey={editing && tenant?.id ? 'tenants:' + tenant.id : null} lockLabel="this lease" title={editing ? `Edit lease · ${p?.address}` : `Start lease · ${p?.address}`} onClose={onClose}>
       <div className="col gap-12">
         <div className="grid g-2">
           <div><div className="up dim mb-4">Tenant name</div><input className="input" value={name} onChange={e => setName(e.target.value)} autoFocus style={{width: '100%'}}/></div>
@@ -295,7 +295,7 @@ function AddTenantModal({ propertyId, tenant, onClose }) {
         <div className="row gap-8 mt-8">
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!name || !rent}
+          <Btn className="lock-save" kind="primary" disabled={!name || !rent}
             onClick={() => {
               const payload = {
                 name, phone, email,
@@ -346,7 +346,7 @@ function MoveOutModal({ tenant, editing, onClose }) {
   const diff = dep - (ref + wh);
 
   return (
-    <Modal title={`${editing ? 'Edit move-out' : 'Move out'} · ${tenant.name || p?.address}`} onClose={onClose}>
+    <Modal lockKey={tenant?.id ? 'tenants:' + tenant.id : null} lockLabel={tenant?.name || 'this tenant'} title={`${editing ? 'Edit move-out' : 'Move out'} · ${tenant.name || p?.address}`} onClose={onClose}>
       <div className="col gap-14">
         {!editing && (
           <div className="small dim">
@@ -407,7 +407,7 @@ function MoveOutModal({ tenant, editing, onClose }) {
         <div className="row gap-8 mt-4 items-center">
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" onClick={() => {
+          <Btn className="lock-save" kind="primary" onClick={() => {
             const payload = {
               moveOut,
               depositOnFile: dep,
@@ -438,7 +438,7 @@ function AddHOAModal({ propertyId, hoa, onClose }) {
   const [password, setPassword] = useState(hoa?.password || '');
 
   return (
-    <Modal title={editing ? `Edit HOA · ${hoa.name}` : 'Add HOA'} onClose={onClose}>
+    <Modal lockKey={editing && hoa?.id ? 'hoas:' + hoa.id : null} lockLabel={hoa?.name || 'this HOA'} title={editing ? `Edit HOA · ${hoa.name}` : 'Add HOA'} onClose={onClose}>
       <div className="col gap-12">
         <div><div className="up dim mb-4">HOA / management company name</div><input className="input" value={name} onChange={e => setName(e.target.value)} autoFocus style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Portal website</div><input className="input" type="url" value={website} onChange={e => setWebsite(e.target.value)} placeholder="https://..." style={{width: '100%'}}/></div>
@@ -451,7 +451,7 @@ function AddHOAModal({ propertyId, hoa, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm(`Remove ${hoa.name}?`)) { deleteHOA(hoa.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!name}
+          <Btn className="lock-save" kind="primary" disabled={!name}
             onClick={() => {
               if (editing) updateHOA(hoa.id, { name, website, username, password });
               else addHOA({ propertyId, name, website, username, password });
@@ -835,7 +835,11 @@ function TransactionEditor({ tx, onClose }) {
       tagTransaction(tx.id, payload);
     } else {
       Store.update(s => {
-        const id = 't' + (s.transactions.reduce((a,t) => Math.max(a, parseInt(t.id.slice(1))||0), 0) + 1);
+        // Device-tagged via the shared helper. A local-max counter mints the same
+        // 't2672' on two machines adding a manual transaction at the same time, and
+        // the id IS the sync key (RecID) — so one row PATCHes over the other and a
+        // real transaction is destroyed with nothing on screen to show it.
+        const id = nextId(s.transactions, 't', 1);
         s.transactions.push({ id, ...payload, monthSheet: '', importBatch: 'manual-' + TODAY() });
       });
     }
@@ -850,7 +854,7 @@ function TransactionEditor({ tx, onClose }) {
 
   return (
     <React.Fragment>
-    <Modal title={editing ? 'Edit transaction' : 'Add manual transaction'} onClose={onClose}>
+    <Modal lockKey={editing && tx?.id ? 'transactions:' + tx.id : null} lockLabel="this transaction" title={editing ? 'Edit transaction' : 'Add manual transaction'} onClose={onClose}>
       <div className="col gap-12">
         <div className="grid g-3">
           <div><div className="up dim mb-4">Date</div><input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{width: '100%'}} autoFocus/></div>
@@ -935,7 +939,7 @@ function TransactionEditor({ tx, onClose }) {
           {(!desc || !amountValid || !category || !project || !bucket) && <span className="tiny dim">{'Add ' + [!desc && 'a description', !amountValid && 'an amount', !category && 'a category', !project && 'a property', !bucket && 'a bucket'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1') + ' to save'}</span>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!desc || !amountValid || !category || !project || !bucket}
+          <Btn className="lock-save" kind="primary" disabled={!desc || !amountValid || !category || !project || !bucket}
             onClick={save}>{editing ? 'Save' : 'Add transaction'}</Btn>
         </div>
       </div>
@@ -961,7 +965,7 @@ function RentChangeModal({ tenant, onClose }) {
   const deltaPct = tenant.rent ? Math.round((delta / tenant.rent) * 1000) / 10 : 0;
 
   return (
-    <Modal title={`Change rent · ${tenant.name}`} onClose={onClose}>
+    <Modal lockKey={tenant?.id ? 'tenants:' + tenant.id : null} lockLabel={tenant?.name || 'this tenant'} title={`Change rent · ${tenant.name}`} onClose={onClose}>
       <div className="col gap-14">
         <div className="row gap-16">
           <div>
@@ -1024,7 +1028,7 @@ function RentChangeModal({ tenant, onClose }) {
         <div className="row gap-8 mt-8">
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!amount || amount === tenant.rent}
+          <Btn className="lock-save" kind="primary" disabled={!amount || amount === tenant.rent}
             onClick={() => {
               addRentChange(tenant.id, { effectiveDate, amount: parseFloat(amount), note });
               onClose();

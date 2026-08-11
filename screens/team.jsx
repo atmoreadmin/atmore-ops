@@ -168,12 +168,12 @@ function TimeOffModal({ record, employeeId, onClose }) {
   }
 
   return (
-    <Modal title={editing ? 'Edit time off' : 'Log time off'} onClose={onClose}
+    <Modal lockKey={record?.id ? 'timeOff:' + record.id : null} lockLabel="this time-off entry" title={editing ? 'Edit time off' : 'Log time off'} onClose={onClose}
       right={<div className="row gap-8">
         {editing && <Btn kind="ghost" style={{color: 'var(--brick)'}}
           onClick={() => { if (confirm('Delete this time-off record?')) { deleteTimeOff(record.id); onClose(); } }}>Delete</Btn>}
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" onClick={save}>{editing ? 'Save' : 'Log it'}</Btn>
+        <Btn className="lock-save" kind="primary" onClick={save}>{editing ? 'Save' : 'Log it'}</Btn>
       </div>}>
       <div className="col gap-14">
         <div className="grid g-2">
@@ -224,7 +224,7 @@ function RosterModal({ onClose }) {
   const [name, setName] = useState('');
   const employees = store.employees || [];
   return (
-    <Modal title="People" onClose={onClose} right={<Btn kind="primary" onClick={onClose}>Done</Btn>}>
+    <Modal lockKey="roster" lockLabel="the roster" title="People" onClose={onClose} right={<Btn kind="primary" onClick={onClose}>Done</Btn>}>
       <div className="col gap-10">
         {!employees.length && <div className="small dim">Nobody on the roster yet.</div>}
         {employees.map(e => (
@@ -234,10 +234,10 @@ function RosterModal({ onClose }) {
               <input className="input" value={e.name} onChange={ev => renameEmployee(e.id, ev.target.value)} style={{width: 200}}/>
             </div>
             <button className="linkbtn" style={{color: 'var(--brick)'}}
-              onClick={() => {
+              onClick={async () => {
                 const n = timeOffForEmployee(e.id).length;
                 const msg = n ? `Remove ${e.name}? This also deletes their ${n} time-off record${n === 1 ? '' : 's'}.` : `Remove ${e.name}?`;
-                if (confirm(msg)) removeEmployee(e.id);
+                if (await confirmDestructive('employees:' + e.id, e.name, msg)) removeEmployee(e.id);
               }}>Remove</button>
           </div>
         ))}

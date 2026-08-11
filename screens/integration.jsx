@@ -934,7 +934,7 @@ function SyncView() {
     try {
       const data = await Sync.pull();
       const newState = deserializeFromSheet(data);
-      Store.state = newState;
+      Store.state = Store.ensureShape(newState);
       Store.save();
       Store.notify();
       setOk('Pulled ' + Object.values(data.tabs).reduce((a,r) => a + r.length, 0) + ' rows.');

@@ -802,12 +802,25 @@ const SyncEngine = {
         if (m.get(id) !== sig) { r.updatedAt = now; m.set(id, sig); }
       });
       for (const id of [...m.keys()]) {
-        if (!liveIds.has(id)) { m.delete(id); tombs.push({ coll: tab, id, at: now }); }
+        // The deletion record is keyed by the STORE COLLECTION name, which is what
+        // resolves it later (state[coll]). This used to record the sheet-tab name
+        // instead ('Properties' rather than 'properties'), so state[coll] was
+        // undefined and every one of these deletes was silently inert — which is
+        // how a row deleted here could be re-adopted from a pull that still
+        // carried it.
+        if (!liveIds.has(id)) { m.delete(id); tombs.push({ coll, id, at: now }); }
       }
     }
     // Retention matches the bridge's 60 days.
     const cutoff = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
-    if (tombs.some(t => (t.at || '') < cutoff)) Store.state.tombstones = tombs.filter(t => (t.at || '') >= cutoff);
+    // Drop the mis-keyed records the old code wrote. They never applied to
+    // anything, so removing them changes no behaviour — it only stops them
+    // accumulating. They are deliberately NOT repaired into working ones: waking
+    // up months of deletes that never took effect could remove records that are
+    // legitimately on screen today.
+    const tabNames = new Set(Object.keys(MERGED_COLLECTIONS));
+    if (tombs.some(t => tabNames.has(t.coll))) Store.state.tombstones = (Store.state.tombstones || []).filter(t => !tabNames.has(t.coll));
+    if ((Store.state.tombstones || []).some(t => (t.at || '') < cutoff)) Store.state.tombstones = Store.state.tombstones.filter(t => (t.at || '') >= cutoff);
   },
 
   start() {
@@ -821,12 +834,10 @@ const SyncEngine = {
     this.lastSheetWriteAt = c.lastSheetWriteAt || null;
     this._initSigs();   // baseline row signatures — loading must not stamp anything
 
-    // Hook persistence: every local save marks us dirty + schedules a push.
-    if (!Store.__syncHooked) {
-      const origSave = Store.save.bind(Store);
-      Store.save = () => { SyncEngine._stampChanges(); origSave(); SyncEngine._onLocalChange(); };
-      Store.__syncHooked = true;
-    }
+    // Hook persistence through the registry, so the SharePoint engine can listen
+    // too. These used to be competing monkey-patches behind one boolean.
+    Store.onPreSave('stampRows', () => SyncEngine._stampChanges());
+    Store.onPostSave('sheets', () => SyncEngine._onLocalChange());
 
     if (!Sync.isConfigured()) { this._set('local-only', 'Saved on this device only'); return; }
     this._set('synced', 'Connected');
@@ -857,7 +868,23 @@ const SyncEngine = {
   },
 
   on(fn) { this._subs.push(fn); return () => { this._subs = this._subs.filter(f => f !== fn); }; },
-  _set(status, message = '') { this.status = status; this.message = message; this._subs.forEach(f => f(this)); },
+  // A broken LOCAL save outranks every other status. Without this gate the
+  // storage-full warning was overwritten microseconds after it was set — the
+  // wrapper around Store.save calls _onLocalChange() right after, which sets
+  // 'Saving…'. So once the single alert was dismissed the bar affirmatively
+  // reassured the user it was saving while nothing could be written to disk.
+  // Only a save that actually succeeds clears this (Store.save resets the flag).
+  _set(status, message = '') {
+    if (window.Store && Store._saveFailed && status !== 'local-broken') {
+      // 'local-broken', NOT 'error': the pill's click handler treats 'error' as an
+      // auth problem and opens a Microsoft sign-in prompt, which cannot fix a full
+      // disk. Keeping the distinct status is what routes the click to the storage
+      // guidance and shows the "Can't save here" label.
+      status = 'local-broken';
+      message = 'This computer can\u2019t save locally — its browser storage is full. Recent changes live only in this tab: keep it open until they reach SharePoint.';
+    }
+    this.status = status; this.message = message; this._subs.forEach(f => f(this));
+  },
 
   _onLocalChange() {
     if (this._applyingRemote) return;          // pulls shouldn't mark dirty
@@ -948,7 +975,7 @@ const SyncEngine = {
       const data = await Sync.pull();
       const newState = deserializeFromSheet(data);
       this._applyingRemote = true;
-      Store.state = newState;
+      Store.state = Store.ensureShape(newState);
       Store.save();
       Store.notify();
       this._applyingRemote = false;
@@ -1050,7 +1077,11 @@ function restoreBackupFromText(text) {
   // Accept our backup wrapper, the localStorage {_v,data} shape, or a raw state object.
   const state = parsed.data ? parsed.data : parsed;
   if (!state || !Array.isArray(state.properties)) throw new Error('Not a valid backup file.');
-  Store.state = state;
+  // A backup exported before spendLog/employees/timeOff/hoas existed — or any
+  // hand-trimmed file — passes the check above while lacking collections the app
+  // dereferences unguarded, which crashes the property page on open. This is the
+  // data-RECOVERY path, so it must be the least likely thing in the app to break.
+  Store.state = Store.ensureShape(state);
   Store.save();
   Store.notify();
   return (state.properties || []).length;

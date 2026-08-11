@@ -207,7 +207,7 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
   const [notes, setNotes] = useState(refi?.notes || '');
 
   return (
-    <Modal title={adding ? 'Start refi' : 'Edit refi'} onClose={onClose}>
+    <Modal lockKey={!adding && refi?.id ? 'refis:' + refi.id : null} lockLabel="this refi" title={adding ? 'Start refi' : 'Edit refi'} onClose={onClose}>
       <div className="col gap-12">
         <div>
           <div className="up dim mb-4">Property</div>
@@ -290,7 +290,7 @@ function RefiEditor({ refi, adding, kProps, onClose }) {
           )}
           <div className="grow"></div>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" onClick={() => {
+          <Btn className="lock-save" kind="primary" onClick={() => {
             // `x || null` would turn a real 0 (0% rate, $0 cash-out) into a blank,
             // so test for the empty string instead of falsiness.
             const numOrNull = v => (v === '' || v == null) ? null : Number(v);

@@ -140,14 +140,16 @@ function PropertyScreen({ propertyId, subtab }) {
             {p.driveUrl
               ? <Btn sz="sm" kind="ghost" href={p.driveUrl}>↗ Open Drive folder</Btn>
               : <Btn sz="sm" kind="ghost" onClick={() => setEditorOpen(true)}>+ Add Drive link</Btn>}
-            <Btn sz="sm" kind="ghost" style={{color: 'var(--brick)'}} onClick={() => {
+            <Btn sz="sm" kind="ghost" style={{color: 'var(--brick)'}} onClick={async () => {
               const bits = [];
               if (tenants.length) bits.push(`${tenants.length} tenant${tenants.length === 1 ? '' : 's'}`);
               if (offers.length) bits.push(`${offers.length} offer${offers.length === 1 ? '' : 's'}`);
               if (leads.length) bits.push(`${leads.length} lead${leads.length === 1 ? '' : 's'}`);
               const extra = bits.length ? ` Also removes ${bits.join(', ')}.` : '';
               const txNote = tx.length ? ` ${tx.length} tagged transaction${tx.length === 1 ? '' : 's'} will stay but lose this property tag.` : '';
-              if (confirm(`Delete ${p.address}? This permanently removes the property and its deal record.${extra}${txNote} This can't be undone.`)) {
+              // Lock-checked: deleting a property someone else has open destroys
+              // their work with no take-over path to recover it.
+              if (await confirmDestructive('properties:' + p.id, p.address, `Delete ${p.address}? This permanently removes the property and its deal record.${extra}${txNote} This can't be undone.`)) {
                 nav('/properties');
                 deleteProperty(p.id);
               }
@@ -1472,7 +1474,7 @@ function LeadForm({ lead, propertyId, onClose }) {
   const [notes, setNotes] = useState(lead?.notes || '');
 
   return (
-    <Modal title={editing ? 'Edit lead' : 'Log lead'} onClose={onClose}>
+    <Modal lockKey={lead?.id ? 'leads:' + lead.id : null} lockLabel="this lead" title={editing ? 'Edit lead' : 'Log lead'} onClose={onClose}>
       <div className="col gap-12">
         <div className="grid g-2">
           <div><div className="up dim mb-4">Date</div><input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{width:'100%'}}/></div>
@@ -1501,7 +1503,7 @@ function LeadForm({ lead, propertyId, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this lead?')) { deleteLead(lead.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!name} onClick={() => {
+          <Btn className="lock-save" kind="primary" disabled={!name} onClick={() => {
             const patch = { date, name, phone, source, status, notes, propertyId };
             if (editing) updateLead(lead.id, patch); else addLead(patch);
             onClose();

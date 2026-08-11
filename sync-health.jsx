@@ -80,16 +80,26 @@ const SyncHealth = {
     const same = window.reconSame || ((a, b) => (a == null ? '' : String(a)) === (b == null ? '' : String(b)));
     const mismatches = [];
     const missing = [];
+    const missingHere = [];
+    const tombed = new Set(((Store.state && Store.state.tombstones) || []).map(x => String(x.coll) + ':' + String(x.id)));
+    const unreadable = [];
     for (const t of tabs) {
       if (!((SP.config.listIds || {})[t])) continue;
       if (onProgress) onProgress(t);
       let items = [];
-      try { items = await SPSync._fetchList(t); } catch (e) { continue; }
+      // A read that fails must never pass for "this list matches". Skipping it
+      // silently and still returning compared:true told the user their records were
+      // on the server when nothing had been compared — and with token refresh now
+      // non-interactive, an expired session makes EVERY list fail this way.
+      try { items = await SPSync._fetchList(t); }
+      catch (e) { unreadable.push({ tab: t, why: (e && (e.needsSignIn ? 'sign-in expired' : e.message)) || 'unknown' }); continue; }
       const server = new Map();
       items.forEach(it => { const r = SPSync._rowFromItem(t, it); if (r && r.id != null) server.set(String(r.id), r); });
       const cols = ((window.SHEET_SCHEMA[t] || {}).columns || []).map(c => c.key).filter(k => k !== 'id');
+      const localIds = new Set();
       for (const r of (local[t] || [])) {
         if (r.id == null) continue;
+        localIds.add(String(r.id));
         const s = server.get(String(r.id));
         if (!s) { missing.push(t + ' ' + r.id); continue; }
         for (const k of cols) {
@@ -102,7 +112,25 @@ const SyncHealth = {
           mismatches.push({ tab: t, id: String(r.id), field: k });
         }
       }
+      // The OTHER direction, and the one that matters when two computers disagree:
+      // records SharePoint holds that this machine never took in. Checking only
+      // local-against-server meant a machine with a short roster could report "all
+      // clear" while everyone else saw records it was missing. A deliberate delete
+      // here is not a finding, so tombstoned ids are excluded.
+      const coll = (window.SP_COLL_PUBLIC || {})[t] || '';
+      for (const [id, s] of server) {
+        if (localIds.has(id)) continue;
+        if (coll && tombed.has(coll + ':' + id)) continue;
+        const label = s && (s.address || s.name || s.payee || s.vendor);
+        missingHere.push(t + ' ' + id + (label ? ' (' + String(label).slice(0, 30) + ')' : ''));
+      }
     }
+    if (missingHere.length) out.push({
+      id: 'missingHere', level: 'bad',
+      title: missingHere.length + ' record(s) are in SharePoint but not on this computer',
+      detail: missingHere.slice(0, 8).join(', ') + (missingHere.length > 8 ? '\u2026' : '')
+        + '. Other people can see these and you cannot — reload the page to take them in.',
+    });
     if (missing.length) out.push({
       id: 'missingThere', level: 'bad',
       title: missing.length + ' record(s) exist here but not in SharePoint',
@@ -126,7 +154,19 @@ const SyncHealth = {
         card: 'Reconcile',
       });
     }
-    return { findings: out, compared: true };
+    // Honest result: if any list could not be read, this computer has NOT been
+    // shown to match SharePoint, and the caller must not say so.
+    if (unreadable.length) {
+      const signIn = unreadable.some(u => u.why === 'sign-in expired');
+      out.push({
+        id: 'checkfailed', level: 'bad',
+        title: unreadable.length + ' list(s) could not be read from SharePoint — this check is incomplete',
+        detail: (signIn ? 'Your SharePoint sign-in has expired — click the status pill to sign in, then run this again. ' : '')
+          + 'Not compared: ' + unreadable.slice(0, 6).map(u => u.tab + ' (' + u.why + ')').join(', ')
+          + (unreadable.length > 6 ? '…' : '') + '.',
+      });
+    }
+    return { findings: out, compared: !unreadable.length };
   },
 
   // 'compared' records whether the SharePoint comparison actually RAN — not whether
@@ -183,7 +223,9 @@ function SyncHealthCard({ nav }) {
   async function check() {
     setBusy(true); setStep('');
     try {
-      const f = await SyncHealth.run({ onProgress: t => setStep(t) });
+      // A real click, so an expired session may prompt for sign-in here — token
+      // refresh is non-interactive everywhere that isn't a gesture.
+      const f = await SP.interactive(() => SyncHealth.run({ onProgress: t => setStep(t) }));
       setFindings(f); setAt(SyncHealth.lastAt()); setCompared(SyncHealth.lastCompared());
     } finally { setBusy(false); setStep(''); }
   }

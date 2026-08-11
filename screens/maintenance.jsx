@@ -214,7 +214,7 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
   }
 
   return (
-    <Modal title={editing ? 'Edit task' : 'New task'} onClose={onClose}>
+    <Modal lockKey={reminder?.id ? 'tasks:' + reminder.id : null} lockLabel="this task" title={editing ? 'Edit task' : 'New task'} onClose={onClose}>
       <div className="col gap-12">
         {needsProperty && (
           <div>
@@ -292,7 +292,7 @@ function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this task?')) { deleteReminder(reminder.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!title || !dueDate} onClick={() => {
+          <Btn className="lock-save" kind="primary" disabled={!title || !dueDate} onClick={() => {
             const clean = checklist.map(c => ({ id: c.id, text: c.text.trim(), done: !!c.done })).filter(c => c.text);
             const patch = { title, dueDate, recurrence, priority, notes, checklist: clean, propertyId: propId || null };
             if (editing) updateReminder(reminder.id, patch); else addReminder(patch);
@@ -360,7 +360,7 @@ function MaintenanceForm({ record, propertyId, onClose }) {
   const [status, setStatus] = useState(record?.status || 'open');
 
   return (
-    <Modal title={editing ? 'Edit maintenance' : 'Log maintenance'} onClose={onClose}>
+    <Modal lockKey={record?.id ? 'maintenance:' + record.id : null} lockLabel="this maintenance record" title={editing ? 'Edit maintenance' : 'Log maintenance'} onClose={onClose}>
       <div className="col gap-12">
         <div className="grid g-3">
           <div><div className="up dim mb-4">Date</div><input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} style={{width: '100%'}}/></div>
@@ -396,7 +396,7 @@ function MaintenanceForm({ record, propertyId, onClose }) {
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm('Delete this entry?')) { deleteMaintenance(record.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!description} onClick={() => {
+          <Btn className="lock-save" kind="primary" disabled={!description} onClick={() => {
             const patch = { date, category, description, vendor, cost: cost === '' ? null : Math.abs(parseFloat(cost)) || null, status, propertyId };
             if (editing) updateMaintenance(record.id, patch); else addMaintenance(patch);
             onClose();

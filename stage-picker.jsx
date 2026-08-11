@@ -42,7 +42,7 @@ function StagePicker({ property, onClose }) {
   const backwards = stageBackwardCount(property);
 
   return (
-    <Modal title={`Move ${property.address}`} onClose={onClose}>
+    <Modal lockKey={property?.id ? 'properties:' + property.id : null} lockLabel={property?.address} title={`Move ${property.address}`} onClose={onClose}>
       <div className="row gap-12 items-center mb-16">
         <div className="up dim">Currently</div>
         <Pip code={property.statusCode}/>

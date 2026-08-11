@@ -386,7 +386,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
   }
 
   return (
-    <Modal title={isNew ? 'Start exchange' : 'Edit exchange'} onClose={onClose}>
+    <Modal lockKey={!isNew && exchangeId ? 'exchanges:' + exchangeId : null} lockLabel="this exchange" title={isNew ? 'Start exchange' : 'Edit exchange'} onClose={onClose}>
       <div className="col gap-12">
         <div className="up dim">Relinquished property</div>
         <div>
@@ -601,7 +601,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
           )}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" onClick={() => {
+          <Btn className="lock-save" kind="primary" onClick={() => {
             if (!isNew) {
               const live = (Store.state.exchanges || []).find(x => x.id === exchangeId);
               if (live && (live.updatedAt || '') !== openedStamp.current &&

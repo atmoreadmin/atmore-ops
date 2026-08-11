@@ -239,7 +239,7 @@ function OfferForm({ offer, propertyId, property, onClose }) {
   });
 
   return (
-    <Modal title={editing ? 'Edit offer' : 'Log offer'} onClose={onClose}>
+    <Modal lockKey={offer?.id ? 'offers:' + offer.id : null} lockLabel="this offer" title={editing ? 'Edit offer' : 'Log offer'} onClose={onClose}>
       <div className="col gap-12">
         {/* Buyer + date */}
         <div className="grid g-2">
@@ -366,7 +366,7 @@ function OfferForm({ offer, propertyId, property, onClose }) {
             }}>✓ Accept offer</Btn>
           )}
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!buyer || offerPrice === ''} onClick={save}>{editing ? 'Save' : 'Log offer'}</Btn>
+          <Btn className="lock-save" kind="primary" disabled={!buyer || offerPrice === ''} onClick={save}>{editing ? 'Save' : 'Log offer'}</Btn>
         </div>
       </div>
     </Modal>

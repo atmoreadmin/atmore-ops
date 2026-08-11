@@ -662,7 +662,11 @@ body { text-rendering: optimizeLegibility; }
 </svg>
 </template>
 
-<div id="root"></div>
+<!-- Boot placeholder. The app compiles ~36 modules in the browser before React
+     mounts, which is a few seconds on a slow machine — without this the page is a
+     blank cream rectangle for that whole time, indistinguishable from a failure.
+     React replaces these children on mount; no script is needed to clear it. -->
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:70vh;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#8a8378;font-size:14px;letter-spacing:.02em">Loading Atmore Operations…</div></div>
 
 <script src="lib/xlsx.js"></script>
 <script src="seed.js"></script>
@@ -694,6 +698,7 @@ body { text-rendering: optimizeLegibility; }
 <script src="https://alcdn.msauth.net/browser/2.38.1/js/msal-browser.min.js" crossorigin="anonymous"></script>
 <script type="text/babel" src="sync.jsx"></script>
 <script type="text/babel" src="sharepoint.jsx"></script>
+<script type="text/babel" src="presence.jsx"></script>
 <script type="text/babel" src="sync-health.jsx"></script>
 <script type="text/babel" src="stage-picker.jsx"></script>
 <script type="text/babel" src="property-editor.jsx"></script>

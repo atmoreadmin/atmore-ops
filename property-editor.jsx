@@ -57,7 +57,7 @@ function PropertyEditor({ property, onClose }) {
 
   const [section, setSection] = useState('basics');
 
-  function save() {
+  function save(opts) {
     const patch = {
       type, assigned, loanType, lockbox, vestingLLC, driveUrl, notes,
       financingType: financingType || null,
@@ -88,6 +88,7 @@ function PropertyEditor({ property, onClose }) {
       utilities: utilitiesSetUp({ utilities }) ? utilities : null,
     };
     updateProperty(p.id, patch);
+    if (opts && opts.keepOpen) return;   // eviction save — the read-only notice stays visible
     onClose();
   }
 
@@ -100,7 +101,7 @@ function PropertyEditor({ property, onClose }) {
   ];
 
   return (
-    <Modal title={`Edit · ${p.address}`} onClose={onClose}
+    <Modal lockKey={'properties:' + p.id} lockLabel={p.address} onEvictedSave={() => { try { save({ keepOpen: true }); } catch (e) {} }} title={`Edit · ${p.address}`} onClose={onClose}
       right={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn kind="primary" onClick={save}>Save</Btn></>}>
       <div className="row gap-16 items-start" style={{minHeight: 380}}>
         <div className="col" style={{width: 160, flexShrink: 0}}>

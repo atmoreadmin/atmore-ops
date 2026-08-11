@@ -176,11 +176,11 @@ function SpendEntryModal({ entry, onClose }) {
   }
 
   return (
-    <Modal title={editing ? 'Edit payment' : 'Log payment'} onClose={onClose}
+    <Modal lockKey={entry?.id ? 'spendLog:' + entry.id : null} lockLabel="this payment" title={editing ? 'Edit payment' : 'Log payment'} onClose={onClose}
       right={<div className="row gap-8">
         {editing && <Btn kind="ghost" onClick={() => { if (confirm('Delete this entry? It only removes the log record.')) { deleteSpendEntry(entry.id); onClose(); } }} style={{color: 'var(--brick)'}}>Delete</Btn>}
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn kind="primary" onClick={save}>{editing ? 'Save' : 'Log it'}</Btn>
+        <Btn className="lock-save" kind="primary" onClick={save}>{editing ? 'Save' : 'Log it'}</Btn>
       </div>}>
       <div className="col gap-14">
         <Segmented value={method} onChange={setMethod}

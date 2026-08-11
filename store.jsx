@@ -53,14 +53,58 @@ const Store = {
   state: null,
   subs: new Set(),
 
+  // The store's shape guarantee, in ONE place. Every collection the app
+  // dereferences unguarded must exist as an array (and the keyed maps as objects)
+  // no matter where the state came from: an older saved store, a pull that rebuilt
+  // state wholesale, or a restored backup. Keeping this list inside load() meant a
+  // second list had to be kept in step elsewhere — exactly the drift that produced
+  // two crash-on-open bugs. Inline literal, not derived from MERGED_COLLECTIONS:
+  // load() runs at module top level, before sync.jsx publishes that map (same
+  // reason dedupeIds inlines its specs). It enumerates the STORE's collections,
+  // a superset of the synced ones — hoas, accounts, team and autoTagRules never
+  // sync but are read just as unguardedly.
+  COLLECTIONS: [
+    'properties', 'transactions', 'tenants', 'rentLedger', 'contractors', 'refis',
+    'exchanges', 'leads', 'offers', 'reminders', 'maintenance', 'webAccounts',
+    'spendLog', 'employees', 'timeOff', 'tombstones',
+    'hoas', 'accounts', 'team', 'autoTagRules', 'statuses',
+  ],
+  ensureShape(state) {
+    if (!state || typeof state !== 'object') return state;
+    this.COLLECTIONS.forEach(k => { if (!Array.isArray(state[k])) state[k] = []; });
+    if (!state.lists || typeof state.lists !== 'object') state.lists = {};
+    if (!state.completedEvents || typeof state.completedEvents !== 'object') state.completedEvents = {};
+    if (!state.uiState || typeof state.uiState !== 'object') state.uiState = { selectedPropertyId: null, propertyTab: 'summary' };
+    return state;
+  },
+
   load() {
     let saved = null;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) saved = JSON.parse(raw);
     } catch (e) {}
-    if (saved && saved._v === 12) {
+    // Accept ANY saved state whose shape is recognizable, not just the current
+    // version stamp. This used to be `saved._v === 12` exactly, so a store written
+    // by any other build — an older machine opening the app for the first time in a
+    // while, or a newer build's data after someone reopens an older cached copy —
+    // was silently thrown away and replaced with SEED SAMPLE DATA. That is a total
+    // local wipe with no warning, and worse: the seed rows are dirty, so after the
+    // first pull they merge as local-only records and get pushed to SharePoint,
+    // spraying sample properties into everyone else's lists. Every migration below
+    // is additive and idempotent, so running them on an older store is safe.
+    const usable = saved && saved.data && Array.isArray(saved.data.properties);
+    if (usable) {
       this.state = saved.data;
+      // An older build's store predates whole collections (contractors, refis,
+      // exchanges, spendLog, employees, timeOff, hoas…) and the app dereferences
+      // those unguarded — store.hoas.filter(...) on the property page. Safe before
+      // only because a non-matching version was replaced wholesale by SEED.
+      this.ensureShape(this.state);
+      if (saved._v !== 12) {
+        console.warn('Store: migrating saved data from v' + saved._v + ' to v12');
+        this.save();   // restamp at the current version once migrations below run
+      }
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
       if (dedupeIds(this.state)) this.save();
@@ -486,13 +530,76 @@ const Store = {
     // (an earlier split/import flow materialized per-property transactions AND kept
     // the parent's splits — double-counting the same money). Drop the standalone dupes.
     if (dedupeSplitMaterializations(this.state)) this.save();
+
+    // Applies to BOTH branches above, including a fresh install: window.SEED
+    // defines only 9 of the 21 guaranteed collections, and the seeding below it
+    // never assigns tombstones, autoTagRules or completedEvents. Those happen to be
+    // guarded at their call sites today, so nothing crashes — but the invariant has
+    // to hold unconditionally, or the next collection added without a call-site
+    // guard becomes another crash-on-open.
+    this.ensureShape(this.state);
+  },
+
+  // Save hooks, replacing the monkey-patching that two engines used to fight over.
+  // Both the Sheets engine and the SharePoint engine wrapped Store.save behind ONE
+  // shared __syncHooked boolean, so whichever installed first silently blocked the
+  // other — and sync.jsx installs at boot, before its own "is a Sheet configured?"
+  // check. The result was that SharePoint's own change handler never ran, so an
+  // edit never scheduled a SharePoint push. A registry lets every engine listen.
+  _preSave: new Map(),    // run BEFORE serialization (row stamping needs this)
+  _postSave: new Map(),   // run AFTER the write landed (schedule pushes)
+  onPreSave(name, fn) { this._preSave.set(name, fn); },
+  onPostSave(name, fn) { this._postSave.set(name, fn); },
+  offPostSave(name) { this._postSave.delete(name); },
+  _runHooks(map) {
+    map.forEach(fn => { try { fn(); } catch (e) { console.error('save hook failed', e); } });
   },
 
   save() {
+    this._runHooks(this._preSave);
     try {
       stampRowIds(this.state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ _v:12, data: this.state }));
-    } catch (e) { console.warn('persist failed', e); }
+      this._saveFailed = false;
+      this._runHooks(this._postSave);
+    } catch (e) {
+      // A failed local save used to be a console.warn nobody sees. The app keeps
+      // looking normal, so you keep working — and a reload silently loses
+      // everything since the last write that DID land. Quota exhaustion is the
+      // usual cause, so reclaim the caches that are rebuildable and retry — but
+      // ONCE per failure episode: those caches are rewritten from memory moments
+      // later, so repeating it just destroys the activity log the user is told to
+      // consult, for no lasting space.
+      let recovered = false;
+      if (!this._saveFailed) {
+        try {
+          ['sp_activity', 'sp_conflicts', 'sp_restore_log'].forEach(k => { try { localStorage.removeItem(k); } catch (e2) {} });
+          // Drop the in-memory copies too, or the next logLine/_saveConflicts
+          // writes them straight back and the reclaim was worthless.
+          try { if (window.SPSync) { SPSync._log = []; SPSync._conflicts = {}; } } catch (e2) {}
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ _v:12, data: this.state }));
+          recovered = true;
+          this._runHooks(this._postSave);
+        } catch (e2) {}
+      }
+      // Still failing: say so ONCE, plainly, and keep the warning up. The status
+      // gate in SyncEngine._set makes this state authoritative so nothing can
+      // quietly replace it with "Saving…".
+      if (!recovered && !this._saveFailed) {
+        this._saveFailed = true;
+        console.error('persist failed', e);
+        try {
+          if (window.SyncEngine) SyncEngine._set('local-broken', 'This computer can\u2019t save locally — its browser storage is full. Recent changes live only in this tab: keep it open until they reach SharePoint.');
+        } catch (e2) {}
+        try {
+          alert('Atmore Operations can\u2019t save to this computer\u2019s storage — it is full.\n\nYour recent changes are still in this tab and will go up to SharePoint, but do NOT close this tab until the status bar says everything is saved.');
+        } catch (e2) {}
+      }
+      // Even when the local write failed, the change must still be scheduled for
+      // SharePoint — the warning above promises exactly that, and the in-memory
+      // state is now the only copy. Guarded so a recovered save doesn't run twice.
+      if (!recovered) this._runHooks(this._postSave);
+    }
   },
 
   notify() {
@@ -570,6 +677,10 @@ const Store = {
       },
       uiState: { selectedPropertyId: null, propertyTab: 'summary' },
     };
+    // The literal above defines its collections by hand, so it drifts the moment a
+    // new one is added — the same duplication that caused the crash-on-open bugs.
+    // Route it through the single guarantee instead of trusting the literal.
+    this.ensureShape(this.state);
     this.save();
     this.notify();
   },
@@ -637,7 +748,6 @@ function ensureLedgerForMonth(month) {
   );
   if (missing.length === 0 && toHeal.length === 0) return;
   Store.update(st => {
-    let lid = (st.rentLedger.reduce((a, r) => Math.max(a, parseInt(r.id.slice(1)) || 0), 0)) + 1;
     const curMonth = st.today.slice(0, 7);
     st.rentLedger.forEach(r => {
       if (toHeal.some(h => h.id === r.id)) r.status = 'upcoming';
@@ -647,7 +757,9 @@ function ensureLedgerForMonth(month) {
       // genuinely past months post as Late. (Avoids falsely flagging a new tenant.)
       const status = month < curMonth ? 'late' : 'upcoming';
       st.rentLedger.push({
-        id: 'r' + (lid++), tenantId: t.id, propertyId: t.propertyId,
+        // Device-tagged (see commitImportRows). This backfill runs automatically on
+        // every machine, so an untagged counter collides across devices by design.
+        id: nextId(st.rentLedger, 'r', 1), tenantId: t.id, propertyId: t.propertyId,
         month, charge: t.rent, paid: 0, paidOn: null,
         source: t.source, status, linkedTxId: null,
       });
@@ -2106,10 +2218,12 @@ function addTenant(tenantData, startLedger = true) {
       const start = tenantData.moveIn.slice(0,7);
       const cur = s.today.slice(0,7);
       let m = start;
-      let lid = (s.rentLedger.reduce((a,r) => Math.max(a, parseInt(r.id.slice(1))||0), 0)) + 1;
       while (m <= cur) {
         s.rentLedger.push({
-          id: 'r' + (lid++), tenantId: id, propertyId: tenantData.propertyId,
+          // Device-tagged: see commitImportRows. RentLedger is a synced list keyed
+          // by this id, so an untagged local-max counter lets two machines mint the
+          // same ledger row id and overwrite each other's rent charges.
+          id: nextId(s.rentLedger, 'r', 1), tenantId: id, propertyId: tenantData.propertyId,
           month: m, charge: tenantData.rent, paid: 0, paidOn: null,
           source: tenantData.source, status: m === cur ? 'paid' : 'paid', linkedTxId: null,
         });
@@ -2589,7 +2703,7 @@ function downloadBackup() {
 function restoreBackup(jsonText) {
   const parsed = JSON.parse(jsonText);
   if (!parsed.data || !parsed.data.properties) throw new Error('Not a valid Atmore backup file');
-  Store.state = parsed.data;
+  Store.state = Store.ensureShape(parsed.data);
   Store.save();
   Store.notify();
 }
@@ -3093,10 +3207,14 @@ Object.assign(window, {
 // ─── Transaction triage mutation ───
 function commitImportRows(rows) {
   Store.update(s => {
-    let nextId = (s.transactions.reduce((a,t) => Math.max(a, parseInt(t.id.slice(1))||0), 0)) + 1;
+    // Device-tagged ids via the shared helper. A local-max counter mints the same
+    // 't501' on two machines importing at the same time, and since the id IS the
+    // sync key (RecID), one row then PATCHes over the other — a real transaction
+    // destroyed, invisibly. Called per row inside the loop on purpose: the helper
+    // re-scans the array, and each pushed row is already in it.
     rows.forEach(r => {
       s.transactions.push({
-        id: 't' + (nextId++),
+        id: nextId(s.transactions, 't', 1),
         date: r.date, acct: r.acct, desc: r.desc, amount: r.amount,
         payee: r.payee || '', category: r.category || '', project: r.project || '',
         monthSheet: '', importBatch: r.batch || s.today,

@@ -33,6 +33,10 @@ const SYNC_VIS = {
   'error':       { dot: 'var(--brick)', label: 'Sync error',     spin: false },
   'blocked':     { dot: 'var(--brick)', label: 'Save paused',    spin: false },
   'stale':       { dot: 'var(--brick)', label: 'Update required',spin: false },
+  // Local disk write is failing (storage full). Outranks every other state — see
+  // the gate in SyncEngine._set — so it must not fall through to the benign
+  // 'local-only' default.
+  'local-broken':{ dot: 'var(--brick)', label: 'Can’t save here', spin: false },
 };
 
 function relTime(iso) {
@@ -62,6 +66,10 @@ function SyncIndicator() {
     : SyncEngine.message || vis.label;
 
   function onClick() {
+    if (st === 'local-broken') {
+      alert('This computer\u2019s browser storage is full, so the app cannot save locally.\n\nYour recent changes are still in this tab and will go up to SharePoint. Keep this tab open until the status says Saved.\n\nTo free space: Settings \u2192 Integration \u2192 export a backup, then clear old browser data for this site.');
+      return;
+    }
     if (st === 'remote-newer') {
       if (confirm('The Google Sheet has newer data than this device.\n\nLoad the Sheet version? Your unsaved local changes will be replaced.\n\n(Cancel to keep local — then use Push on the Sync screen to overwrite the Sheet.)')) {
         SyncEngine.pullNow();
@@ -75,7 +83,8 @@ function SyncIndicator() {
     if ((st === 'error' || st === 'offline') && window.SPSync && SPSync.liveOn()) {
       // Re-authenticate interactively, then resume: retry the pending save if
       // there is one, otherwise refresh from SharePoint.
-      SP.signIn().then(() => (SyncEngine.dirty ? SPSync.flush() : SPSync.pull())).catch(() => {});
+      // A click IS a gesture, so a token refresh here may legitimately prompt.
+      SP.interactive(() => SP.signIn().then(() => (SyncEngine.dirty ? SPSync.flush() : SPSync.pull()))).catch(() => {});
       return;
     }
     if (st === 'error' || st === 'offline') { SyncEngine.openSync(); return; }
@@ -105,7 +114,7 @@ function SyncIndicator() {
         display: 'inline-flex', alignItems: 'center', gap: 7,
         padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
         background: st === 'local-only' ? 'transparent' : 'var(--paper-2)',
-        border: '1px solid ' + (st === 'error' || st === 'blocked' || st === 'stale' ? 'var(--brick)' : st === 'remote-newer' || st === 'dirty' ? 'var(--ochre)' : 'var(--rule)'),
+        border: '1px solid ' + (st === 'error' || st === 'blocked' || st === 'stale' || st === 'local-broken' ? 'var(--brick)' : st === 'remote-newer' || st === 'dirty' ? 'var(--ochre)' : 'var(--rule)'),
         color: 'var(--ink-2)', fontFamily: 'inherit', fontSize: 12,
       }}>
       <span style={{
@@ -177,7 +186,7 @@ function SyncGate() {
               : 'Editing is paused for a moment so this computer knows what everyone else has changed. Without that, your first save could overwrite their work.'}
           </div>
           <div className="row gap-8">
-            {failed && <Btn kind="primary" onClick={() => SPSync.pull().catch(() => {})}>Try again</Btn>}
+            {failed && <Btn kind="primary" onClick={() => SP.interactive(() => SPSync.pull()).catch(() => {})}>Try again</Btn>}
             {failed && <Btn kind="ghost" onClick={() => { if (confirm('Work without SharePoint?\n\nYour changes stay on this computer and are not shared until it reconnects. If someone else edits the same records meanwhile, you will have conflicts to review.')) SPSync.workOffline(); }}>Work offline anyway</Btn>}
           </div>
         </div>
@@ -186,10 +195,21 @@ function SyncGate() {
   );
 }
 
+// Evaluated ONCE at module scope (app.jsx loads after tweaks-panel.jsx), so the
+// hook call below is never conditional across renders — it is a fixed property of
+// this page load.
+const TWEAKS_READY = typeof useTweaks === 'function' && typeof TweaksPanel === 'function';
+
 function App() {
   const store = useStore();
   const route = useRoute();
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  // The Tweaks panel is a design-time affordance, not part of the product. It is
+  // also the LAST module loaded before this one, so if a script fetch loses the
+  // race on a slow connection it is the one that goes missing — and calling a
+  // missing hook here used to throw during render, unmounting the entire app and
+  // leaving a blank page. Degrade instead: the app runs, the panel just isn't there.
+  const tweaksReady = TWEAKS_READY;
+  const [t, setTweak] = tweaksReady ? useTweaks(TWEAK_DEFAULTS) : [TWEAK_DEFAULTS, () => {}];
   const [searchOpen, setSearchOpen] = React.useState(false);
 
   // Boot the sync engine once (auto-pull on open / auto-push on change when configured).
@@ -273,6 +293,7 @@ function App() {
   return (
     <div className="app">
       <SyncGate />
+      <OfflineBar />
       <header className="topbar">
         <div className="topbar__row">
           <AtmoreLogo />
@@ -317,6 +338,7 @@ function App() {
 
       <main className="page">{screen}</main>
 
+      {tweaksReady ? (
       <TweaksPanel>
         <TweakSection label="Prototype controls" />
         <TweakButton label="Reset to seed data" onClick={() => Store.reset()} />
@@ -331,6 +353,7 @@ function App() {
           In production this will read/write the Google Sheet directly. For now, all data is a snapshot loaded from your real spreadsheets.
         </p>
       </TweaksPanel>
+      ) : null}
       {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)}/>}
     </div>
   );
@@ -517,7 +540,7 @@ function PropertiesListScreen() {
 
       <Card className="mb-16">
         {focus ? (
-          <div className="card__body row gap-12 items-center wrap" style={{background: focusSet && focusSet.size === 0 ? 'rgba(74,122,86,0.08)' : 'rgba(154,102,24,0.06)', borderLeft: '3px solid ' + (focusSet && focusSet.size === 0 ? 'var(--sage-deep, var(--sage))' : 'var(--ochre)')}}>
+          <div className="card__body row gap-12 items-center wrap" style={{background: focusSet && focusSet.size === 0 ? 'rgba(74,122,86,0.08)' : 'rgba(154,102,24,0.06)', borderLeft: '3px solid ' + (focusSet && focusSet.size === 0 ? 'var(--sage)' : 'var(--ochre)')}}>
             {focusSet && focusSet.size === 0 ? (
               <span style={{fontWeight: 500}}>✓ All flagged properties resolved</span>
             ) : (
@@ -608,4 +631,25 @@ function PropertiesListScreen() {
 
 window.PropertiesListScreen = PropertiesListScreen;
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+// A module that fails to arrive must not produce a blank cream page with no
+// explanation — that is indistinguishable from "the app is broken" and there is
+// nothing on screen to act on. Show what happened and offer a reload.
+class AppBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div style={{padding: '60px 40px', fontFamily: 'IBM Plex Sans, system-ui, sans-serif', color: 'var(--ink, #2b2925)', maxWidth: 620}}>
+        <h1 style={{fontSize: 22, marginBottom: 10}}>The app didn’t finish loading</h1>
+        <p style={{lineHeight: 1.6, marginBottom: 18}}>
+          Part of the app failed to load. Your data is safe on this computer and in SharePoint — nothing has been changed. Reloading almost always fixes it.
+        </p>
+        <button onClick={() => window.location.reload()} style={{padding: '9px 16px', fontSize: 14, cursor: 'pointer', background: 'var(--blue-deep, #34637f)', color: '#fff', border: 0, borderRadius: 4}}>Reload</button>
+        <pre style={{marginTop: 22, fontSize: 11, opacity: 0.6, whiteSpace: 'pre-wrap'}}>{String(this.state.err && (this.state.err.message || this.state.err))}</pre>
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<AppBoundary><App /></AppBoundary>);

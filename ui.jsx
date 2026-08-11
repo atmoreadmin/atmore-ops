@@ -118,18 +118,43 @@ function Segmented({ value, options, onChange }) {
   );
 }
 
-function Modal({ title, children, onClose, right, wide }) {
+// lockKey turns a modal into an exclusive editor: while someone else has the
+// record open this renders the take-over dialog INSTEAD of the form, and a
+// take-over that happens mid-edit drops this copy to read-only (presence.jsx).
+// onEvictedSave is the editor's commit function — run before the record is
+// handed over so a take-over never discards what was typed.
+function Modal({ title, children, onClose, right, wide, lockKey, lockLabel, onEvictedSave }) {
+  const rootRef = React.useRef(null);
+  // A take-over must commit whatever is typed before handing the record over.
+  // Editors that buffer in local state pass their commit fn as onEvictedSave;
+  // the rest are saved by pressing their own Save button (tagged .lock-save),
+  // which is exactly what the user would have clicked. A disabled Save means an
+  // incomplete form, and nothing to commit.
+  const saveOnEvict = React.useCallback(() => {
+    if (onEvictedSave) return onEvictedSave();
+    const btn = rootRef.current && rootRef.current.querySelector('.lock-save:not([disabled])');
+    if (btn) btn.click();
+  }, [onEvictedSave]);
+  const lock = useEditLock(lockKey, lockLabel || title, saveOnEvict);
+  if (lock.state === 'blocked') return <LockedDialog holder={lock.holder} label={lockLabel || title} onTakeOver={lock.takeOver} onCancel={onClose}/>;
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={wide ? {maxWidth: 720, width: '92vw'} : null}>
+      <div ref={rootRef} className="modal" onClick={e => e.stopPropagation()} style={wide ? {maxWidth: 720, width: '92vw'} : null}>
         <div className="modal__head">
           <h2>{title}</h2>
           <div className="row gap-8 items-center">
-            {right}
+            <fieldset disabled={lock.readOnly} style={{border: 0, padding: 0, margin: 0, minWidth: 0, display: 'contents'}}>{right}</fieldset>
             <Btn kind="ghost" sz="sm" onClick={onClose}>✕</Btn>
           </div>
         </div>
-        <div className="modal__body">{children}</div>
+        <div className="modal__body">
+          {lock.state === 'checking' ? <div className="dim" style={{padding: '18px 0', fontSize: 13}}>Checking whether anyone else has this open…</div> : (
+            <React.Fragment>
+              {lock.notice ? <LockNotice text={lock.notice} onResume={lock.takeOver}/> : null}
+              <fieldset disabled={lock.readOnly} style={{border: 0, padding: 0, margin: 0, minWidth: 0, opacity: lock.readOnly ? 0.6 : 1}}>{children}</fieldset>
+            </React.Fragment>
+          )}
+        </div>
       </div>
     </div>
   );

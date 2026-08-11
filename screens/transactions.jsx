@@ -467,7 +467,7 @@ function TransactionsScreen() {
                 ))}
               </div>
               <div className="row mt-12">
-                <button onClick={() => { if (confirm('Reset auto-tag rules to the built-in defaults? Your custom rules will be lost.')) resetAutoTagRules(); }} style={{background: 'none', border: 'none', padding: 0, color: 'var(--ink-3)', cursor: 'pointer', font: 'inherit', fontSize: 11, textDecoration: 'underline'}}>Reset to defaults</button>
+                <button onClick={() => { if (confirm('Reset auto-tag rules to the built-in defaults?\n\nThese rules are SHARED — this resets them for everyone, on every computer.')) resetAutoTagRules(); }} style={{background: 'none', border: 'none', padding: 0, color: 'var(--ink-3)', cursor: 'pointer', font: 'inherit', fontSize: 11, textDecoration: 'underline'}}>Reset to defaults</button>
               </div>
             </div>
           </Card>
@@ -569,7 +569,15 @@ function BulkActionBar({ selectedIds, onClear }) {
         style={{background: 'var(--blue)', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Apply</button>}
 
       <span style={{color: 'var(--ink-4)'}}>·</span>
-      <button onClick={() => { if (confirm(`Delete ${selectedIds.length} transactions?`)) { bulkDeleteTransactions(selectedIds); onClear(); } }}
+      <button onClick={async () => {
+        // Refuse if ANY selected transaction is open elsewhere. One lock read for
+        // the whole selection — checking each id separately would fire a request
+        // per row and stall on a large selection.
+        const conflict = await Locks.anyHeldByOther(selectedIds.map(id => 'transactions:' + id));
+        if (conflict === 'offline') { alert('Can\u2019t reach SharePoint to check who has these open. Try again in a moment.'); return; }
+        if (conflict) { alert((conflict.holder || 'Someone') + ' has one of the selected transactions open. Deleting it would lose their work \u2014 ask them to close it first.'); return; }
+        if (confirm(`Delete ${selectedIds.length} transactions?`)) { bulkDeleteTransactions(selectedIds); onClear(); }
+      }}
         style={{background: 'transparent', color: '#e9a59a', border: '1px solid #e9a59a', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500}}>Delete</button>
       <button onClick={onClear}
         style={{background: 'transparent', color: 'var(--ink-4)', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, marginLeft: 4}}>Clear</button>

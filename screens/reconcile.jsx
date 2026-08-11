@@ -85,6 +85,12 @@ function ReconcileScreen() {
 
   async function compare() {
     setBusy(true); setErr(''); setReport(null);
+    // A real click, so an expired session may prompt for sign-in inside this read —
+    // token refresh is non-interactive on every path that isn't a gesture.
+    return SP.interactive(() => _compare());
+  }
+
+  async function _compare() {
     try {
       const local = serializeForSheet(Store.state).tabs;
       const tabs = [];

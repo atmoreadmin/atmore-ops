@@ -271,7 +271,7 @@ function ContractorForm({ contractor, onClose }) {
   const editing = !!contractor;
 
   return (
-    <Modal title={editing ? 'Edit contractor' : 'Add contractor'} onClose={onClose}>
+    <Modal lockKey={contractor?.id ? 'contractors:' + contractor.id : null} lockLabel={contractor?.name || 'this contractor'} title={editing ? 'Edit contractor' : 'Add contractor'} onClose={onClose}>
       <div className="col gap-12">
         <div>
           <div className="up dim mb-4">Name</div>
@@ -358,7 +358,7 @@ function ContractorForm({ contractor, onClose }) {
           )}
           <div className="grow"/>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!name} onClick={() => {
+          <Btn className="lock-save" kind="primary" disabled={!name} onClick={() => {
             const patch = { name, phone, email, specialty, entityType, w9OnFile, w9Date: w9OnFile ? w9Date : null, tin, mailingAddress, isAttorney, paidByCardOnly, notes };
             if (editing) updateContractor(contractor.id, patch);
             else addContractor(patch);
