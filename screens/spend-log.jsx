@@ -334,15 +334,19 @@ function SpendEntryModal({ entry, onClose }) {
   // silently returned and the form looked permanently stuck.
   function save(force) {
    try {
+    BC('spend:save-entered force=' + !!force);
     const rec = { method, amount: parseFloat(String(amount).replace(/[$,]/g, '')) || 0, date,
       vendor: isCheck ? '' : vendor, contractorId, contractorName: contractorId ? '' : contractorName,
       propertyId, cardLast4: isCheck ? '' : cardLast4, checkNumber: isCheck ? checkNumber : '', note };
     if (!rec.amount) { setWarn(null); setErr('An amount is required.'); return; }
     setErr('');
     const w = spendWarnings({ ...rec, vendor: isCheck ? (contractorName || contractorId ? 'x' : '') : vendor });
-    if (w.length && !force) { setWarn(w); return; }
+    if (w.length && !force) { BC('spend:showing-warning ' + w.join('/')); setWarn(w); return; }
+    BC('spend:writing editing=' + editing);
     if (editing) updateSpendEntry(entry.id, rec); else addSpendEntry(rec);
+    BC('spend:written');
     onClose();
+    BC('spend:closed');
    } catch (ex) {
      // A save must never fail with a blank stare. Whatever went wrong, say it on
      // screen — a silent return is what made this unreportable the first time.
@@ -355,7 +359,7 @@ function SpendEntryModal({ entry, onClose }) {
   return (
     <Modal lockKey={entry?.id ? 'spendLog:' + entry.id : null} lockLabel="this payment" title={editing ? 'Edit payment' : 'Log payment'} onClose={onClose}
       right={<div className="row gap-8">
-        <span className="small dim mono" title="build">b3</span>
+        <span className="small dim mono" title="build">b4</span>
         {editing && <Btn kind="ghost" onClick={() => { if (confirm('Delete this entry? It only removes the log record.')) { deleteSpendEntry(entry.id); onClose(); } }} style={{color: 'var(--brick)'}}>Delete</Btn>}
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
         <Btn className="lock-save" kind="primary" onClick={() => save(false)}>{editing ? 'Save' : 'Log it'}</Btn>
@@ -446,6 +450,16 @@ function SpendEntryModal({ entry, onClose }) {
         <div className="small dim" style={{lineHeight: 1.5, textWrap: 'pretty'}}>
           Only the amount is required. Anything else you skip, you'll be warned about once and then it saves. This entry never posts to your books.
         </div>
+
+        {/* Temporary diagnostic: last save's breadcrumbs, kept in localStorage so a
+            hung tab still reports where it stopped once it's reloaded. */}
+        <details style={{fontSize: 11}}>
+          <summary className="dim" style={{cursor: 'pointer'}}>Diagnostics (last save trace)</summary>
+          <pre className="mono" style={{whiteSpace: 'pre-wrap', margin: '6px 0 0', padding: 8, background: 'var(--wash, #f2efe9)', borderRadius: 4, maxHeight: 200, overflow: 'auto'}}>{(() => {
+            try { const l = JSON.parse(localStorage.getItem('atmore-trace') || '[]'); return l.length ? l.join('\n') : 'no trace yet'; } catch (e) { return 'unreadable'; }
+          })()}</pre>
+          <Btn sz="sm" kind="ghost" onClick={() => { try { localStorage.removeItem('atmore-trace'); } catch (e) {} setErr(''); setWarn(null); }}>Clear trace</Btn>
+        </details>
       </div>
     </Modal>
   );
