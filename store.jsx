@@ -1748,9 +1748,21 @@ function nextId(list, prefix, start) {
   let n = start;
   for (const r of rows) {
     const m = String(r && r.id || '').match(rx);
-    if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+    // A malformed id (absurdly long digit run) parses to Infinity/NaN, and a
+    // non-finite high-water mark poisons every id minted afterwards.
+    if (m) { const v = parseInt(m[1], 10); if (Number.isFinite(v)) n = Math.max(n, v + 1); }
   }
-  while (used.has(prefix + n) || used.has(prefix + n + DEVICE_TAG)) n++;
+  if (!Number.isFinite(n)) n = start;
+  // Hard bound. This search must never be able to block the tab: a spin here
+  // freezes the whole app with no error, which is unreportable and unfixable
+  // from the outside.
+  let guard = 0;
+  while ((used.has(prefix + n) || used.has(prefix + n + DEVICE_TAG)) && guard < 200000) { n++; guard++; }
+  if (guard >= 200000) {
+    try { BC('nextId:GUARD-TRIPPED prefix=' + prefix + ' rows=' + rows.length + ' n=' + n); } catch (e) {}
+    return prefix + Date.now() + DEVICE_TAG;
+  }
+  try { if (guard > 500) BC('nextId:slow prefix=' + prefix + ' scanned=' + guard); } catch (e) {}
   return prefix + n + DEVICE_TAG;
 }
 // Repairs rows that already collided. Only the LATER holder of an id is re-minted,
