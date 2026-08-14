@@ -4,6 +4,7 @@
 
 const SPEND_RANGE_KEY = 'atmore-spend-range-v1';
 const SPEND_SORT_KEY = 'atmore-spend-sort-v1';
+const SPEND_PAYEE_KEY = 'atmore-spend-payees-v1';
 
 function SpendLogScreen() {
   useStore();
@@ -14,6 +15,15 @@ function SpendLogScreen() {
   const [summary, setSummary] = useState(false);
   // Sort choice sticks per person, same as the range filter — a coworker who works the
   // log by check number shouldn't have to re-pick it every visit.
+  const [payeeSel, setPayeeSel] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SPEND_PAYEE_KEY) || 'null');
+      if (Array.isArray(raw)) return new Set(raw.filter(x => typeof x === 'string'));
+    } catch (e) {}
+    return new Set();
+  });
+  const [payeeOpen, setPayeeOpen] = useState(false);
+  const [payeeSearch, setPayeeSearch] = useState('');
   const [sort, setSort] = useState(() => {
     try {
       const raw = JSON.parse(localStorage.getItem(SPEND_SORT_KEY) || 'null');
@@ -23,6 +33,15 @@ function SpendLogScreen() {
   });
 
   function setRangeP(v) { setRange(v); localStorage.setItem(SPEND_RANGE_KEY, v); }
+  function setPayeeSelP(next) {
+    setPayeeSel(next);
+    try { localStorage.setItem(SPEND_PAYEE_KEY, JSON.stringify([...next])); } catch (e) {}
+  }
+  function togglePayee(name) {
+    const next = new Set(payeeSel);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    setPayeeSelP(next);
+  }
   function clickHeader(key) {
     setSort(s => {
       // Second click on the same column reverses it; a new column starts in the
@@ -39,7 +58,28 @@ function SpendLogScreen() {
     : range === 'week' ? { from: weekStartISO(today), to: weekEndISO(today) }
     : { from: custom.from, to: custom.to };
 
-  const entries = spendEntries(bounds.from, bounds.to);
+  const rangeEntries = spendEntries(bounds.from, bounds.to);
+  // An em dash reads fine inside a column, but not as a filter option or a chip.
+  const payeeKey = e => { const n = spendPayeeName(e); return (!n || n === '—') ? '(no payee)' : n; };
+  // Every payee in the range with its own count and total, so the filter doubles as a
+  // per-vendor readout — the usual question is "how much went to this vendor".
+  const payeeStats = [];
+  rangeEntries.forEach(e => {
+    const name = payeeKey(e);
+    let p = payeeStats.find(x => x.name === name);
+    if (!p) { p = { name, count: 0, total: 0 }; payeeStats.push(p); }
+    p.count++;
+    p.total += e.voided ? 0 : (Number(e.amount) || 0);
+  });
+  payeeStats.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  // A selected payee with nothing in this range still gets a row, so it stays visible and
+  // clearable instead of being an invisible filter hiding rows you expected to see.
+  payeeSel.forEach(n => { if (!payeeStats.some(p => p.name === n)) payeeStats.push({ name: n, count: 0, total: 0, absent: true }); });
+
+  const payeeActive = payeeSel.size > 0;
+  const entries = payeeActive
+    ? rangeEntries.filter(e => payeeSel.has(payeeKey(e)))
+    : rangeEntries;
   const todayEntries = spendEntries(today, today);
   const weekEntries = spendEntries(weekStartISO(today), weekEndISO(today));
   const gaps = checkSequenceGaps();
@@ -80,6 +120,8 @@ function SpendLogScreen() {
     });
   }
 
+  const payeeMenu = payeeStats.filter(p => !payeeSearch || p.name.toLowerCase().includes(payeeSearch.toLowerCase()));
+
   const Th = ({ k, label, num, width }) => (
     <th className={num ? 'num' : ''} style={{width, cursor: 'pointer', userSelect: 'none'}}
       title={'Sort by ' + label.toLowerCase()} onClick={() => clickHeader(k)}>
@@ -113,6 +155,40 @@ function SpendLogScreen() {
         <div className="row gap-8 items-center">
           <Segmented value={range} onChange={setRangeP}
             options={[{value:'today', label:'Today'}, {value:'week', label:'This week'}, {value:'custom', label:'Custom'}]}/>
+          <div style={{position: 'relative'}}>
+            <Btn sz="sm" kind={payeeActive ? 'primary' : undefined} onClick={() => { setPayeeOpen(o => !o); setPayeeSearch(''); }}>
+              {payeeActive ? 'Payees · ' + payeeSel.size : 'All payees'} ▾
+            </Btn>
+            {payeeOpen && (
+              <>
+                <div style={{position: 'fixed', inset: 0, zIndex: 40}} onClick={() => setPayeeOpen(false)}></div>
+                <div className="card" style={{position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 41, width: 330, maxHeight: 400, display: 'flex', flexDirection: 'column', boxShadow: '0 12px 32px rgba(0,0,0,.16)'}}>
+                  <div style={{padding: '10px 12px', borderBottom: '1px solid var(--rule)'}}>
+                    <input className="input" style={{width: '100%'}} placeholder="Find a payee or vendor"
+                      value={payeeSearch} onChange={ev => setPayeeSearch(ev.target.value)}/>
+                  </div>
+                  <div style={{overflowY: 'auto', padding: '4px 0'}}>
+                    {payeeMenu.map(p => (
+                      <label key={p.name} className="row between items-center" style={{gap: 10, padding: '6px 12px', cursor: 'pointer'}}>
+                        <span className="row items-center" style={{gap: 8, minWidth: 0}}>
+                          <input type="checkbox" checked={payeeSel.has(p.name)} onChange={() => togglePayee(p.name)}/>
+                          <span style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{p.name}</span>
+                        </span>
+                        <span className="small dim mono" style={{whiteSpace: 'nowrap'}}>
+                          {p.absent ? 'none here' : p.count + ' · ' + fmtMoney(p.total)}
+                        </span>
+                      </label>
+                    ))}
+                    {!payeeMenu.length && <div className="small dim" style={{padding: '10px 12px'}}>No payee matches that.</div>}
+                  </div>
+                  <div className="row between items-center" style={{padding: '8px 12px', borderTop: '1px solid var(--rule)'}}>
+                    <button className="linkbtn" onClick={() => setPayeeSelP(new Set())}>Show all</button>
+                    <button className="linkbtn" onClick={() => setPayeeSelP(new Set(payeeStats.filter(p => !p.absent).map(p => p.name)))}>Select all listed</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <Btn sz="sm" onClick={() => setSummary(true)}>Weekly summary</Btn>
           <Btn kind="primary" sz="sm" onClick={() => setAdding({})}>+ Log payment</Btn>
         </div>
@@ -133,6 +209,19 @@ function SpendLogScreen() {
         </div>
       )}
 
+      {payeeActive && (
+        <div className="row items-center wrap mb-12" style={{gap: 8}}>
+          <span className="up">Showing only</span>
+          {[...payeeSel].map(n => (
+            <button key={n} className="tag" style={{cursor: 'pointer'}} title="Remove this payee from the filter" onClick={() => togglePayee(n)}>{n} ✕</button>
+          ))}
+          <button className="linkbtn" onClick={() => setPayeeSelP(new Set())}>Clear</button>
+          <span className="small dim">
+            {entries.length} of {rangeEntries.length} {rangeEntries.length === 1 ? 'entry' : 'entries'} · <strong className="mono">{fmtMoney(spendTotal(entries))}</strong>
+          </span>
+        </div>
+      )}
+
       {entries.length > 0 && !groupByDay && (
         <div className="row between items-center mb-8">
           <div className="small dim">
@@ -146,9 +235,15 @@ function SpendLogScreen() {
 
       {!entries.length ? (
         <Card><div className="card__body">
-          <Empty title="Nothing logged for this range"
-            sub="Log a check you wrote or a phone sale you paid for, and it shows up here in real time."
-            action={<Btn kind="primary" sz="sm" onClick={() => setAdding({})}>+ Log payment</Btn>}/>
+          {payeeActive && rangeEntries.length > 0 ? (
+            <Empty title="No entries for the payees you picked"
+              sub={'This range has ' + rangeEntries.length + (rangeEntries.length === 1 ? ' entry' : ' entries') + ', but none match the payee filter.'}
+              action={<Btn sz="sm" onClick={() => setPayeeSelP(new Set())}>Show all payees</Btn>}/>
+          ) : (
+            <Empty title="Nothing logged for this range"
+              sub="Log a check you wrote or a phone sale you paid for, and it shows up here in real time."
+              action={<Btn kind="primary" sz="sm" onClick={() => setAdding({})}>+ Log payment</Btn>}/>
+          )}
         </div></Card>
       ) : (
         <table className="tbl">
