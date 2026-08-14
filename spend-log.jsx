@@ -318,6 +318,8 @@ function SpendEntryModal({ entry, onClose }) {
   const [cardLast4, setCardLast4] = useState(entry?.cardLast4 || '');
   const [checkNumber, setCheckNumber] = useState(entry?.checkNumber || '');
   const [note, setNote] = useState(entry?.note || '');
+  const [err, setErr] = useState('');
+  const [warn, setWarn] = useState(null);
   const amountRef = React.useRef(null);
   useEffect(() => { if (amountRef.current) amountRef.current.focus(); }, []);
 
@@ -326,13 +328,18 @@ function SpendEntryModal({ entry, onClose }) {
   const properties = (store.properties || []).slice().sort((a, b) => a.address.localeCompare(b.address));
   const contractors = (store.contractors || []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
-  function save() {
+  // Both the hard error and the soft warning are rendered INSIDE the modal. They
+  // used to be alert()/confirm(): once a browser shows "prevent this page from
+  // creating additional dialogs", confirm() returns false forever, so every save
+  // silently returned and the form looked permanently stuck.
+  function save(force) {
     const rec = { method, amount: parseFloat(String(amount).replace(/[$,]/g, '')) || 0, date,
       vendor: isCheck ? '' : vendor, contractorId, contractorName: contractorId ? '' : contractorName,
       propertyId, cardLast4: isCheck ? '' : cardLast4, checkNumber: isCheck ? checkNumber : '', note };
-    if (!rec.amount) { alert('An amount is required.'); return; }
-    const warn = spendWarnings({ ...rec, vendor: isCheck ? (contractorName || contractorId ? 'x' : '') : vendor });
-    if (warn.length && !confirm('Saving without ' + warn.join(', ') + '. Save anyway?')) return;
+    if (!rec.amount) { setWarn(null); setErr('An amount is required.'); return; }
+    setErr('');
+    const w = spendWarnings({ ...rec, vendor: isCheck ? (contractorName || contractorId ? 'x' : '') : vendor });
+    if (w.length && !force) { setWarn(w); return; }
     if (editing) updateSpendEntry(entry.id, rec); else addSpendEntry(rec);
     onClose();
   }
@@ -342,9 +349,19 @@ function SpendEntryModal({ entry, onClose }) {
       right={<div className="row gap-8">
         {editing && <Btn kind="ghost" onClick={() => { if (confirm('Delete this entry? It only removes the log record.')) { deleteSpendEntry(entry.id); onClose(); } }} style={{color: 'var(--brick)'}}>Delete</Btn>}
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn className="lock-save" kind="primary" onClick={save}>{editing ? 'Save' : 'Log it'}</Btn>
+        <Btn className="lock-save" kind="primary" onClick={() => save(false)}>{editing ? 'Save' : 'Log it'}</Btn>
       </div>}>
       <div className="col gap-14">
+        {err ? (
+          <div style={{padding: '9px 12px', background: 'var(--brick-soft, #f7e6e3)', border: '1px solid var(--brick)', borderRadius: 'var(--radius-s)', fontSize: 13}}>{err}</div>
+        ) : null}
+        {warn ? (
+          <div className="row items-center gap-10" style={{padding: '9px 12px', background: 'var(--ochre-soft)', border: '1px solid var(--ochre)', borderRadius: 'var(--radius-s)', fontSize: 13}}>
+            <span style={{flex: 1}}>No {warn.join(', ')}. Fill it in, or log it as-is.</span>
+            <Btn sz="sm" kind="ghost" onClick={() => setWarn(null)}>Go back</Btn>
+            <Btn sz="sm" onClick={() => save(true)}>Log it anyway</Btn>
+          </div>
+        ) : null}
         <Segmented value={method} onChange={setMethod}
           options={[{value:'phone', label:'Phone sale'}, {value:'check', label:'Check'}]}/>
 
