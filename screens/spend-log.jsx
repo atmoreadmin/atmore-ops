@@ -359,7 +359,7 @@ function SpendEntryModal({ entry, onClose }) {
   return (
     <Modal lockKey={entry?.id ? 'spendLog:' + entry.id : null} lockLabel="this payment" title={editing ? 'Edit payment' : 'Log payment'} onClose={onClose}
       right={<div className="row gap-8">
-        <span className="small dim mono" title="build">b4</span>
+        <span className="small dim mono" title="build">b5</span>
         {editing && <Btn kind="ghost" onClick={() => { if (confirm('Delete this entry? It only removes the log record.')) { deleteSpendEntry(entry.id); onClose(); } }} style={{color: 'var(--brick)'}}>Delete</Btn>}
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
         <Btn className="lock-save" kind="primary" onClick={() => save(false)}>{editing ? 'Save' : 'Log it'}</Btn>
