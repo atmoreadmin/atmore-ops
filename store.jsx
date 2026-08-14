@@ -49,6 +49,17 @@ function CLEAN_START_TREMAINE() {
   };
 }
 
+// Breadcrumb tracer: a hung tab can't be read from the console, so each step of a
+// save stamps localStorage. Whatever the LAST breadcrumb is names the step that hung.
+window.BC = function (step) {
+  try {
+    const k = 'atmore-trace';
+    const list = JSON.parse(localStorage.getItem(k) || '[]');
+    list.push(new Date().toISOString().slice(11, 23) + ' ' + step);
+    localStorage.setItem(k, JSON.stringify(list.slice(-40)));
+  } catch (e) {}
+};
+
 const Store = {
   state: null,
   subs: new Set(),
@@ -598,12 +609,17 @@ const Store = {
   },
 
   save() {
+    BC('save:preSave-hooks');
     this._runHooks(this._preSave);
+    BC('save:stampRowIds');
     try {
       stampRowIds(this.state);
+      BC('save:stringify+setItem');
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ _v:12, data: this.state }));
       this._saveFailed = false;
+      BC('save:postSave-hooks');
       this._runHooks(this._postSave);
+      BC('save:done');
     } catch (e) {
       // A failed local save used to be a console.warn nobody sees. The app keeps
       // looking normal, so you keep working — and a reload silently loses
@@ -649,9 +665,13 @@ const Store = {
   },
 
   update(mutator) {
+    BC('update:mutator');
     mutator(this.state);
+    BC('update:save');
     this.save();
+    BC('update:notify');
     this.notify();
+    BC('update:done');
   },
 
   reset() {
