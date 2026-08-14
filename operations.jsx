@@ -72,7 +72,7 @@ function toggleSpendVoid(id) {
   });
 }
 
-// Newest first, always — no column sorting by design.
+// Newest first. The screen re-sorts and filters on top of this.
 function spendEntries(fromIso, toIso) {
   return (Store.state.spendLog || [])
     .filter(e => (!fromIso || e.date >= fromIso) && (!toIso || e.date <= toIso))
