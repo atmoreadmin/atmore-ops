@@ -37,7 +37,9 @@ function fmtShortDay(iso) {
 function addSpendEntry(rec) {
   Store.update(s => {
     s.spendLog = s.spendLog || [];
+    BC('spend:mutator-in rows=' + s.spendLog.length);
     const id = nextId(s.spendLog, 'sp', 101);
+    BC('spend:got-id ' + id);
     s.spendLog.push({
       id,
       date: rec.date || s.today,
@@ -54,6 +56,7 @@ function addSpendEntry(rec) {
       voided: false,
       updatedAt: new Date().toISOString(),
     });
+    BC('spend:pushed');
   });
 }
 function updateSpendEntry(id, patch) {
