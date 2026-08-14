@@ -13,44 +13,47 @@ function GlobalSearch({ onClose }) {
     if (!q.trim()) {
       // Default: show recent + a hint
       store.properties.slice(0, 5).forEach(p => {
-        out.push({ kind: 'property', id: p.id, label: p.address, sub: p.city + ' · ' + STATUS_LABEL[p.statusCode] });
+        out.push({ kind: 'property', id: p.id, label: p.address || '(no address)', sub: (p.city || '—') + ' · ' + (STATUS_LABEL[p.statusCode] || p.statusCode || '—') });
       });
       return out;
     }
     const lc = q.toLowerCase();
     // Properties
     for (const p of store.properties) {
-      if (p.address.toLowerCase().includes(lc) || (p.city||'').toLowerCase().includes(lc) || (p.vestingLLC||'').toLowerCase().includes(lc)) {
-        out.push({ kind: 'property', id: p.id, label: p.address, sub: p.city + ', ' + p.state + ' · ' + STATUS_LABEL[p.statusCode], pip: p.statusCode });
+      // Every field here is guarded: one record missing an address, a name or a
+      // description used to throw inside the search box the moment you typed, taking
+      // the whole app down with it. Synced/imported rows can legitimately lack any of them.
+      if ((p.address||'').toLowerCase().includes(lc) || (p.city||'').toLowerCase().includes(lc) || (p.vestingLLC||'').toLowerCase().includes(lc)) {
+        out.push({ kind: 'property', id: p.id, label: p.address || '(no address)', sub: [p.city, p.state].filter(Boolean).join(', ') + ' · ' + (STATUS_LABEL[p.statusCode] || p.statusCode || '—'), pip: p.statusCode });
       }
       if (out.length >= 80) break;
     }
     // Tenants
     for (const t of store.tenants) {
       if (!t.name) continue;
-      if (t.name.toLowerCase().includes(lc) || (t.phone||'').toLowerCase().includes(lc) || (t.voucher||'').toLowerCase().includes(lc)) {
+      if (String(t.name).toLowerCase().includes(lc) || (t.phone||'').toLowerCase().includes(lc) || (t.voucher||'').toLowerCase().includes(lc)) {
         out.push({ kind: 'tenant', id: t.id, label: t.name, sub: getProperty(t.propertyId)?.address || '—', propertyId: t.propertyId });
       }
     }
     // Contractors
     for (const c of store.contractors) {
-      if (c.name.toLowerCase().includes(lc) || (c.specialty||'').toLowerCase().includes(lc)) {
-        out.push({ kind: 'contractor', id: c.id, label: c.name, sub: (c.specialty || 'No specialty') + ' · ' + fmtMoney(c.ytd) + ' YTD' });
+      if ((c.name||'').toLowerCase().includes(lc) || (c.specialty||'').toLowerCase().includes(lc)) {
+        out.push({ kind: 'contractor', id: c.id, label: c.name || '(unnamed)', sub: (c.specialty || 'No specialty') + ' · ' + fmtMoney(c.ytd) + ' YTD' });
       }
     }
     // Leads
     for (const ld of (store.leads || [])) {
       if ((ld.name||'').toLowerCase().includes(lc) || (ld.phone||'').toLowerCase().includes(lc) || (ld.source||'').toLowerCase().includes(lc) || (ld.notes||'').toLowerCase().includes(lc)) {
         const prop = getProperty(ld.propertyId);
-        out.push({ kind: 'lead', id: ld.id, label: ld.name, sub: (prop?.address || '—') + ' · ' + ld.source + ' · ' + LEAD_STATUS_LABEL[ld.status], propertyId: ld.propertyId });
+        out.push({ kind: 'lead', id: ld.id, label: ld.name || '(unnamed lead)', sub: [prop?.address || '—', ld.source, LEAD_STATUS_LABEL[ld.status]].filter(Boolean).join(' · '), propertyId: ld.propertyId });
       }
     }
     // Transactions — check description, payee, amount
     const numQ = parseFloat(lc.replace(/[$,]/g, ''));
     for (const t of store.transactions) {
-      if (t.desc.toLowerCase().includes(lc) || (t.payee || '').toLowerCase().includes(lc) || (t.project || '').toLowerCase().includes(lc) ||
-          (!isNaN(numQ) && numQ > 0 && Math.abs(t.amount) === numQ)) {
-        out.push({ kind: 'tx', id: t.id, label: t.desc.slice(0, 60), sub: fmtDate(t.date) + ' · ' + fmtMoney(t.amount) + ' · ' + (t.project || t.category || 'untagged'),
+      if ((t.desc||'').toLowerCase().includes(lc) || (t.payee || '').toLowerCase().includes(lc) || (t.project || '').toLowerCase().includes(lc) ||
+          (!isNaN(numQ) && numQ > 0 && Math.abs(t.amount || 0) === numQ)) {
+        out.push({ kind: 'tx', id: t.id, label: (t.desc || '(no description)').slice(0, 60), sub: fmtDate(t.date) + ' · ' + fmtMoney(t.amount) + ' · ' + (t.project || t.category || 'untagged'),
                    amount: t.amount });
       }
       if (out.length >= 80) break;
@@ -101,7 +104,7 @@ function GlobalSearch({ onClose }) {
           <span className="kbd" style={{fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, color: 'var(--ink-3)'}}>esc</span>
         </div>
 
-        <div style={{maxHeight: '60vh', overflowY: 'auto'}}>
+        <div style={{maxHeight: '60vh', overflowY: 'auto', overflowX: 'hidden'}}>
           {results.length === 0 ? (
             <div className="card__body" style={{padding: 32, textAlign: 'center'}}>
               <div className="small dim">No matches for "{q}"</div>
@@ -121,9 +124,9 @@ function GlobalSearch({ onClose }) {
                   <div style={{fontWeight: 500, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{r.label}</div>
                   <div className="small dim" style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{r.sub}</div>
                 </div>
-                {r.pip && <Pip code={r.pip}/>}
-                {r.amount != null && <span className="mono small" style={{color: r.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(r.amount)}</span>}
-                <span className="tiny dim up">{r.kind}</span>
+                {r.pip && <span style={{flexShrink: 0}}><Pip code={r.pip}/></span>}
+                {r.amount != null && <span className="mono small" style={{flexShrink: 0, color: r.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(r.amount)}</span>}
+                <span className="tiny dim up" style={{flexShrink: 0}}>{r.kind}</span>
               </div>
             ))
           )}

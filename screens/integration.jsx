@@ -688,13 +688,13 @@ function IntegrationScreen({ embedded } = {}) {
     <div>
       {embedded ? (
         <div className="row between items-center mb-16">
-          <div className="up dim">Google Sheets integration · production handoff</div>
+          <div className="up dim">Sync backends · production handoff</div>
           {seg}
         </div>
       ) : (
         <div className="section-h">
           <div>
-            <div className="crumbs">Backend prep · Google Sheets integration</div>
+            <div className="crumbs">Backend prep · sync &amp; integration</div>
             <h1>Production handoff</h1>
           </div>
           {seg}
@@ -1006,7 +1006,24 @@ function SyncView() {
         </div>
       </Card>
 
-      {Sync.isConfigured() && (
+      {Sync.isConfigured() && !SyncEngine.sheetLive() && (
+        <Card style={{borderLeft: '3px solid var(--warn, #b4690e)'}}>
+          <div className="card__body">
+            <div style={{fontWeight: 600, marginBottom: 6}}>Sheet sync is off — SharePoint is this account&rsquo;s backend</div>
+            <div className="small" style={{color: 'var(--ink-2)', lineHeight: 1.6}}>
+              This computer still has a Google Sheet URL saved, but only one backend is allowed to write.
+              The Sheet is <strong>not</strong> being read or written: nothing here can overwrite your SharePoint data,
+              and the retired Sheet cannot overwrite this computer. Manual Push and Pull are disabled for the same reason.
+            </div>
+            <div className="row gap-8 mt-12">
+              <Btn sz="sm" kind="ghost" onClick={() => { if (confirm('Remove the saved Google Sheet URL from this computer? SharePoint is unaffected.')) { Sync.saveConfig({ url: '' }); setConfig(Sync.loadConfig()); SyncEngine.refreshConfig(); } }}>Remove the Sheet URL</Btn>
+              <Btn sz="sm" kind="ghost" onClick={() => { if (confirm('Make the Google Sheet the active backend again? SharePoint sync stops writing and the Sheet resumes. Only do this if you are moving back.')) { SyncEngine.setBackend('sheet'); setConfig(Sync.loadConfig()); } }}>Switch back to the Sheet</Btn>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {Sync.isConfigured() && SyncEngine.sheetLive() && (
         <>
           <Card>
             <CardHead title="Automatic sync" right={

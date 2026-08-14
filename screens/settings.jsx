@@ -1,4 +1,5 @@
 // screens/settings.jsx — manage categories, payment sources, loan types
+let _waSeq = 0;
 
 const LIST_DEFS = [
   { key:'categories',     title:'Transaction categories', sub:'Used on transactions, splits, bank import, and the tax binder.', hasKind:true },
@@ -241,15 +242,24 @@ function ListRow({ listKey, item, hasKind }) {
     );
   }
 
-  const kindLabel = item.kind === 'income' ? 'Income' : item.kind === 'expense' ? 'Expense' : 'Either';
-  const kindTone = item.kind === 'income' ? 'sage' : item.kind === 'expense' ? 'brick' : 'ghost';
+  const kindTone = item.kind === 'income' ? 'sage' : item.kind === 'expense' ? 'brick' : item.kind === 'transfer' ? 'blue' : 'ghost';
 
   return (
     <tr style={item.archived ? {opacity: 0.5} : null}>
       <td>
         <span className="serif" style={{fontSize: 14, fontWeight: 500, textDecoration: item.archived ? 'line-through' : null}}>{item.label}</span>
       </td>
-      {hasKind && <td><Tag tone={kindTone}>{kindLabel}</Tag></td>}
+      {hasKind && <td>
+        <select className="inp inp--sm" value={item.kind || ''} onChange={e => setListItemKind(listKey, item.id, e.target.value)}
+          title="How this category is treated in Profit &amp; loss"
+          style={{maxWidth: 168, borderColor: item.kind ? null : 'var(--ochre)'}}>
+          <option value="">Either — by amount sign</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+          <option value="transfer">Transfer — not P&amp;L</option>
+        </select>
+        {item.kind === 'transfer' && <div className="tiny dim mt-2">excluded from profit</div>}
+      </td>}
       <td className="small dim">{usage ? `${usage} tagged` : '—'}</td>
       <td>{item.isDefault ? <Tag tone="ghost">Default</Tag> : <Tag tone="blue">Custom</Tag>}</td>
       <td>
@@ -673,7 +683,7 @@ function WebAccountsEditor() {
         const i = s.webAccounts.findIndex(w => w.id === editId);
         if (i >= 0) s.webAccounts[i] = { ...s.webAccounts[i], ...draft, updatedAt: new Date().toISOString() };
       } else {
-        s.webAccounts.push({ id: 'wa' + Date.now().toString(36), ...draft });
+        s.webAccounts.push({ id: 'wa' + Date.now().toString(36) + (_waSeq++) + DEVICE_TAG, ...draft });
       }
     });
     close();
@@ -691,7 +701,7 @@ function WebAccountsEditor() {
   );
   function remove(id) {
     if (!confirm('Delete this login?')) return;
-    Store.update(s => { s.webAccounts = (s.webAccounts || []).filter(w => w.id !== id); });
+    Store.update(s => { markDeleted(s, 'webAccounts', id); s.webAccounts = (s.webAccounts || []).filter(w => w.id !== id); });
   }
 
   return (

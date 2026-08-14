@@ -88,7 +88,7 @@ function dealMilestones(p) {
   if (p.expectedCloseDate) out.push({ key: 'close:' + p.id + ':' + p.expectedCloseDate, date: p.expectedCloseDate, title: 'Expected closing' });
   const past = p.statusCode === 'I';
   out.forEach(m => { m.past = past && m.date < TODAY(); });
-  return out.sort((a, b) => a.date.localeCompare(b.date));
+  return out.sort((a, b) => String(a.date||'').localeCompare(String(b.date||'')));
 }
 
 function MilestoneRow({ m }) {
@@ -187,7 +187,7 @@ function RemindersPanel({ p }) {
 }
 
 let _taskChkSeq = 0;
-function newChkId() { return 'ck' + Date.now().toString(36) + (_taskChkSeq++); }
+function newChkId() { return 'ck' + Date.now().toString(36) + (_taskChkSeq++) + DEVICE_TAG; }
 
 function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
   const editing = !!reminder;

@@ -50,6 +50,13 @@ function relTime(iso) {
   return Math.round(s / 86400) + 'd ago';
 }
 
+// Two sync backends can be live: the legacy Google Sheets bridge and SharePoint.
+// Status copy names whichever this device is actually using, so a SharePoint
+// machine never gets told about a Sheet it no longer writes to.
+function backendName(cap) {
+  const sp = typeof SPSync !== 'undefined' && SPSync.liveOn && SPSync.liveOn();
+  return sp ? 'SharePoint' : (cap ? 'The Google Sheet' : 'the Google Sheet');
+}
 function SyncIndicator() {
   const [, force] = React.useState(0);
   React.useEffect(() => {
@@ -71,7 +78,7 @@ function SyncIndicator() {
       return;
     }
     if (st === 'remote-newer') {
-      if (confirm('The Google Sheet has newer data than this device.\n\nLoad the Sheet version? Your unsaved local changes will be replaced.\n\n(Cancel to keep local — then use Push on the Sync screen to overwrite the Sheet.)')) {
+      if (confirm(backendName(true) + ' has newer data than this device.\n\nLoad that version? Your unsaved local changes will be replaced.\n\n(Cancel to keep local — then use Push on the Sync screen to overwrite ' + backendName() + '.)')) {
         SyncEngine.pullNow();
         return;
       }
@@ -84,13 +91,13 @@ function SyncIndicator() {
       // Re-authenticate interactively, then resume: retry the pending save if
       // there is one, otherwise refresh from SharePoint.
       // A click IS a gesture, so a token refresh here may legitimately prompt.
-      SP.interactive(() => SP.signIn().then(() => (SyncEngine.dirty ? SPSync.flush() : SPSync.pull()))).catch(() => {});
+      SP.interactive(() => SP.signIn().then(() => SPSync.resume()).then(() => (SyncEngine.dirty ? SPSync.flush() : null))).catch(() => {});
       return;
     }
     if (st === 'error' || st === 'offline') { SyncEngine.openSync(); return; }
     if (st === 'blocked') {
       const localN = (Store.state.properties || []).length;
-      if (confirm(`Saving is paused as a safety check.\n\nThis device has ${localN} propert${localN === 1 ? 'y' : 'ies'}, noticeably fewer than the Google Sheet. Saving now would REPLACE the Sheet's data with what's on this device.\n\nOK = replace the Sheet anyway (use only if this device is correct).\nCancel = keep the Sheet and load its data here instead (recommended).`)) {
+      if (confirm(`Saving is paused as a safety check.\n\nThis device has ${localN} propert${localN === 1 ? 'y' : 'ies'}, noticeably fewer than ${backendName()}. Saving now would REPLACE that data with what's on this device.\n\nOK = replace it anyway (use only if this device is correct).\nCancel = keep it and load its data here instead (recommended).`)) {
         SyncEngine.forcePush();
       } else {
         SyncEngine.pullNow();
@@ -101,10 +108,10 @@ function SyncIndicator() {
   }
 
   const title = st === 'local-only'
-    ? 'Your data is saved only in this browser. Click to set up cross-device sync with Google Sheets.'
-    : st === 'synced' ? 'All changes saved to the Google Sheet · click for sync settings'
-    : st === 'remote-newer' ? 'The Sheet was updated on another device — click to load it'
-    : st === 'blocked' ? 'Saving paused: this device has far fewer properties than the Sheet — click to resolve'
+    ? 'Your data is saved only in this browser. Click to set up cross-device sync.'
+    : st === 'synced' ? 'All changes saved to ' + backendName() + ' · click for sync settings'
+    : st === 'remote-newer' ? backendName(true) + ' was updated on another device — click to load it'
+    : st === 'blocked' ? 'Saving paused: this device has far fewer properties than ' + backendName() + ' — click to resolve'
     : st === 'stale' ? 'Outdated app version — hard-refresh this page to update and resume saving'
     : SyncEngine.message;
 
@@ -186,7 +193,7 @@ function SyncGate() {
               : 'Editing is paused for a moment so this computer knows what everyone else has changed. Without that, your first save could overwrite their work.'}
           </div>
           <div className="row gap-8">
-            {failed && <Btn kind="primary" onClick={() => SP.interactive(() => SPSync.pull()).catch(() => {})}>Try again</Btn>}
+            {failed && <Btn kind="primary" onClick={() => SP.interactive(() => SPSync.resume()).catch(() => {})}>Try again</Btn>}
             {failed && <Btn kind="ghost" onClick={() => { if (confirm('Work without SharePoint?\n\nYour changes stay on this computer and are not shared until it reconnects. If someone else edits the same records meanwhile, you will have conflicts to review.')) SPSync.workOffline(); }}>Work offline anyway</Btn>}
           </div>
         </div>
@@ -350,7 +357,7 @@ function App() {
         </p>
         <TweakSection label="Data source"/>
         <p className="small dim" style={{margin:'4px 0', lineHeight:1.5}}>
-          In production this will read/write the Google Sheet directly. For now, all data is a snapshot loaded from your real spreadsheets.
+          Live data goes to SharePoint (or the Google Sheets bridge, if that is still this device's backend). Seed data here is a snapshot of your real spreadsheets.
         </p>
       </TweaksPanel>
       ) : null}
@@ -405,7 +412,7 @@ const PROP_COLUMNS = [
     render: (p) => <span className="small mono dim">{fmtDate(p.ddDate)}</span>,
     sortValue: (p) => p.ddDate || '' },
   { key: 'signingDate',    label: 'Signing',
-    render: (p) => <span className="small mono dim">{fmtDate(p.signingDate)}{p.closingTime ? ' · ' + p.closingTime : ''}</span>,
+    render: (p) => <span className="small mono dim">{fmtDate(p.signingDate)}{fmtClock(p.closingTime) ? ' · ' + fmtClock(p.closingTime) : ''}</span>,
     sortValue: (p) => p.signingDate || '' },
   { key: 'purchaseDate',   label: 'Purchase date',
     render: (p) => <span className="small mono dim">{fmtDate(p.purchaseDate)}</span>,
@@ -485,14 +492,14 @@ function PropertiesListScreen() {
   const props = store.properties.filter(p => {
     if (focusSet) {
       if (!focusSet.has(p.id)) return false;
-      if (filter && !p.address.toLowerCase().includes(filter.toLowerCase())) return false;
+      if (filter && !String(p.address || '').toLowerCase().includes(filter.toLowerCase())) return false;
       return true;
     }
     const archived = archiveCodes.includes(p.statusCode);
     if (archived && !showArchive) return false;
     if (!archived && stage !== 'all' && p.statusCode !== stage) return false;
     if (archived && stage !== 'all' && stage !== p.statusCode) return false;
-    if (filter && !p.address.toLowerCase().includes(filter.toLowerCase())) return false;
+    if (filter && !String(p.address || '').toLowerCase().includes(filter.toLowerCase())) return false;
     return true;
   }).sort((a, b) => {
     if (!sortCol) return 0;
@@ -509,6 +516,14 @@ function PropertiesListScreen() {
   const stages = ['all', ...STATUS_ORDER, ...rentalCodes, ...(showArchive ? archiveCodes : [])];
   const stageCounts = {};
   store.properties.forEach(p => { stageCounts[p.statusCode] = (stageCounts[p.statusCode]||0)+1; });
+
+  const orphanCounts = {
+    tenants: (store.tenants || []).length,
+    ledger: (store.rentLedger || []).length,
+    tagged: (store.transactions || []).filter(t => t.project).length,
+  };
+  const looksWiped = store.properties.length === 0 &&
+    (orphanCounts.tenants > 0 || orphanCounts.ledger > 0 || orphanCounts.tagged > 0);
 
   return (
     <div>
@@ -537,6 +552,32 @@ function PropertiesListScreen() {
           <Btn onClick={() => setAdding(true)}>+ Add property</Btn>
         </div>
       </div>
+
+      {looksWiped && (
+        <Card className="mb-16">
+          <div className="card__body col gap-8" style={{background: 'rgba(155,44,44,0.07)', borderLeft: '3px solid var(--brick)'}}>
+            <div style={{fontWeight: 600}}>⚠ This looks like lost data, not an empty portfolio</div>
+            <div className="small" style={{lineHeight: 1.6, textWrap: 'pretty'}}>
+              There are no properties on this computer, but it still holds{' '}
+              {orphanCounts.tenants > 0 && <><strong>{orphanCounts.tenants}</strong> tenant{orphanCounts.tenants === 1 ? '' : 's'}</>}
+              {orphanCounts.tenants > 0 && (orphanCounts.ledger > 0 || orphanCounts.tagged > 0) ? ', ' : ''}
+              {orphanCounts.ledger > 0 && <><strong>{orphanCounts.ledger}</strong> rent ledger row{orphanCounts.ledger === 1 ? '' : 's'}</>}
+              {orphanCounts.ledger > 0 && orphanCounts.tagged > 0 ? ', and ' : ''}
+              {orphanCounts.tagged > 0 && <><strong>{orphanCounts.tagged}</strong> transaction{orphanCounts.tagged === 1 ? '' : 's'} tagged to a property</>}
+              {' '}— records that can only exist if properties were here. Saving is paused so this can't overwrite the shared copy.
+            </div>
+            <div className="small" style={{lineHeight: 1.6, textWrap: 'pretty'}}>
+              <strong>To recover:</strong> if another computer still shows its properties, pause its sync before it pulls — its copy is the best one.
+              Otherwise restore the Sheet from its version history (File → Version history), then pull here.
+              Stale deletion records left by the wipe have been discarded automatically, so a restore won't be eaten by them.
+            </div>
+            <div className="row gap-8">
+              <Btn sz="sm" onClick={() => nav('/integration')}>Open sync settings</Btn>
+              <Btn sz="sm" kind="ghost" onClick={() => nav('/reconcile')}>Compare with the Sheet</Btn>
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card className="mb-16">
         {focus ? (

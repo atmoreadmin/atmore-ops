@@ -502,6 +502,8 @@ const SP = {
       onLog(tabName + ' — ' + n + ' items ✓');
     }
     this.saveConfig({ migratedAt: new Date().toISOString(), migrateTotals: totals });
+    // Retire the Sheet the moment SharePoint holds the data, on this machine at least.
+    if (window.SyncEngine) SyncEngine.setBackend('sharepoint');
     return totals;
   },
 };
@@ -740,6 +742,14 @@ const SPSync = {
       this._baseline(newState);
       this._applyRepush();
       this._reissueDeletes(revived);
+      // Same rescue the clean branch does below, and it was missing here: rows this
+      // device holds that SharePoint does not have yet (an interrupted bank import,
+      // a throttled push) are KEPT in the snapshot, so baselining the snapshot marks
+      // them already-saved and nothing ever uploads them. Since pulls no longer wait
+      // for `dirty` to clear, this branch runs every few seconds — the rows would
+      // vanish on the next pull with no trace.
+      const rescuedDirty = this._unbaselineRescued(newState);
+      if (rescuedDirty) this.logLine('Kept ' + rescuedDirty + ' record' + (rescuedDirty === 1 ? '' : 's') + ' SharePoint did not have yet — saving with your other changes');
       if (merged.tookTheirs) this.logLine('Merged ' + merged.tookTheirs + ' field(s) changed by someone else');
       if (merged.conflicts) this.logLine('\u26a0 ' + merged.conflicts + ' field(s) changed in two places at once — kept yours, flagged for review (Settings \u2192 Integration)');
       // Two very different reasons `dirty` can be set here. Normal case: unsaved
@@ -782,21 +792,13 @@ const SPSync = {
     // kept them; drop them from the fresh baseline so the diff sees them as new
     // records to create, then flush. Without this they'd look already-saved and
     // silently disappear on the next pull.
-    const resc = newState._rescued;
-    if (resc) {
-      delete Store.state._rescued;
-      let n = 0;
-      for (const [tab, ids] of Object.entries(resc)) {
-        const m = this._sigs && this._sigs[tab];
-        if (m) ids.forEach(id => { m.delete(String(id)); n++; });
-      }
-      if (n) {
-        SyncEngine.dirty = true;
-        this.logLine('Kept ' + n + ' record' + (n === 1 ? '' : 's') + ' SharePoint did not have yet — saving them now');
-        this._set('dirty', 'Saving…');
-        this._queueFlush(500);
-        return;
-      }
+    const rescuedN = this._unbaselineRescued(newState);
+    if (rescuedN) {
+      SyncEngine.dirty = true;
+      this.logLine('Kept ' + rescuedN + ' record' + (rescuedN === 1 ? '' : 's') + ' SharePoint did not have yet — saving them now');
+      this._set('dirty', 'Saving…');
+      this._queueFlush(500);
+      return;
     }
     // A rebuilt list is mid-upload; leave the status on "Saving" for the flush
     // _applyRepush queued rather than claiming everything is synced.
@@ -804,6 +806,21 @@ const SPSync = {
     SyncEngine.lastSyncedAt = new Date().toISOString();
     if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
     else this._set('synced', doneMsg);
+  },
+
+  // Rows this device had that SharePoint didn't. deserializeFromSheet keeps them in
+  // the pulled snapshot, so they must be dropped from the fresh baseline: the diff
+  // then sees them as records to create instead of records already saved.
+  _unbaselineRescued(newState) {
+    const resc = newState && newState._rescued;
+    if (!resc) return 0;
+    try { if (Store.state) delete Store.state._rescued; } catch (e) {}
+    let n = 0;
+    for (const [tab, ids] of Object.entries(resc)) {
+      const m = this._sigs && this._sigs[tab];
+      if (m) ids.forEach(id => { m.delete(String(id)); n++; });
+    }
+    return n;
   },
 
   // Grab a delta cursor (no data) so later refreshes only fetch what changed.
@@ -1454,14 +1471,34 @@ const SPSync = {
           else ops.push({ method: 'POST', url: '/sites/' + sid + '/lists/' + lid + '/items', body: { fields }, tab: t, recId: id, sig });
         }
         if (forced) delete this._forceRepush[t];   // one full rewrite per request, not every save
-        for (const id of [...m.keys()]) {
-          if (live.has(id)) continue;
-          // Record the deletion locally as well as sending it. The baseline drops
-          // the id once the DELETE succeeds, so without a tombstone a later pull
-          // that still carries the row reads it as "new to us" and re-adopts it.
-          this.noteTombstone(t, id);
-          if (idx.has(id)) ops.push({ method: 'DELETE', url: '/sites/' + sid + '/lists/' + lid + '/items/' + idx.get(id), tab: t, recId: id, del: true });
-          else m.delete(id);
+        // Split by INTENT, not by count. A row the user deleted through the app carries
+        // a record from markDeleted() and is honoured however many there are — a routine
+        // cleanup of a dozen sold properties propagates normally. A row that merely went
+        // missing has no such record; only those fall back to the size heuristic, so a
+        // wipe still can't mint deletes while a deliberate purge is never reverted.
+        const _coll = (window.SP_COLL && SP_COLL[t]) || null;
+        const _vanishedAll = [...m.keys()].filter(id => !live.has(id));
+        const _intended = _coll ? _vanishedAll.filter(id => wasDeletedOnPurpose(_coll, id)) : [];
+        const _unexplained = _vanishedAll.filter(id => _intended.indexOf(id) < 0);
+        // Same rule as the Sheet engine: with intent recorded everywhere, an
+        // unexplained disappearance never mints a deletion.
+        const _legacy = !(Store.state && Store.state._intentSince);
+        const bulkLoss = _legacy ? _unexplained.length > Math.max(5, Math.ceil(m.size * 0.25)) : _unexplained.length > 0;
+        if (bulkLoss) {
+          // Treat as data loss, not intent: mint nothing, delete nothing on the server,
+          // and drop these ids from the baseline so the next pull re-adopts the rows.
+          this.logLine('\u26a0 ' + t + ': ' + _unexplained.length + ' of ' + m.size + ' rows vanished from this device with no delete on record — treating as data loss. No deletes sent.');
+          _unexplained.forEach(id => m.delete(id));
+        }
+        {
+          for (const id of (bulkLoss ? _intended : _vanishedAll)) {
+            // Record the deletion locally as well as sending it. The baseline drops
+            // the id once the DELETE succeeds, so without a tombstone a later pull
+            // that still carries the row reads it as "new to us" and re-adopts it.
+            this.noteTombstone(t, id);
+            if (idx.has(id)) ops.push({ method: 'DELETE', url: '/sites/' + sid + '/lists/' + lid + '/items/' + idx.get(id), tab: t, recId: id, del: true });
+            else m.delete(id);
+          }
         }
       }
       let pending = ops, attempt = 0, badOps = [], repairRounds = 0, unsent = 0;
@@ -1545,7 +1582,7 @@ const SPSync = {
         }
       }
       // Child rows: resync the whole group whenever a parent's children changed.
-      let childGroups = 0, cfgTabs = 0, childFailed = 0;
+      let childGroups = 0, cfgTabs = 0, childFailed = 0, childDebt = 0;
       for (const [t, [, fk]] of Object.entries(SP_CHILD_TABS)) {
         const lid = listIds[t]; if (!lid) continue;
         const groups = new Map();
@@ -1571,14 +1608,15 @@ const SPSync = {
             try { await SP.graph('/sites/' + sid + '/lists/' + lid + '/items/' + iid, { method: 'DELETE' }); }
             catch (e) { if (!_spGone(e)) left.push(iid); }
           }
-          if (left.length) { stale.set(sk, left); childFailed++; } else stale.delete(sk);
+          if (left.length) { stale.set(sk, left); childDebt++; } else stale.delete(sk);
         }
         const keys = new Set([...groups.keys(), ...old.keys()]);
         for (const k of keys) {
           if (groups.get(k) === old.get(k)) continue;
           // Leftovers still on the server for this group: rewriting now would stack
-          // duplicates on top of them. Wait until the drain above clears them.
-          if (stale.has(k)) continue;
+          // duplicates on top of them. Wait until the drain above clears them — and
+          // count it, because this group's new rows have NOT reached SharePoint yet.
+          if (stale.has(k)) { childFailed++; continue; }
           childGroups++;
           const oldIds = itemsBy.get(k) || [];
           // CREATE FIRST, THEN DELETE. This used to delete the group's server rows
@@ -1615,7 +1653,11 @@ const SPSync = {
             catch (e) { if (!_spGone(e)) left.push(iid); }
           }
           itemsBy.set(k, created);
-          if (left.length) { stale.set(k, left); childFailed++; }
+          // Surplus rows, not missing data: the group is correct on the server and the
+          // signature advances below. Counting these as "couldn't be saved" put the app
+          // in a red error state — and a 20-second retry loop — while everything the
+          // user typed was already up there. Cleanup debt gets its own quiet retry.
+          if (left.length) { stale.set(k, left); childDebt++; }
           if (groups.has(k)) old.set(k, groups.get(k)); else old.delete(k);
         }
         this._childSigs[t] = old;
@@ -1743,6 +1785,13 @@ const SPSync = {
       } else {
         this._stuck = 0;
         this._set('synced', 'All changes saved');
+        // Everything the user did is on SharePoint; only surplus rows from an earlier
+        // partial write remain. Say saved (because it is), and come back for the
+        // cleanup on a slow beat rather than leaving it for an unrelated edit.
+        if (childDebt) {
+          this.logLine('Tidying up ' + childDebt + ' leftover detail row group(s) on the next save');
+          this._queueFlush(45000);
+        }
       }
       const parts = [];
       if (ops.length) parts.push(ops.length + ' record change' + (ops.length === 1 ? '' : 's'));
@@ -2022,6 +2071,24 @@ const SPSync = {
     // hook registered too and every edit would push to both.
     Store.offPostSave('sheets');
     SyncEngine._initSigs();
+    // Listeners FIRST, and unconditionally. They used to be installed at the end of
+    // this function, after an early `return` for "not signed in" — so a device whose
+    // token had expired got no pull loop and no unload flush for the rest of the
+    // session, even after the user signed in from the Integration screen. It looked
+    // like "this computer just stops syncing", and only a reload fixed it.
+    this._installListeners();
+    return this._boot();
+  },
+
+  // Everything that needs a live sign-in. Re-runnable: call resume() after an
+  // interactive sign-in and this picks up where the failed boot left off.
+  resume() { return this._boot(); },
+  async _boot() {
+    if (this._booting) return this._booting;
+    this._booting = this._bootOnce().finally(() => { this._booting = null; });
+    return this._booting;
+  },
+  async _bootOnce() {
     try {
       if (!SP.account()) { this._set('error', 'SharePoint sign-in needed — open Integration → SharePoint'); return; }
       // Schema catch-up: lists provisioned by an older build may lack columns
@@ -2059,6 +2126,11 @@ const SPSync = {
       this._set('error', 'SharePoint unreachable: ' + (e.message || e));
       this.logLine('\u2717 SharePoint unreachable: ' + (e.message || e));
     }
+  },
+
+  _installListeners() {
+    if (this._listening) return;
+    this._listening = true;
     // Adopt other people's edits. Near-live while someone is actually using the
     // tab (delta cursors make each check a handful of tiny "what changed?"
     // requests), backing off to a slow beat when the tab is hidden or idle so
@@ -2218,7 +2290,10 @@ function SharePointView() {
           {!onProd && <div className="small" style={{color: 'var(--ochre)'}}>Microsoft sign-in only works on the production site (https://atmoreadmin.github.io/atmore-ops/) — that URL is what's registered with Microsoft. This preview can't authenticate.</div>}
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={stepDone.signin ? 'ghost' : 'primary'} disabled={!!busy || !SP.available()}
-              onClick={() => run('signin', async () => { const a = await SP.signIn(); setAccount(a); addLog('Signed in as ' + a.username); const sid = await SP.siteId(); addLog('Site connected: ' + (SP.config.siteName || sid)); })}>
+              onClick={() => run('signin', async () => { const a = await SP.signIn(); setAccount(a); addLog('Signed in as ' + a.username); const sid = await SP.siteId(); addLog('Site connected: ' + (SP.config.siteName || sid));
+                // Resume the boot this device skipped while signed out: schema catch-up,
+                // first pull, and the baseline the merge needs before any save.
+                if (SPSync.liveOn()) await SPSync.resume(); })}>
               {stepDone.signin ? '1 · Signed in ✓' : '1 · Sign in with Microsoft'}</Btn>
             <Btn kind={stepDone.signin && !stepDone.provision ? 'primary' : 'ghost'} disabled={!!busy || !account}
               onClick={() => run('provision', async () => { addLog('Creating lists…'); await SP.provision(addLog); addLog('Provision complete ✓'); })}>

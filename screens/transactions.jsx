@@ -88,7 +88,9 @@ function TransactionsScreen() {
     if (txFocusSet) return txFocusSet.has(t.id);
     if (acctFilter !== 'all' && String(t.acct) !== String(acctFilter)) return false;
     if (catFilter !== 'all' && t.category !== catFilter) return false;
-    if (bucketFilter !== 'all' && (bucketFilter === 'none' ? !!t.bucket : t.bucket !== bucketFilter)) return false;
+    // Match the bucket the P&L actually files this row under, explicit or derived.
+    const effBucket = t.bucket || bucketFor(t.project, t.category);
+    if (bucketFilter !== 'all' && (bucketFilter === 'none' ? !!effBucket : effBucket !== bucketFilter)) return false;
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
     if (search) {
@@ -364,7 +366,7 @@ function TransactionsScreen() {
                         {isSplit ? <Tag tone="blue">{t.splits.length} splits</Tag>
                           : t.category ? <Tag tone="ghost">{t.category}</Tag>
                           : <Tag tone="ochre" title={`Suggestion: ${suggestion.category}`}>{suggestion.category ? `?  ${suggestion.category}` : '?  unknown'}</Tag>}
-                        {t.bucket && <span className="tiny dim" title="Bucket">{t.bucket}</span>}
+                        {(() => { const b = t.bucket || bucketFor(t.project, t.category); return b && <span className="tiny dim" title={t.bucket ? 'Bucket' : 'Bucket (inferred from property and category)'} style={t.bucket ? null : {opacity: 0.65}}>{b}</span>; })()}
                         </div>
                       </td>}
                       {showCol('project') && <td>
@@ -479,7 +481,7 @@ function TransactionsScreen() {
                 <div key={t.id} className="col" style={{paddingBottom: 6, borderBottom: '1px solid var(--rule-soft)'}}>
                   <div className="row gap-6 items-baseline">
                     <span className="mono tiny dim">{fmtDate(t.date)}</span>
-                    <span className="small grow" style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc.slice(0, 36)}</span>
+                    <span className="small grow" style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{String(t.desc || '').slice(0, 36)}</span>
                   </div>
                   <div className="row gap-6 items-center mt-2">
                     <Tag tone="ghost">{t.category}</Tag>
@@ -593,7 +595,7 @@ function autoSuggest(t) {
       if (project === 'extract') {
         // Try find a property keyword in the description
         const prop = Store.state.properties.find(p =>
-          t.desc.toLowerCase().includes(p.address.split(/\s+/)[0].toLowerCase() + ' ' + (p.address.split(/\s+/)[1] || '').toLowerCase().slice(0,3))
+          String(t.desc || '').toLowerCase().includes(String(p.address || '').split(/\s+/)[0].toLowerCase() + ' ' + (String(p.address || '').split(/\s+/)[1] || '').toLowerCase().slice(0,3))
         );
         project = prop ? prop.address : '';
       } else if (project === 'extract-zelle') {
@@ -678,7 +680,7 @@ function AutoTagRuleEditor({ rule, onClose }) {
           <div style={{padding: '10px 12px', background: 'var(--paper-3)', borderRadius: 6, border: '1px solid var(--rule)'}}>
             <div className="up dim mb-4">Preview · {sampleHits.length ? 'matches in your data' : 'no current matches'}</div>
             {sampleHits.map(t => (
-              <div key={t.id} className="small mono" style={{color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc.slice(0, 48)}</div>
+              <div key={t.id} className="small mono" style={{color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{String(t.desc || '').slice(0, 48)}</div>
             ))}
           </div>
         )}

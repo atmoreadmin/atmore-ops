@@ -20,7 +20,8 @@ function DashboardScreen() {
   const outstanding = monthLedger.filter(r => (r.paid || 0) < r.charge);
   const totalCharge = monthLedger.reduce((a,r) => a + r.charge, 0);
   const totalPaid = monthLedger.reduce((a,r) => a + r.paid, 0);
-  const totalOwed = outstanding.reduce((a,r) => a + (r.charge - (r.paid || 0)), 0);
+  // Matches the rent roll: what a tenant owes includes any late fee that has accrued.
+  const totalOwed = outstanding.reduce((a,r) => a + ((r.charge || 0) - (r.paid || 0) + lateFeeFor(r)), 0);
   const collectedPct = totalCharge ? Math.round(totalPaid / totalCharge * 100) : 0;
 
   // Pipeline counts (exclude archived I + J)
@@ -375,7 +376,7 @@ function ThisWeekCard({ properties }) {
     if (p.signingDate) {
       const days = daysBetween(today, p.signingDate);
       if (days >= -2 && days <= 14) {
-        events.push({ key: 'sign:' + p.id + ':' + p.signingDate, date: p.signingDate, days, label: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''), addr: p.address, type: 'signing', id: p.id });
+        events.push({ key: 'sign:' + p.id + ':' + p.signingDate, date: p.signingDate, days, label: 'Signing' + (fmtClock(p.closingTime) ? ' · ' + fmtClock(p.closingTime) : ''), addr: p.address, type: 'signing', id: p.id });
       }
     }
     if (p.saleSigningDate) {

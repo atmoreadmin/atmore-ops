@@ -595,7 +595,7 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
           {!isNew && (
             <Btn kind="danger" sz="sm" onClick={() => {
               if (!confirm(`Delete this exchange?\n\n${addr}\n\nThis cannot be undone. The properties identified as replacements stay; only the exchange record is removed.`)) return;
-              Store.update(s => { s.exchanges = s.exchanges.filter(x => x.id !== exchangeId); });
+              Store.update(s => { markDeleted(s, 'exchanges', exchangeId); s.exchanges = s.exchanges.filter(x => x.id !== exchangeId); });
               onClose();
             }}>Delete</Btn>
           )}
@@ -629,8 +629,12 @@ function ExchangeEditor({ exchangeId, initialRelinquishedPropId, onClose }) {
               closedPropIds: closed,
             };
             Store.update(s => {
-              if (isNew) s.exchanges.push({ id: nextId(s.exchanges, 'ex', 100), ...data });
-              else Object.assign(s.exchanges.find(x => x.id === exchangeId), data);
+              s.exchanges = s.exchanges || [];
+              const row = isNew ? null : s.exchanges.find(x => x.id === exchangeId);
+              // The row can be gone if another machine deleted this exchange while the
+              // form was open. Re-add it under the same id rather than throwing.
+              if (row) Object.assign(row, data);
+              else s.exchanges.push({ id: isNew ? nextId(s.exchanges, 'ex', 100) : exchangeId, ...data });
             });
             onClose();
           }}>{isNew ? 'Start exchange' : 'Save'}</Btn>

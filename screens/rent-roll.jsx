@@ -32,8 +32,22 @@ function RentRollScreen() {
   const order = { 'vacate-due': 0, 'late': 1, 'partial': 2, 'paid': 3, 'overpaid': 4 };
   rows.sort((a,b) => (order[a.status]||9) - (order[b.status]||9));
 
-  const totalCharge = monthLedger.reduce((a,r) => a + r.charge, 0);
-  const totalPaid = monthLedger.reduce((a,r) => a + r.paid, 0);
+  const totalCharge = monthLedger.reduce((a,r) => a + (r.charge || 0), 0);
+  const totalPaid = monthLedger.reduce((a,r) => a + (r.paid || 0), 0);
+  // Late fees are part of what tenants owe and every row's Owed column includes them,
+  // so the Outstanding summary has to as well — it read rent-only, which made the
+  // headline disagree with the sum of the column directly beneath it.
+  const totalLateFees = monthLedger.reduce((a,r) => a + lateFeeFor(r), 0);
+  // A deposit is still HELD until it is actually refunded or withheld, so a tenant who
+  // has moved out but not been settled up still counts. Keying off active tenants alone
+  // understated the liability the moment someone moved out.
+  const depositsUnreturned = (store.tenants || []).filter(t => t.status !== 'active').reduce((a, t) => {
+    const d = t.depositReturn;
+    const onFile = d && d.depositOnFile != null ? d.depositOnFile : (t.deposit || 0);
+    const settled = d ? ((d.refunded || 0) + (d.withheld || 0)) : 0;
+    return a + Math.max(0, onFile - settled);
+  }, 0);
+  const depositsHeld = (store.tenants || []).filter(t => t.status === 'active').reduce((a, t) => a + (t.deposit || 0), 0) + depositsUnreturned;
   const statusCounts = {};
   monthLedger.forEach(r => { statusCounts[r.status] = (statusCounts[r.status]||0)+1; });
 
@@ -59,12 +73,12 @@ function RentRollScreen() {
           <div className="stat grow">
             <div className="stat__label">Collected · {fmtMonthLong(month)}</div>
             <div className="stat__value">{fmtMoney(totalPaid)}</div>
-            <div className="stat__sub">of {fmtMoney(totalCharge)}</div>
+            <div className="stat__sub">of {fmtMoney(totalCharge)} rent</div>
           </div>
           <div className="stat stat--brick grow">
             <div className="stat__label">Outstanding</div>
-            <div className="stat__value">{fmtMoney(totalCharge - totalPaid)}</div>
-            <div className="stat__sub">{monthLedger.filter(r => (r.paid||0) < r.charge).length} tenants</div>
+            <div className="stat__value">{fmtMoney(totalCharge - totalPaid + totalLateFees)}</div>
+            <div className="stat__sub">{monthLedger.filter(r => (r.paid||0) < r.charge).length} tenants{totalLateFees > 0 ? ' · incl. ' + fmtMoney(totalLateFees) + ' late fees' : ''}</div>
           </div>
           <div className="stat grow">
             <div className="stat__label">Active leases</div>
@@ -73,8 +87,8 @@ function RentRollScreen() {
           </div>
           <div className="stat grow">
             <div className="stat__label">Deposits held</div>
-            <div className="stat__value" style={{color: 'var(--blue-deep)'}}>{fmtMoney(store.tenants.filter(t => t.status === 'active').reduce((a, t) => a + (t.deposit || 0), 0))}</div>
-            <div className="stat__sub">refundable — not income</div>
+            <div className="stat__value" style={{color: 'var(--blue-deep)'}}>{fmtMoney(depositsHeld)}</div>
+            <div className="stat__sub">refundable — not income{depositsUnreturned > 0 ? ' · incl. ' + fmtMoney(depositsUnreturned) + ' owed back to moved-out tenants' : ''}</div>
           </div>
           <div className="stat grow">
             <div className="stat__label">Vacate notices due</div>
@@ -209,7 +223,7 @@ function CurrentMonthView({ rows, monthLedger, statusFilter, setStatusFilter, se
                   <td onClick={(e) => { e.stopPropagation(); if (p) nav('/property/'+p.id); }}>
                     <span className="addr" style={{fontSize: 13}}>{p?.address || '—'}</span>
                   </td>
-                  <td className="mono small">{r.month}-01</td>
+                  <td className="mono small" style={{whiteSpace: 'nowrap'}}>{fmtDate(r.month + '-01')}</td>
                   <td className="num mono">{fmtMoney(r.charge)}</td>
                   <td className="num mono" style={{color: r.paid ? 'var(--sage)' : 'var(--ink-3)'}}>{r.paid ? fmtMoney(r.paid) : '—'}</td>
                   <td className="num mono" style={{color: owed > 0 ? 'var(--brick)' : 'var(--ink-3)'}}>
@@ -416,11 +430,18 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
   const [acceptLower, setAcceptLower] = useState(false);
   const [showReconcile, setShowReconcile] = useState(true);
 
-  // Recompute when waive toggles
+  // Recompute when the waive toggle CHANGES. This used to also run on mount and
+  // add a flat 5% of rent as a late fee regardless of whether one was actually
+  // owed — so opening the dialog on a tenant who merely has rent due pre-filled
+  // rent + fee (e.g. $2,048 against a $1,950 charge) while the summary directly
+  // above it read "Outstanding $1,950". Confirming recorded a phantom overpayment.
+  const waiveTouched = React.useRef(false);
   React.useEffect(() => {
-    const lf = waive ? 0 : Math.round(ledgerEntry.charge * 0.05);
+    if (!waiveTouched.current) { waiveTouched.current = true; return; }  // initial state is already right
     if (ledgerEntry.status === 'paid') return;
-    setAmount((ledgerEntry.charge - ledgerEntry.paid) + (ledgerEntry.status === 'paid' ? 0 : lf));
+    // Ask the real fee rule (grace period, per-tenant policy, status) instead of guessing.
+    const lf = waive ? 0 : lateFeeFor({ ...ledgerEntry, lateFeeWaived: false });
+    setAmount((ledgerEntry.charge - ledgerEntry.paid) + lf);
   }, [waive]);
 
   function pickTx(tx) {
@@ -481,8 +502,11 @@ function MarkPaidModal({ ledgerEntry, onClose }) {
             <input className="input" style={{fontSize: 18, fontFamily: 'IBM Plex Mono, monospace', width: 160}}
               type="number" step="0.01"
               value={amount} onChange={e => setAmount(parseFloat(e.target.value)||0)} autoFocus/>
-            <Btn sz="sm" kind="ghost" onClick={() => setAmount(ledgerEntry.charge - ledgerEntry.paid)}>fill outstanding</Btn>
-            <Btn sz="sm" kind="ghost" onClick={() => setAmount(ledgerEntry.charge)}>fill full</Btn>
+            {/* "fill outstanding" used to skip the late fee, so it disagreed with the
+                Outstanding figure shown right above it. It now matches; "rent only"
+                is the explicit way to take the rent and leave the fee. */}
+            <Btn sz="sm" kind="ghost" onClick={() => setAmount((ledgerEntry.charge - ledgerEntry.paid) + (waive ? 0 : lateFeeFor({ ...ledgerEntry, lateFeeWaived: false })))}>fill outstanding</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => setAmount(ledgerEntry.charge - ledgerEntry.paid)}>rent only</Btn>
           </div>
         </div>
 

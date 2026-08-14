@@ -72,6 +72,12 @@ const Store = {
   ensureShape(state) {
     if (!state || typeof state !== 'object') return state;
     this.COLLECTIONS.forEach(k => { if (!Array.isArray(state[k])) state[k] = []; });
+    // Deletion bookkeeping is local-only and must never be lost by an apply path.
+    // Losing _tombAuditV2 re-fires the one-time audit and clears real deletion records;
+    // losing _intentSince silently reinstates the retired size heuristic.
+    if (!Array.isArray(state._intentDeletes)) state._intentDeletes = (this.state && this.state._intentDeletes) || [];
+    if (!state._intentSince && this.state && this.state._intentSince) state._intentSince = this.state._intentSince;
+    if (!state._tombAuditV2 && this.state && this.state._tombAuditV2) state._tombAuditV2 = true;
     if (!state.lists || typeof state.lists !== 'object') state.lists = {};
     if (!state.completedEvents || typeof state.completedEvents !== 'object') state.completedEvents = {};
     if (!state.uiState || typeof state.uiState !== 'object') state.uiState = { selectedPropertyId: null, propertyTab: 'summary' };
@@ -109,7 +115,29 @@ const Store = {
       if (!this.state.offers) this.state.offers = [];
       if (dedupeIds(this.state)) this.save();
       if (collapseDuplicateRecords(this.state)) this.save();
+      if (collapseDuplicateCategories(this.state)) this.save();
       if (clearContradictedTombstones(this.state)) this.save();
+      // Versioned: the marker alone was set by an earlier load, so the one-time audit
+      // below never ran and the unverifiable records survived. Bumping the flag makes
+      // it run exactly once per store on this build.
+      if (!this.state._tombAuditV2) {
+        // First load of a build that records intent. Every deletion record already in
+        // the store was INFERRED by the old list-diff, so none of them can be verified
+        // against a user action — and they are authoritative on pull, which means a
+        // false one silently strips a row from a restore. Resurrecting a row someone
+        // deleted long ago is visible and one click to undo; eating a restored row is
+        // neither. So the unverifiable set is discarded once, loudly.
+        const stale = this.state._intentSince ? 0 : (this.state.tombstones || []).length;
+        if (stale) {
+          this.state.tombstones = [];
+          try { console.warn('[repair] discarded ' + stale + ' unverifiable deletion record(s) predating intent tracking. A row deleted long ago may reappear once; re-delete it and it will stick.'); } catch (e) {}
+        }
+        this.state._intentSince = this.state._intentSince || new Date().toISOString();
+        this.state._tombAuditV2 = true;
+        this.save();
+      }
+      if (purgeImplausibleTombstones(this.state)) this.save();
+      if (dropUnintendedTombstones(this.state)) this.save();
       // Draws used to be identified by position, so two people appending one both
       // made "row 3" and a sync replaced the group wholesale. Give every draw a
       // stable id so they can be merged individually.
@@ -267,7 +295,7 @@ const Store = {
       this.state.lists = {
         categories: [
           { id:'c-rental-income',     label:'Rental Income',     kind:'income',  archived:false, isDefault:true },
-          { id:'c-refi-cashout',      label:'Refi Cash-Out',      kind:'income',  archived:false, isDefault:true },
+          { id:'c-refi-cashout',      label:'Refi Cash-Out',      kind:'transfer', archived:false, isDefault:true },
           { id:'c-contractor',        label:'Contractor Payment', kind:'expense', archived:false, isDefault:true },
           { id:'c-supplies',          label:'Job Supplies',       kind:'expense', archived:false, isDefault:true },
           { id:'c-rental-contractor', label:'Rental Contractor Payment', kind:'expense', archived:false, isDefault:true },
@@ -282,6 +310,13 @@ const Store = {
           { id:'c-property-tax',      label:'Property Tax',       kind:'expense', archived:false, isDefault:true },
           { id:'c-security-deposit',  label:'Security Deposit',   kind:null,      archived:false, isDefault:true },
           { id:'c-misc',              label:'Misc',               kind:null,      archived:false, isDefault:true },
+          { id:'c-bank-transfer',     label:'Bank Transfer',      kind:'transfer', archived:false, isDefault:true },
+          { id:'c-bank-deposit',      label:'Bank Deposit',       kind:'transfer', archived:false, isDefault:true },
+          { id:'c-rehab-funds',       label:'Rehab Funds',        kind:'transfer', archived:false, isDefault:true },
+          { id:'c-emd-received',      label:'EMD Received',       kind:'transfer', archived:false, isDefault:true },
+          { id:'c-emd-paid',          label:'EMD Paid',           kind:'transfer', archived:false, isDefault:true },
+          { id:'c-dd-paid',           label:'DD Paid',            kind:'transfer', archived:false, isDefault:true },
+          { id:'c-sale-proceeds',     label:'Sale Proceeds',      kind:'transfer', archived:false, isDefault:true },
         ],
         paymentSources: [
           { id:'ps-zelle',        label:'Zelle',         archived:false, isDefault:true },
@@ -461,6 +496,13 @@ const Store = {
         this.save();
       }
     } catch (e) {}
+
+    // AFTER the clock advance above: the heal classifies a row by comparing its month
+    // against today, and running it earlier (where the other repair passes sit) meant
+    // state.today was not populated yet — every healed row fell to 'upcoming', so a
+    // months-old unpaid charge never reached the Late filter used to find non-payers.
+    if (healRentStatuses(this.state)) this.save();
+    if (dropBlankTransactions(this.state)) this.save();
 
     // Ensure newer top-level collections exist on older saved states.
     if (!Array.isArray(this.state.webAccounts)) { this.state.webAccounts = []; this.save(); }
@@ -708,8 +750,10 @@ function getProperty(id) {
 function getPropertyByAddr(addr) {
   if (!addr) return null;
   const a = addr.toLowerCase().trim();
-  return Store.state.properties.find(p => p.address.toLowerCase().trim() === a)
-    || Store.state.properties.find(p => p.address.toLowerCase().includes(a.split(',')[0]));
+  // Guarded: a property row synced without an address used to throw here, and this
+  // helper is called from tagging, reports and the rental P&L on every render.
+  return Store.state.properties.find(p => String(p.address || '').toLowerCase().trim() === a)
+    || Store.state.properties.find(p => String(p.address || '').toLowerCase().includes(a.split(',')[0]));
 }
 function getTenant(id) { return Store.state.tenants.find(t => t.id === id); }
 function getTenantsForProperty(propId) {
@@ -742,7 +786,12 @@ function ensureLedgerForMonth(month) {
   });
   // Heal: a tenant who moved in during this very month shouldn't read as "vacate-due"/"late"
   // on a still-unpaid charge — that's an artifact, not a real notice. Downgrade to "Due".
-  const toHeal = (s.rentLedger || []).filter(r =>
+  // Only for the month actually in progress. reconcileRentAcrossMonths() calls this
+  // for every month a rent transaction touches, including long-past ones, and a fully
+  // elapsed unpaid month IS late however recently the tenant moved in — without the
+  // current-month bound this downgrade fought the load-time heal and rewrote the row
+  // (and pushed a sync change) on every render.
+  const toHeal = (month === String(s.today || '').slice(0, 7) ? (s.rentLedger || []) : []).filter(r =>
     r.month === month && (r.paid || 0) === 0 && (r.status === 'vacate-due' || r.status === 'late') &&
     (() => { const t = (s.tenants || []).find(x => x.id === r.tenantId); return t && t.moveIn && t.moveIn.slice(0, 7) === month; })()
   );
@@ -753,9 +802,7 @@ function ensureLedgerForMonth(month) {
       if (toHeal.some(h => h.id === r.id)) r.status = 'upcoming';
     });
     missing.forEach(t => {
-      // Freshly auto-posted charges read as "Due" for the current/future month; only
-      // genuinely past months post as Late. (Avoids falsely flagging a new tenant.)
-      const status = month < curMonth ? 'late' : 'upcoming';
+      const status = rentStatusFor(month, st.today);
       st.rentLedger.push({
         // Device-tagged (see commitImportRows). This backfill runs automatically on
         // every machine, so an untagged counter collides across devices by design.
@@ -833,7 +880,7 @@ window.dedupeSplitMaterializations = dedupeSplitMaterializations;
 function getTxForProperty(propId) {
   const prop = getProperty(propId);
   if (!prop) return [];
-  const addrLower = prop.address.toLowerCase();
+  const addrLower = String(prop.address || '').toLowerCase();
   const addrShort = addrLower.split(',')[0].replace(/\s*#\w+\s*$/,'').trim();
   return Store.state.transactions.filter(t => {
     if (!t.project) return false;
@@ -941,6 +988,26 @@ window.RENTAL_REPAIR_CATS = RENTAL_REPAIR_CATS;
 // never treated as a real property (so they don't show on the Properties tab
 // or get flagged as orphaned transactions).
 const OVERHEAD_PROJECTS = ['Office', 'Rentals (general)'];
+// P&L bucket for a transaction that has no explicit one. Only bank-imported rows are
+// affected: 'bucket' is written solely by the add/edit and split modals, so every
+// imported row (the bulk of the ledger) arrived blank and the P&L filed ALL of it
+// under "Unassigned" — leaving the Properties / Rentals / Office sections and the
+// Transactions bucket filter permanently empty. Derived from what the row already
+// says; nothing is written to the record, so a user-set bucket always wins.
+function bucketFor(project, category) {
+  const p = String(project || '').toLowerCase().trim();
+  const c = String(category || '').trim();
+  if (/^rental/i.test(c)) return 'Rentals';            // Rental Payout, Rental Job Supplies, ...
+  if (p === 'rentals (general)') return 'Rentals';
+  if (p === 'office') return 'Office';
+  if (!p || p === 'multiple' || p.startsWith('tenant:') || p === 'extract') return '';
+  const prop = getPropertyByAddr(project);
+  if (!prop) return '';
+  let rentalLane = [];
+  try { rentalLane = getStatuses().filter(s => s.lane === 'rental').map(s => s.code); } catch (e) {}
+  return (prop.type === 'Rental' || rentalLane.includes(prop.statusCode)) ? 'Rentals' : 'Properties';
+}
+window.bucketFor = bucketFor;
 const ARCHIVED_CODES = ['I', 'J'];
 function isArchived(p) { return ARCHIVED_CODES.includes(p.statusCode); }
 
@@ -1085,7 +1152,7 @@ function buildIntegrityChecks() {
   const seen = {};
   for (const t of s.transactions) {
     if (!t.payee || !t.amount) continue;
-    const key = `${t.date}|${t.amount}|${t.payee.toLowerCase().trim()}`;
+    const key = `${t.date}|${t.amount}|${String(t.payee).toLowerCase().trim()}`;
     (seen[key] = seen[key] || []).push(t);
   }
   const dupes = Object.values(seen).filter(g => g.length > 1);
@@ -1219,7 +1286,7 @@ function getAutoTagRules() {
   return Store.state.autoTagRules || [];
 }
 function compileAutoTagRule(r) { try { return new RegExp(r.pattern, 'i'); } catch (e) { return null; } }
-function newAutoTagId() { return 'atr' + Date.now().toString(36) + Math.floor(Math.random() * 1e3); }
+function newAutoTagId() { return 'atr' + Date.now().toString(36) + Math.floor(Math.random() * 1e3) + DEVICE_TAG; }
 function addAutoTagRule(rule) {
   const id = newAutoTagId();
   Store.update(s => { ensureAutoTagRules(s); s.autoTagRules.push({ id, conf: 80, project: '', ...rule }); });
@@ -1229,7 +1296,7 @@ function updateAutoTagRule(id, patch) {
   Store.update(s => { ensureAutoTagRules(s); const r = s.autoTagRules.find(x => x.id === id); if (r) Object.assign(r, patch); });
 }
 function deleteAutoTagRule(id) {
-  Store.update(s => { ensureAutoTagRules(s); s.autoTagRules = s.autoTagRules.filter(x => x.id !== id); });
+  Store.update(s => { ensureAutoTagRules(s); markDeleted(s, 'autoTagRules', id); s.autoTagRules = s.autoTagRules.filter(x => x.id !== id); });
 }
 function moveAutoTagRule(id, dir) {
   Store.update(s => {
@@ -1254,7 +1321,12 @@ function markPaid(ledgerId, fullAmt) {
     // Remember the hand-entered figure: if a matching transaction is logged later,
     // the row picks it up but never drops BELOW what was recorded by hand.
     r.manualPaidAmt = r.paid;
-    r.status = r.paid > r.charge ? 'overpaid' : r.paid >= r.charge ? 'paid' : 'partial';
+    // A late fee is part of what was owed, so paying rent + fee is PAID, not overpaid.
+    // Comparing against the bare charge meant the app asked for $2,048 (its own
+    // Outstanding figure, fee included), you recorded exactly that, and it came back
+    // "Overpaid · +$98 over".
+    const owedTotal = (r.charge || 0) + lateFeeFor({ ...r, paid: 0 });
+    r.status = r.paid > owedTotal ? 'overpaid' : r.paid >= (r.charge || 0) ? 'paid' : 'partial';
   });
 }
 
@@ -1278,11 +1350,7 @@ function markUnpaid(ledgerId) {
     const r = s.rentLedger.find(x => x.id === ledgerId);
     if (!r) return;
     r.paid = 0; r.paidOn = null; r.manualPaidAmt = null;
-    // Determine status by date
-    const todayDay = parseInt(s.today.slice(-2));
-    if (r.month === s.today.slice(0,7) && todayDay > 11) r.status = 'vacate-due';
-    else if (r.month === s.today.slice(0,7) && todayDay > 5) r.status = 'late';
-    else r.status = 'late';
+    r.status = rentStatusFor(r.month, s.today);
   });
 }
 
@@ -1299,10 +1367,7 @@ function unmarkPayment(ledgerId) {
     r.paid = 0; r.paidOn = null; r.manualPaidAmt = null;
     r.linkedTxId = null; r.linkedTxIds = [];
     r.noAutoMatch = true;
-    const todayDay = parseInt(s.today.slice(-2));
-    if (r.month === s.today.slice(0,7) && todayDay > 11) r.status = 'vacate-due';
-    else if (r.month === s.today.slice(0,7)) r.status = todayDay > 5 ? 'late' : 'upcoming';
-    else r.status = r.month < s.today.slice(0,7) ? 'late' : 'upcoming';
+    r.status = rentStatusFor(r.month, s.today);
   });
 }
 
@@ -1414,7 +1479,7 @@ function validateRentLinks() {
       if (!r) return;
       if (ch.valid.length === 0) {
         r.linkedTxId = null; r.linkedTxIds = []; r.paid = 0; r.paidOn = null;
-        r.status = r.month < curMonth ? 'late' : 'upcoming';
+        r.status = rentStatusFor(r.month, Store.state.today);
       } else {
         r.linkedTxIds = ch.valid;
         r.linkedTxId = ch.valid[0];
@@ -1479,7 +1544,7 @@ function reconcileRentAcrossMonths() {
     if (!tx.date) return;
     const isRentDirect = tx.amount > 0 && tx.project && /rent/i.test(tx.category || '');
     const isRentSplit = tx.splits && tx.splits.some(sp => /rent/i.test(sp.category || tx.category || ''));
-    if (isRentDirect || isRentSplit) months.add(tx.date.slice(0, 7));
+    if ((isRentDirect || isRentSplit) && tx.date) months.add(tx.date.slice(0, 7));
   });
   months.forEach(m => ensureLedgerForMonth(m));
   months.forEach(m => autoReconcileRentForMonth(m));
@@ -1745,6 +1810,59 @@ function dedupeIds(state, opts) {
 // Left in place it removes that record on the next sync of EVERY device — and
 // takes anything hanging off it, like a person's time off. Drop those, and drop
 // deletes older than the record they name.
+// Rent rows whose status contradicts their money. Two cases: a charge marked collected
+// with nothing paid against it, and a fully-past charge still reading "Due". Written by an old
+// addTenant that stamped every back-filled month 'paid' while paid stayed 0 (both
+// arms of its ternary said 'paid'), so real money owed was hidden from Outstanding,
+// "Owed today" and the rent roll's Due/Late filters — and rides to every other
+// machine through the sync. Reset the status with the same rule the rest of the file
+// uses; a zero-charge row is a legitimate no-rent month, so leave those alone.
+// A transaction with nothing in it at all — no date, amount, description, payee,
+// category, property or splits. Only an accidental empty save (or an empty imported
+// row) produces one; it can't be tagged, reconciled or reported on, and it inflates
+// the ledger count and the untagged badge. Dropping it locally propagates as a normal
+// delete on the next push, so it doesn't come back from the other machine.
+function dropBlankTransactions(state) {
+  const rows = state.transactions;
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  const blank = r => !r || (!r.date && !r.desc && !r.payee && !r.category && !r.project &&
+    (r.amount == null || r.amount === '') && !(r.splits && r.splits.length) && !r.notes);
+  const keep = rows.filter(r => !blank(r));
+  if (keep.length === rows.length) return 0;
+  const dropped = rows.length - keep.length;
+  state.transactions = keep;
+  return dropped;
+}
+function healRentStatuses(state) {
+  const rows = state.rentLedger;
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  // state.today is the app clock; fall back to the real one so this can never
+  // compare against an empty string (which silently made every row 'upcoming').
+  let cur = String(state.today || '').slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(cur)) { try { cur = new Date().toISOString().slice(0, 7); } catch (e) { cur = ''; } }
+  let fixed = 0;
+  for (const r of rows) {
+    if (!r) continue;
+    // Nothing has actually been paid against a real charge, so no "collected" or
+    // "Due" reading is defensible: a month that has fully passed is Late. This also
+    // catches rows an earlier build of this heal mislabelled 'upcoming' because it
+    // ran before the app clock was populated.
+    const claimsPaid = r.status === 'paid' || r.status === 'overpaid';
+    // Also catches CURRENT-month rows left at 'upcoming' by an older build's
+    // date-blind rule — past the 5th they are genuinely late, past the 11th they
+    // warrant a notice, and that is how the rent roll should read.
+    const staleDue = r.status === 'upcoming' && rentStatusFor(r.month, state.today) !== 'upcoming';
+    if (!claimsPaid && !staleDue) continue;
+    if ((r.paid || 0) > 0 || (r.charge || 0) <= 0) continue;
+    if (r.reducedCharge) continue;              // settled at an agreed lower rate
+    if (r.linkedTxId || (r.linkedTxIds && r.linkedTxIds.length)) continue;  // a real payment is attached
+    r.status = rentStatusFor(r.month, state.today);
+    if (claimsPaid) r.paidOn = null;
+    fixed++;
+  }
+  return fixed;
+}
+
 function clearContradictedTombstones(state) {
   const tombs = state.tombstones;
   if (!Array.isArray(tombs) || !tombs.length) return 0;
@@ -1797,6 +1915,7 @@ function updateContractor(id, patch) {
 }
 function deleteContractor(id) {
   Store.update(s => {
+    markDeleted(s, 'contractors', id);
     s.contractors = (s.contractors || []).filter(c => c.id !== id);
   });
 }
@@ -1821,6 +1940,7 @@ function addRefi(refi) {
 }
 function deleteRefi(id) {
   Store.update(s => {
+    markDeleted(s, 'refis', id);
     s.refis = s.refis.filter(r => r.id !== id);
   });
 }
@@ -1911,7 +2031,14 @@ Object.assign(window, {
 function addMonthsISO(iso, n) {
   if (!iso) return null;
   const d = new Date(iso + 'T12:00:00');
+  const day = d.getDate();
+  // Clamp to the end of the target month instead of letting the date overflow.
+  // setMonth alone turns Jan 31 + 3 months into May 1, so a quarterly task due on
+  // the 31st drifted a day every cycle and a Feb 29 lease end became Mar 1.
+  d.setDate(1);
   d.setMonth(d.getMonth() + n);
+  const lastDay = new Date(Date.UTC(d.getFullYear(), d.getMonth() + 1, 0)).getUTCDate();
+  d.setDate(Math.min(day, lastDay));
   return d.toISOString().slice(0,10);
 }
 
@@ -1932,9 +2059,16 @@ function deleteProperty(propId) {
     if (!prop) return;
     const addr = (prop.address || '').toLowerCase().trim();
     const tenantIds = new Set((s.tenants || []).filter(t => t.propertyId === propId).map(t => t.id));
+    markDeleted(s, 'properties', propId);
+    (s.tenants || []).forEach(t => { if (t.propertyId === propId) markDeleted(s, 'tenants', t.id); });
+    (s.offers || []).forEach(o => { if (o.propertyId === propId) markDeleted(s, 'offers', o.id); });
+    (s.rentLedger || []).forEach(r => { if (r.propertyId === propId) markDeleted(s, 'rentLedger', r.id); });
     s.properties = s.properties.filter(x => x.id !== propId);
     s.tenants    = (s.tenants || []).filter(t => t.propertyId !== propId);
     s.offers     = (s.offers || []).filter(o => o.propertyId !== propId);
+    (s.leads || []).forEach(l => { if (l.propertyId === propId) markDeleted(s, 'leads', l.id); });
+    (s.rentLedger || []).forEach(r => { if (tenantIds.has(r.tenantId)) markDeleted(s, 'rentLedger', r.id); });
+    (s.refis || []).forEach(r => { if (r.propertyId === propId) markDeleted(s, 'refis', r.id); });
     s.leads      = (s.leads || []).filter(l => l.propertyId !== propId);
     s.rentLedger = (s.rentLedger || []).filter(r => !tenantIds.has(r.tenantId));
     s.refis      = (s.refis || []).filter(r => r.propertyId !== propId);
@@ -1949,7 +2083,7 @@ function deleteProperty(propId) {
 // ─── Lead mutations ───
 function getLeadsForProperty(propId) {
   return (Store.state.leads || []).filter(l => l.propertyId === propId)
-    .sort((a,b) => b.date.localeCompare(a.date));
+    .sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
 }
 function addLead(lead) {
   Store.update(s => {
@@ -1966,6 +2100,7 @@ function updateLead(id, patch) {
 }
 function deleteLead(id) {
   Store.update(s => {
+    markDeleted(s, 'leads', id);
     s.leads = (s.leads || []).filter(l => l.id !== id);
   });
 }
@@ -2018,7 +2153,7 @@ function updateMaintenance(id, patch) {
   });
 }
 function deleteMaintenance(id) {
-  Store.update(s => { s.maintenance = (s.maintenance || []).filter(m => m.id !== id); });
+  Store.update(s => { markDeleted(s, 'maintenance', id); s.maintenance = (s.maintenance || []).filter(m => m.id !== id); });
 }
 
 function getRemindersForProperty(propId) {
@@ -2039,7 +2174,7 @@ function updateReminder(id, patch) {
   });
 }
 function deleteReminder(id) {
-  Store.update(s => { s.reminders = (s.reminders || []).filter(r => r.id !== id); });
+  Store.update(s => { markDeleted(s, 'reminders', id); s.reminders = (s.reminders || []).filter(r => r.id !== id); });
 }
 // Mark a reminder complete. One-off → done. Recurring → log lastDone and roll the
 // due date forward by its cadence (skipping past any missed cycles so it lands in the future).
@@ -2188,10 +2323,11 @@ function findMatchingTxForLedger(ledger) {
       if (Math.abs(tx.amount - ledger.charge) < 1) score += 50;
       else if (Math.abs(tx.amount - ledger.charge) < 50) score += 20;
       // Name in description
-      if (t.name && tx.desc.toLowerCase().includes(t.name.split(' ')[0].toLowerCase())) score += 40;
-      if (t.name && tx.desc.toLowerCase().includes(t.name.toLowerCase())) score += 30;
+      const txDesc = String(tx.desc || '').toLowerCase();
+      if (t.name && txDesc.includes(String(t.name).split(' ')[0].toLowerCase())) score += 40;
+      if (t.name && txDesc.includes(String(t.name).toLowerCase())) score += 30;
       // Section 8 deposits
-      if (t.source === 'Section 8' && /hcv|charlottha/i.test(tx.desc)) score += 25;
+      if (t.source === 'Section 8' && /hcv|charlottha/i.test(String(tx.desc || ''))) score += 25;
       // TurboTenant
       if (t.source === 'TurboTenant' && /turbotenant/i.test(tx.desc)) score += 25;
       return { tx, score };
@@ -2225,7 +2361,12 @@ function addTenant(tenantData, startLedger = true) {
           // same ledger row id and overwrite each other's rent charges.
           id: nextId(s.rentLedger, 'r', 1), tenantId: id, propertyId: tenantData.propertyId,
           month: m, charge: tenantData.rent, paid: 0, paidOn: null,
-          source: tenantData.source, status: m === cur ? 'paid' : 'paid', linkedTxId: null,
+          // Same rule ensureLedgerForMonth uses: past months post as Late, the
+          // current/future month as Due. This used to write 'paid' for EVERY month
+          // (both arms of the ternary said 'paid') while paid stayed 0 — so starting a
+          // lease marked every month back to move-in as collected, and the rent owed
+          // never appeared on the rent roll or in "Owed today".
+          source: tenantData.source, status: rentStatusFor(m, Store.state.today), linkedTxId: null,
         });
         // Increment month
         const d = new Date(m + '-01T12:00:00'); d.setMonth(d.getMonth() + 1);
@@ -2264,6 +2405,9 @@ function moveOutTenant(tenantId, opts = {}) {
     // doesn't keep billing a unit nobody lives in. Paid history is untouched.
     if (opts.dropFutureCharges !== false) {
       const moMonth = date.slice(0, 7);
+      (s.rentLedger || []).forEach(r => {
+        if (r.tenantId === tenantId && r.month > moMonth && (r.paid || 0) === 0) markDeleted(s, 'rentLedger', r.id);
+      });
       s.rentLedger = (s.rentLedger || []).filter(r =>
         !(r.tenantId === tenantId && r.month > moMonth && (r.paid || 0) === 0));
     }
@@ -2388,7 +2532,7 @@ function updateHOA(id, patch) {
   });
 }
 function deleteHOA(id) {
-  Store.update(s => { s.hoas = s.hoas.filter(h => h.id !== id); });
+  Store.update(s => { markDeleted(s, 'hoas', id); s.hoas = s.hoas.filter(h => h.id !== id); });
 }
 
 Object.assign(window, {
@@ -2408,6 +2552,7 @@ function bulkTagTransactions(ids, fields) {
 function bulkDeleteTransactions(ids) {
   Store.update(s => {
     const idSet = new Set(ids);
+    idSet.forEach(id => markDeleted(s, 'transactions', id));
     s.transactions = s.transactions.filter(t => !idSet.has(t.id));
   });
 }
@@ -2487,7 +2632,7 @@ function updateOffer(id, patch) {
   });
 }
 function deleteOffer(id) {
-  Store.update(s => { s.offers = (s.offers || []).filter(o => o.id !== id); });
+  Store.update(s => { markDeleted(s, 'offers', id); s.offers = (s.offers || []).filter(o => o.id !== id); });
 }
 // Accepting an offer can roll the property to Under Contract.
 // Other open offers are LEFT as backups (decline them manually if you want).
@@ -2668,7 +2813,7 @@ function toCSV(rows, columns) {
   const esc = v => {
     if (v == null) return '';
     const s = typeof v === 'number' ? String(v) : String(v).replace(/"/g, '""');
-    return /[",\n]/.test(s) ? '"' + s + '"' : s;
+    return /[",\n\r]/.test(s) ? '"' + s + '"' : s;
   };
   const head = columns.map(c => esc(c.label)).join(',');
   const body = rows.map(r => columns.map(c => esc(c.fn ? c.fn(r) : r[c.key])).join(',')).join('\n');
@@ -2724,8 +2869,10 @@ function getVacancyReport(year) {
     if (!hasActive && (vacant || prep || p.statusCode === 'K')) {
       // Estimate vacant days = days since most recent paid ledger entry (or year start)
       const lastPaid = Store.state.rentLedger
-        .filter(r => r.propertyId === p.id && r.status === 'paid')
-        .sort((a,b) => b.month.localeCompare(a.month))[0];
+        // A row with no month would crash the sort (a Sheet/SharePoint pull can
+        // deliver one before the load-time migrations normalize it).
+        .filter(r => r.propertyId === p.id && r.status === 'paid' && r.month)
+        .sort((a,b) => String(b.month).localeCompare(String(a.month)))[0];
       const startVacant = lastPaid ? lastPaid.month + '-15' : yearStart;
       const effectiveStart = startVacant > yearStart ? startVacant : yearStart;
       const effectiveEnd = today < yearEnd ? today : yearEnd;
@@ -2750,8 +2897,186 @@ function getVacancyReport(year) {
 
 Object.assign(window, { toCSV, downloadCSV, downloadBackup, restoreBackup, getVacancyReport });
 
+
+
+// Two machines (and bank-import) can each mint a category with the same label, so the
+// list accumulates duplicates — often an archived ghost with no kind at all. The ghost
+// is invisible in the editor, so a wrong classification can't be fixed from the UI.
+// Collapse by label: one surviving row per label, inheriting the explicit kind from
+// whichever duplicate had one, and only archived when every duplicate was archived.
+function collapseDuplicateCategories(state) {
+  const list = state && state.lists && state.lists.categories;
+  if (!Array.isArray(list) || !list.length) return false;
+  const byLabel = new Map();
+  const order = [];
+  let changed = false;
+  for (const c of list) {
+    if (!c || typeof c.label !== 'string') { changed = true; continue; }
+    const key = c.label.trim().toLowerCase();
+    const has = k => k === 'income' || k === 'expense' || k === 'transfer';
+    if (!byLabel.has(key)) { byLabel.set(key, { ...c }); order.push(key); continue; }
+    const keep = byLabel.get(key);
+    changed = true;
+    if (!has(keep.kind) && has(c.kind)) keep.kind = c.kind;
+    if (!c.archived) keep.archived = false;
+    if (c.isDefault) keep.isDefault = true;
+  }
+  if (!changed) return false;
+  state.lists.categories = order.map(k => byLabel.get(k));
+  return true;
+}
+
+
+// Deletions the user actually asked for. Written at the delete call site (not inferred
+// from a diff), kept in state so they survive a reload and reach the push, and pruned
+// once they have been sent. `coll` matches the state key: 'properties', 'tenants', …
+function markDeleted(s, coll, id) {
+  if (!s || !coll || id == null) return;
+  s._intentDeletes = Array.isArray(s._intentDeletes) ? s._intentDeletes : [];
+  const key = coll + ':' + String(id);
+  if (s._intentDeletes.some(d => d && (d.coll + ':' + d.id) === key)) return;
+  s._intentDeletes.push({ coll, id: String(id), at: new Date().toISOString() });
+  // Bounded: a record older than 90 days has long since been applied everywhere.
+  if (s._intentDeletes.length > 500) {
+    const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+    s._intentDeletes = s._intentDeletes.filter(d => String(d.at || '') > cutoff);
+  }
+}
+function wasDeletedOnPurpose(coll, id) {
+  const list = (Store.state && Store.state._intentDeletes) || [];
+  const key = coll + ':' + String(id);
+  return list.some(d => d && (d.coll + ':' + d.id) === key);
+}
+
+// With intent recorded at every delete site, a deletion record minted AFTER intent
+// recording began but carrying no matching intent entry cannot have come from a user
+// action — it was inferred from a list that lost content. These are the small batches
+// the burst purge is too coarse to catch, and they are authoritative on pull, so they
+// would silently strip rows from a restore.
+function dropUnintendedTombstones(state) {
+  const since = state && state._intentSince;
+  const list = state && state.tombstones;
+  if (!since || !Array.isArray(list) || !list.length) return 0;
+  const intent = new Set(((state._intentDeletes) || []).map(d => d && (d.coll + ':' + d.id)));
+  const kept = list.filter(t => {
+    if (!t || !t.at) return true;
+    if (String(t.at) < String(since)) return true;         // predates intent recording
+    return intent.has(t.coll + ':' + String(t.id));
+  });
+  if (kept.length === list.length) return 0;
+  const n = list.length - kept.length;
+  state.tombstones = kept;
+  try { console.warn('[repair] discarded ' + n + ' deletion record(s) with no matching user action.'); } catch (e) {}
+  return n;
+}
+// A wipe (or any wholesale list replacement) used to mint one tombstone per missing
+// row, so a store can already hold hundreds of "deletions" nobody made. Those records
+// ride to every machine and are replayed against every pull, which would eat a
+// version-history restore row by row. Purge the bursts: a real person does not delete
+// dozens of properties inside a few minutes. Explicit one-off deletes are untouched.
+function purgeImplausibleTombstones(state) {
+  const list = state && state.tombstones;
+  if (!Array.isArray(list) || list.length < 12) return 0;
+  const byColl = {};
+  list.forEach(t => { if (t && t.coll) (byColl[t.coll] = byColl[t.coll] || []).push(t); });
+  const doomed = new Set();
+  Object.keys(byColl).forEach(coll => {
+    const rows = byColl[coll].filter(t => t.at).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    // Sliding 30-minute window; more than 12 deletions of one kind inside it is a burst.
+    for (let i = 0; i < rows.length; i++) {
+      const t0 = Date.parse(rows[i].at);
+      if (isNaN(t0)) continue;
+      let j = i;
+      while (j + 1 < rows.length && Date.parse(rows[j + 1].at) - t0 <= 30 * 60 * 1000) j++;
+      if (j - i + 1 > 12) { for (let k = i; k <= j; k++) doomed.add(rows[k]); i = j; }
+    }
+  });
+  if (!doomed.size) return 0;
+  // A wipe hits several lists at once: the property burst comes with a handful of
+  // tenants, offers and contractors that are individually under the burst threshold
+  // but were minted in the same minutes by the same accident. Widen the purge to the
+  // whole time window the burst occupied, whatever collection the record names.
+  const times = [...doomed].map(t => Date.parse(t.at)).filter(n => !isNaN(n));
+  if (times.length) {
+    const lo = Math.min(...times) - 60 * 1000, hi = Math.max(...times) + 60 * 1000;
+    list.forEach(t => {
+      if (!t || !t.at) return;
+      const at = Date.parse(t.at);
+      if (!isNaN(at) && at >= lo && at <= hi) doomed.add(t);
+    });
+  }
+  state.tombstones = list.filter(t => !doomed.has(t));
+  try { console.warn('[repair] discarded ' + doomed.size + ' deletion records that arrived in implausible bursts (a wipe, not real deletes).'); } catch (e) {}
+  return doomed.size;
+}
+// ─── One rule for "does this category belong in profit & loss?" ───────────────
+// A category's explicit kind (set in Settings → Categories) always wins. But two
+// gaps sent ~$850k of balance-sheet money into the Income column: a category left
+// on "Either" fell back to the amount's sign, and a category not in the list at
+// all had no kind to read. Both now fall through to the NAME — financing draws,
+// refi and sale proceeds, escrow deposits and account-to-account moves are never
+// profit, whatever list they're in.
+const TRANSFERISH = [
+  /transfer/i, /\brefi\b|refinance/i, /rehab funds/i, /loan draw|\bdraw(s)?\b|funding/i,
+  /\bemd\b|earnest/i, /\bdd (paid|received)\b|due diligence/i, /escrow/i,
+  /proceeds/i, /^(rental )?sale$/i, /security deposit|deposit return/i, /bank deposit/i,
+  /owner (draw|contribution)|capital contribution|distribution/i,
+];
+function categoryKindFor(label, listKind) {
+  if (listKind === 'income' || listKind === 'expense' || listKind === 'transfer') return listKind;
+  const s = String(label || '').trim();
+  if (s && TRANSFERISH.some(re => re.test(s))) return 'transfer';
+  return null;   // caller falls back to the amount's sign
+}
+// Label → kind map covering every category on a transaction, listed or not.
+function categoryKindMap(state) {
+  const s = state || (window.Store && Store.state) || {};
+  const byLabel = {};
+  // Duplicate labels are real: sync and bank-import both mint categories, so the list
+  // can hold an archived ghost row with no kind alongside the row the user edited.
+  // Resolve by precedence rather than last-write-wins, and treat 'archived' as a
+  // TIE-BREAKER, not an exclusion — archiving means "stop offering this for new
+  // records", not "forget how to classify it", so an archived row's explicit kind
+  // still counts when it's the only row that has one.
+  //   1. a row WITH an explicit kind beats a row without
+  //   2. among rows with a kind, a live row beats an archived one
+  const has = k => k === 'income' || k === 'expense' || k === 'transfer';
+  const rank = c => (has(c.kind) ? 2 : 0) + (c.archived ? 0 : 1);
+  const bestRank = {};
+  ((s.lists && s.lists.categories) || []).forEach(c => {
+    if (!c || typeof c.label !== 'string') return;
+    const r = rank(c);
+    if (!(c.label in byLabel) || r > bestRank[c.label]) { byLabel[c.label] = c.kind; bestRank[c.label] = r; }
+  });
+  const out = {};
+  Object.keys(byLabel).forEach(k => { out[k] = categoryKindFor(k, byLabel[k]); });
+  return { kindOf: label => (label in out ? out[label] : categoryKindFor(label, undefined)),
+           listed: label => label in byLabel };
+}
 // ─── Late fees on rent ledger ───
 const LATE_FEE_PCT = 0.05; // 5% of monthly rent
+// ─── One rule for "is this charge Due, Late, or past notice?" ───────────────
+// Four call sites each had their own version of this, and two of them ignored the
+// day of the month entirely (`month < cur ? 'late' : 'upcoming'`) — so an unpaid
+// charge for the CURRENT month kept reading "Due" well past the grace period, and
+// the Late filter (how you find non-payers) stayed empty on the 12th. Grace ends
+// after the 5th; a vacate notice is warranted after the 11th.
+function rentStatusFor(month, today) {
+  let d = String(today || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { try { d = new Date().toISOString().slice(0, 10); } catch (e) { d = ''; } }
+  const cur = d.slice(0, 7);
+  if (!cur || !month) return 'upcoming';
+  // A prior month is, by definition, past its own 11th — so it reads as past-notice,
+  // not merely "late". Returning 'late' here contradicted the rule stated above and
+  // made a months-old non-payer look no worse than someone six days late.
+  if (month < cur) return 'vacate-due';
+  if (month > cur) return 'upcoming';
+  const day = parseInt(d.slice(-2), 10) || 0;
+  if (day > 11) return 'vacate-due';
+  if (day > 5) return 'late';
+  return 'upcoming';
+}
+
 function lateFeeFor(ledger) {
   if (!ledger) return 0;
   if (ledger.lateFeeWaived) return 0;
@@ -2857,35 +3182,65 @@ function sortedProperties() {
   return [...(Store.state.properties || [])].sort((a, b) =>
     String(a.address ?? '').localeCompare(String(b.address ?? ''), undefined, { sensitivity: 'base', numeric: true }));
 }
+let _listSeq = 0;
 function addListItem(listKey, item) {
   Store.update(s => {
     s.lists = s.lists || {};
     s.lists[listKey] = s.lists[listKey] || [];
-    const id = listKey + '-' + Date.now();
-    s.lists[listKey].push({ id, archived: false, isDefault: false, ...item });
+    const label = String((item && item.label) || '').trim();
+    const key = label.toLowerCase();
+    const existing = key ? s.lists[listKey].find(x => x && String(x.label || '').trim().toLowerCase() === key) : null;
+    if (existing) {
+      // Re-adding a label that's already there (often an archived one the user forgot
+      // about) used to push a duplicate. Bring the original back and take the new kind.
+      existing.archived = false;
+      if (item && item.kind !== undefined && item.kind !== null && item.kind !== '') existing.kind = item.kind;
+      return;
+    }
+    const id = listKey + '-' + Date.now().toString(36) + (_listSeq++) + DEVICE_TAG;
+    s.lists[listKey].push({ id, archived: false, isDefault: false, ...item, label: label || item.label });
   });
+}
+// Move every record tagged with one label onto another. Shared by rename and by
+// delete-with-retag, which must NOT rename the row it's about to remove.
+function retagListLabel(s, listKey, oldLabel, newLabel) {
+  if (!oldLabel || oldLabel === newLabel) return;
+  if (listKey === 'categories') {
+    (s.transactions || []).forEach(t => {
+      if (t.category === oldLabel) t.category = newLabel;
+      if (t.splits) t.splits.forEach(sp => { if (sp.category === oldLabel) sp.category = newLabel; });
+    });
+  } else if (listKey === 'paymentSources') {
+    (s.tenants || []).forEach(tn => { if (tn.source === oldLabel) tn.source = newLabel; });
+    (s.rentLedger || []).forEach(r => { if (r.source === oldLabel) r.source = newLabel; });
+  } else if (listKey === 'loanTypes') {
+    (s.properties || []).forEach(p => { if (p.loanType === oldLabel) p.loanType = newLabel; });
+  } else if (listKey === 'vestingLLCs') {
+    (s.properties || []).forEach(p => { if (p.vestingLLC === oldLabel) p.vestingLLC = newLabel; });
+  } else if (listKey === 'propertyTypes') {
+    (s.properties || []).forEach(p => { if (p.type === oldLabel) p.type = newLabel; });
+  }
 }
 function renameListItem(listKey, id, newLabel) {
   Store.update(s => {
-    const item = s.lists[listKey].find(x => x.id === id);
+    const item = (s.lists && s.lists[listKey] || []).find(x => x.id === id);
     if (!item) return;
     const oldLabel = item.label;
     item.label = newLabel;
-    if (listKey === 'categories') {
-      s.transactions.forEach(t => {
-        if (t.category === oldLabel) t.category = newLabel;
-        if (t.splits) t.splits.forEach(sp => { if (sp.category === oldLabel) sp.category = newLabel; });
-      });
-    } else if (listKey === 'paymentSources') {
-      s.tenants.forEach(tn => { if (tn.source === oldLabel) tn.source = newLabel; });
-      s.rentLedger.forEach(r => { if (r.source === oldLabel) r.source = newLabel; });
-    } else if (listKey === 'loanTypes') {
-      s.properties.forEach(p => { if (p.loanType === oldLabel) p.loanType = newLabel; });
-    } else if (listKey === 'vestingLLCs') {
-      s.properties.forEach(p => { if (p.vestingLLC === oldLabel) p.vestingLLC = newLabel; });
-    } else if (listKey === 'propertyTypes') {
-      s.properties.forEach(p => { if (p.type === oldLabel) p.type = newLabel; });
-    }
+    retagListLabel(s, listKey, oldLabel, newLabel);
+    if (listKey === 'categories') collapseDuplicateCategories(s);
+  });
+}
+// Category kind drives the whole P&L: 'income'/'expense' classify a line, 'transfer'
+// keeps it out of profit entirely (moving money between your own accounts, loan draws,
+// refi proceeds, tenant deposits), and unset falls back to the sign of the amount.
+// It had no editor anywhere, so 29 of 46 categories sat unset and every positive
+// transfer counted as income.
+function setListItemKind(listKey, id, kind) {
+  Store.update(s => {
+    const item = (s.lists && s.lists[listKey] || []).find(x => x.id === id);
+    if (!item) return;
+    if (kind) item.kind = kind; else delete item.kind;
   });
 }
 function archiveListItem(listKey, id) {
@@ -2897,11 +3252,14 @@ function archiveListItem(listKey, id) {
 // Delete a list item, optionally reassigning every record tagged with it to
 // another label first (reuses the rename propagation, then removes the item).
 function deleteListItem(listKey, id, reassignLabel) {
-  const item = (Store.state.lists?.[listKey] || []).find(x => x.id === id);
-  if (!item) return;
-  if (reassignLabel) renameListItem(listKey, id, reassignLabel);
   Store.update(s => {
-    s.lists[listKey] = s.lists[listKey].filter(x => x.id !== id);
+    const list = (s.lists && s.lists[listKey]) || [];
+    const item = list.find(x => x.id === id);
+    if (!item) return;
+    const oldLabel = item.label;
+    markDeleted(s, 'lists.' + listKey, id);
+    s.lists[listKey] = list.filter(x => x.id !== id);
+    if (reassignLabel) retagListLabel(s, listKey, oldLabel, reassignLabel);
   });
 }
 function updateListItemKind(listKey, id, kind) {
@@ -2942,8 +3300,11 @@ Object.assign(window, {
 
 // ─── Bank accounts (referenced by transactions via acct = account id) ───
 const ACCOUNT_KINDS = ['checking', 'savings', 'credit', 'cash'];
+let _acctSeq = 0;
 function addAccount(label, kind) {
-  const id = 'acct-' + Date.now().toString(36);
+  // Device-tagged: two machines adding an account in the same millisecond would
+  // otherwise mint one id, and the id IS the sync key.
+  const id = 'acct-' + Date.now().toString(36) + (_acctSeq++) + DEVICE_TAG;
   Store.update(s => {
     s.accounts = s.accounts || [];
     s.accounts.push({ id, label: (label || '').trim(), kind: kind || 'checking' });
@@ -2957,7 +3318,7 @@ function updateAccount(id, patch) {
   });
 }
 function deleteAccount(id) {
-  Store.update(s => { s.accounts = (s.accounts || []).filter(x => x.id !== id); });
+  Store.update(s => { markDeleted(s, 'accounts', id); s.accounts = (s.accounts || []).filter(x => x.id !== id); });
 }
 function accountUsage(id) {
   return (Store.state.transactions || []).filter(t => String(t.acct) === String(id)).length;
@@ -3111,12 +3472,12 @@ function buildCalendarEvents(fromIso, toIso) {
     }
     if (p.signingDate) {
       const k = 'sign:' + p.id + ':' + p.signingDate;
-      push({ key: k, cat: 'deal', date: p.signingDate, title: 'Signing' + (p.closingTime ? ' · ' + p.closingTime : ''),
+      push({ key: k, cat: 'deal', date: p.signingDate, title: 'Signing' + (fmtClock(p.closingTime) ? ' · ' + fmtClock(p.closingTime) : ''),
         sub: p.address, propertyId: p.id, done: isEventDone(k) });
     }
     if (p.saleSigningDate) {
       const k = 'salesign:' + p.id + ':' + p.saleSigningDate;
-      push({ key: k, cat: 'deal', date: p.saleSigningDate, title: 'Sale signing' + (p.saleSigningTime ? ' · ' + p.saleSigningTime : ''),
+      push({ key: k, cat: 'deal', date: p.saleSigningDate, title: 'Sale signing' + (fmtClock(p.saleSigningTime) ? ' · ' + fmtClock(p.saleSigningTime) : ''),
         sub: p.address, propertyId: p.id, done: isEventDone(k) });
     }
     if (p.ddDate) {
@@ -3368,6 +3729,12 @@ function fmtMoney(n, opts={}) {
   const s = abs.toLocaleString(undefined, { minimumFractionDigits: opts.dp ?? 0, maximumFractionDigits: opts.dp ?? 0 });
   return (opts.sign && n>=0 ? '+' : '') + sign + '$' + s;
 }
+// Migrated sheets sometimes wrote a time-of-day cell as a date serial (e.g.
+// "1899-12-30"). Only render values that actually look like a clock time.
+function fmtClock(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^([01]?\d|2[0-3]):[0-5]\d(\s*[ap]\.?m\.?)?$/i.test(s) ? s : '';
+}
 function fmtDate(iso, opts={}) {
   if (!iso) return '—';
   const d = new Date(iso + (iso.length === 10 ? 'T12:00:00' : ''));
@@ -3393,7 +3760,7 @@ Object.assign(window, {
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
-  nextId, dedupeIds, idRepairLog,
+  nextId, dedupeIds, idRepairLog, DEVICE_TAG, markDeleted, wasDeletedOnPurpose,
   getExchange, updateExchange,
   commitImportRows,
   STATUS_LABEL, STATUS_ORDER, STAGE_LABEL_MAP,
@@ -3413,3 +3780,32 @@ Object.assign(window, {
 rebuildStatusGlobals();
 const _origNotify = Store.notify.bind(Store);
 Store.notify = function () { rebuildStatusGlobals(); _origNotify(); };
+
+// ── Second window, same computer ──────────────────────────────────────────
+// Two tabs share ONE localStorage record while each keeps its own in-memory copy
+// of the whole state, so whichever saved last silently overwrote the other one's
+// work — the exact loss the multi-machine merge exists to prevent, one layer
+// down, and invisible because both tabs still showed their own version.
+// With nothing unsaved here, adopt the other tab's write. With unsaved edits,
+// send ours instead and let the server's per-row merge reconcile the two.
+window.addEventListener('storage', e => {
+  if (e.key !== STORAGE_KEY || !e.newValue) return;
+  if (window.SyncEngine && SyncEngine.dirty) {
+    try {
+      if (window.SPSync && SPSync.liveOn()) SPSync.flush();
+      else if (window.Sync && Sync.isConfigured() && SyncEngine.autoOn()) SyncEngine.pushNow();
+    } catch (err) {}
+    return;
+  }
+  let parsed;
+  try { parsed = JSON.parse(e.newValue); } catch (err) { return; }
+  const data = parsed && (parsed.data || parsed);
+  if (!data || !Array.isArray(data.properties)) return;   // unrecognised shape — leave state alone
+  Store.state = Store.ensureShape(data);
+  // Deliberately NOT saved back: this state came FROM storage, and writing it
+  // again would race the tab that just wrote it. Rebaseline so the sync layer
+  // doesn't read the adopted rows as edits made here, then re-render.
+  try { if (window.SyncEngine) SyncEngine._initSigs(); } catch (err) {}
+  try { if (window.SPSync && SPSync._sigs) SPSync._baseline(); } catch (err) {}
+  Store.notify();
+});

@@ -3,6 +3,7 @@
 // from the books: nothing here posts to reports, P&L or property costs.
 
 const SPEND_RANGE_KEY = 'atmore-spend-range-v1';
+const SPEND_SORT_KEY = 'atmore-spend-sort-v1';
 
 function SpendLogScreen() {
   useStore();
@@ -11,8 +12,28 @@ function SpendLogScreen() {
   const [custom, setCustom] = useState({ from: addDaysISO(today, -30), to: today });
   const [adding, setAdding] = useState(null);
   const [summary, setSummary] = useState(false);
+  // Sort choice sticks per person, same as the range filter — a coworker who works the
+  // log by check number shouldn't have to re-pick it every visit.
+  const [sort, setSort] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SPEND_SORT_KEY) || 'null');
+      if (raw && typeof raw.key === 'string') return { key: raw.key, dir: raw.dir === 'asc' ? 'asc' : 'desc' };
+    } catch (e) {}
+    return { key: 'date', dir: 'desc' };
+  });
 
   function setRangeP(v) { setRange(v); localStorage.setItem(SPEND_RANGE_KEY, v); }
+  function clickHeader(key) {
+    setSort(s => {
+      // Second click on the same column reverses it; a new column starts in the
+      // direction that's useful first — biggest money and newest dates at the top.
+      const next = s.key === key
+        ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: (key === 'amount' || key === 'date' || key === 'ref') ? 'desc' : 'asc' };
+      try { localStorage.setItem(SPEND_SORT_KEY, JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  }
 
   const bounds = range === 'today' ? { from: today, to: today }
     : range === 'week' ? { from: weekStartISO(today), to: weekEndISO(today) }
@@ -27,13 +48,44 @@ function SpendLogScreen() {
   const checksToday = todayEntries.filter(e => e.method === 'check' && !e.voided).length;
   const phoneToday = todayEntries.filter(e => e.method === 'phone' && !e.voided).length;
 
-  // Group the visible range by day so each day carries its own subtotal.
-  const days = [];
-  entries.forEach(e => {
-    let g = days.find(d => d.date === e.date);
-    if (!g) { g = { date: e.date, items: [] }; days.push(g); }
-    g.items.push(e);
+  // Sort values per column. Voided entries stay in place — they're part of the record.
+  const sortVals = {
+    date:   e => (e.date || '') + ' ' + (e.time || ''),
+    method: e => (e.method === 'check' ? 'Check' : 'Phone'),
+    ref:    e => e.method === 'check' ? (parseInt(e.checkNumber, 10) || 0) : (parseInt(e.cardLast4, 10) || 0),
+    payee:  e => spendPayeeName(e) || '',
+    picker: e => spendPickerName(e) || '',
+    prop:   e => spendPropertyLabel(e) || '',
+    amount: e => e.amount || 0,
+  };
+  const groupByDay = sort.key === 'date';
+  const sorted = entries.slice().sort((a, b) => {
+    const get = sortVals[sort.key] || sortVals.date;
+    const av = get(a), bv = get(b);
+    let cmp;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av).localeCompare(String(bv));
+    // Stable, readable ties: fall back to newest first so equal amounts don't shuffle.
+    if (cmp === 0 && sort.key !== 'date') cmp = -String(sortVals.date(a)).localeCompare(String(sortVals.date(b)));
+    return sort.dir === 'asc' ? cmp : -cmp;
   });
+
+  // Group by day so each day carries its own subtotal. Only meaningful under a date sort.
+  const days = [];
+  if (groupByDay) {
+    sorted.forEach(e => {
+      let g = days.find(d => d.date === e.date);
+      if (!g) { g = { date: e.date, items: [] }; days.push(g); }
+      g.items.push(e);
+    });
+  }
+
+  const Th = ({ k, label, num, width }) => (
+    <th className={num ? 'num' : ''} style={{width, cursor: 'pointer', userSelect: 'none'}}
+      title={'Sort by ' + label.toLowerCase()} onClick={() => clickHeader(k)}>
+      {label}{sort.key === k && <span style={{marginLeft: 4, color: 'var(--blue)'}}>{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
+  );
 
   return (
     <div>
@@ -81,6 +133,17 @@ function SpendLogScreen() {
         </div>
       )}
 
+      {entries.length > 0 && !groupByDay && (
+        <div className="row between items-center mb-8">
+          <div className="small dim">
+            Sorted by {({date:'date', method:'type', ref:'reference', payee:'payee', picker:'who picked it up', prop:'property', amount:'amount'})[sort.key]}
+            {' · '}{sort.dir === 'asc' ? 'low to high' : 'high to low'}
+            {' · '}<button className="linkbtn" onClick={() => clickHeader('date')}>back to day view</button>
+          </div>
+          <div className="small">{entries.length} {entries.length === 1 ? 'entry' : 'entries'} · <strong className="mono">{fmtMoney(spendTotal(entries))}</strong></div>
+        </div>
+      )}
+
       {!entries.length ? (
         <Card><div className="card__body">
           <Empty title="Nothing logged for this range"
@@ -90,24 +153,26 @@ function SpendLogScreen() {
       ) : (
         <table className="tbl">
           <thead><tr>
-            <th style={{width: 74}}>Time</th>
-            <th style={{width: 74}}>Type</th>
-            <th style={{width: 92}}>Ref</th>
-            <th>Payee / vendor</th>
-            <th>Picked up by</th>
-            <th>Property</th>
-            <th className="num" style={{width: 112}}>Amount</th>
+            <Th k="date" label={groupByDay ? 'Time' : 'Date · time'} width={groupByDay ? 74 : 132}/>
+            <Th k="method" label="Type" width={74}/>
+            <Th k="ref" label="Ref" width={92}/>
+            <Th k="payee" label="Payee / vendor"/>
+            <Th k="picker" label="Picked up by"/>
+            <Th k="prop" label="Property"/>
+            <Th k="amount" label="Amount" num width={112}/>
             <th style={{width: 78}}></th>
           </tr></thead>
           <tbody>
-            {days.map(d => [
-              <tr key={'d' + d.date} className="spend__daybar">
-                <td colSpan="6">{fmtDayLabel(d.date)}</td>
-                <td className="num">{fmtMoney(spendTotal(d.items))}</td>
-                <td></td>
-              </tr>,
-              ...d.items.map(e => <SpendRow key={e.id} e={e} onEdit={() => setAdding({ entry: e })}/>),
-            ])}
+            {groupByDay
+              ? days.map(d => [
+                  <tr key={'d' + d.date} className="spend__daybar">
+                    <td colSpan="6">{fmtDayLabel(d.date)}</td>
+                    <td className="num">{fmtMoney(spendTotal(d.items))}</td>
+                    <td></td>
+                  </tr>,
+                  ...d.items.map(e => <SpendRow key={e.id} e={e} onEdit={() => setAdding({ entry: e })}/>),
+                ])
+              : sorted.map(e => <SpendRow key={e.id} e={e} showDate onEdit={() => setAdding({ entry: e })}/>)}
           </tbody>
         </table>
       )}
@@ -122,11 +187,13 @@ function SpendLogScreen() {
   );
 }
 
-function SpendRow({ e, onEdit }) {
+function SpendRow({ e, onEdit, showDate }) {
   const isCheck = e.method === 'check';
   return (
     <tr className={e.voided ? 'spend__void' : ''}>
-      <td className="mono small dim">{e.time || '—'}</td>
+      <td className="mono small dim" style={{whiteSpace: 'nowrap'}}>
+        {showDate ? (fmtShortDay(e.date) + (e.time ? ' · ' + e.time : '')) : (e.time || '—')}
+      </td>
       <td><span className={'spend__meth spend__meth--' + (isCheck ? 'c' : 'p')}>{isCheck ? 'Check' : 'Phone'}</span></td>
       <td className="mono small">{isCheck ? (e.checkNumber || '—') : (e.cardLast4 ? '•' + e.cardLast4 : '—')}</td>
       <td>{spendPayeeName(e)}{e.voided && <span style={{marginLeft: 6, fontSize: 11, fontWeight: 600, color: 'var(--brick)'}}>void</span>}</td>

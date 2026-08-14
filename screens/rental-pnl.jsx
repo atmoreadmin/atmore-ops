@@ -260,7 +260,7 @@ function RentalPnlScreen() {
 
       <Card>
         <div className="card__body row wrap items-center" style={{gap: 32}}>
-          {kpi('Rent collected', T.in, 'var(--sage)')}
+          {kpi('Rent in · bank feed', T.in, 'var(--sage)')}
           {kpi('Rental charges', -T.exp, 'var(--brick)')}
           {kpi('Carrying costs', -T.carry, 'var(--brick)')}
           {kpi('Net ' + year, T.net, T.net >= 0 ? 'var(--sage)' : 'var(--brick)')}

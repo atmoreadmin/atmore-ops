@@ -63,7 +63,7 @@ function updateSpendEntry(id, patch) {
   });
 }
 function deleteSpendEntry(id) {
-  Store.update(s => { s.spendLog = (s.spendLog || []).filter(e => e.id !== id); });
+  Store.update(s => { markDeleted(s, 'spendLog', id); s.spendLog = (s.spendLog || []).filter(e => e.id !== id); });
 }
 function toggleSpendVoid(id) {
   Store.update(s => {
@@ -154,7 +154,7 @@ function addEmployee(name) {
   if (!n) return;
   Store.update(s => {
     s.employees = s.employees || [];
-    if (s.employees.some(e => e.name.toLowerCase() === n.toLowerCase())) return;
+    if (s.employees.some(e => String(e.name || '').toLowerCase() === n.toLowerCase())) return;
     const id = nextId(s.employees, 'em', 1);
     // Ids get reused, and a stale delete for this id may still be circulating.
     // Stamping the re-creation lets it outrank that older delete (see
@@ -174,6 +174,8 @@ function renameEmployee(id, name) {
 // Removing someone takes their time-off records with them.
 function removeEmployee(id) {
   Store.update(s => {
+    markDeleted(s, 'employees', id);
+    (s.timeOff || []).forEach(t => { if (t.employeeId === id) markDeleted(s, 'timeOff', t.id); });
     s.employees = (s.employees || []).filter(e => e.id !== id);
     s.timeOff = (s.timeOff || []).filter(t => t.employeeId !== id);
   });
@@ -200,7 +202,7 @@ function updateTimeOff(id, patch) {
   });
 }
 function deleteTimeOff(id) {
-  Store.update(s => { s.timeOff = (s.timeOff || []).filter(t => t.id !== id); });
+  Store.update(s => { markDeleted(s, 'timeOff', id); s.timeOff = (s.timeOff || []).filter(t => t.id !== id); });
 }
 function timeOffDays(t) {
   if (t.halfDay) return 0.5;

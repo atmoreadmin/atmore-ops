@@ -47,7 +47,7 @@ function biAutoSuggest(t, properties) {
       let project = r.project;
       if (project === 'extract') {
         const prop = (properties || []).find(p =>
-          t.desc.toLowerCase().includes(p.address.split(/\s+/)[0].toLowerCase() + ' ' + (p.address.split(/\s+/)[1] || '').toLowerCase().slice(0,3))
+          String(t.desc || '').toLowerCase().includes(String(p.address || '').split(/\s+/)[0].toLowerCase() + ' ' + (String(p.address || '').split(/\s+/)[1] || '').toLowerCase().slice(0,3))
         );
         project = prop ? prop.address : '';
       } else if (project === 'extract-zelle') {
@@ -91,11 +91,15 @@ function parseCSV(text, opts = {}) {
   }
 
   const rows = [];
+  const badDates = [];
   for (let i = startIdx; i < lines.length; i++) {
     const cells = parseCSVLine(lines[i]);
     if (cells.length < 2) continue;
     const date = normalizeDate((cells[dateIdx] || '').trim());
-    if (!date) continue;
+    // Count what we drop. A row with an unreadable date used to vanish with no
+    // notice at all, so an export in an unsupported date format looked like a
+    // partial (or empty) file rather than a format problem.
+    if (!date) { badDates.push((cells[dateIdx] || '').trim() || '(blank)'); continue; }
     const acct = ((acctIdx != null ? cells[acctIdx] : '') || '').trim();
     const desc = ((descIdx != null ? cells[descIdx] : '') || '').trim();
     let amount;
@@ -111,6 +115,8 @@ function parseCSV(text, opts = {}) {
     const payee = ((payeeIdx != null && payeeIdx !== descIdx) ? cells[payeeIdx] : '') || '';
     rows.push({ date, acct, desc, amount, payee: payee.trim() });
   }
+  // Read by processCSV immediately (array props don't survive .map).
+  rows.badDates = badDates;
   return rows;
 }
 function parseCSVLine(line) {
@@ -132,15 +138,39 @@ function parseCSVLine(line) {
   out.push(cur);
   return out;
 }
+// Real calendar check. Without it "13/45/2026" became the string "2026-13-45" and
+// "2/30/2026" became "2026-02-30" — values that sort like dates but match no month.
+function okYMD(y, mm, dd) {
+  const Y = parseInt(y, 10), M = parseInt(mm, 10), D = parseInt(dd, 10);
+  if (!(Y >= 1900 && Y <= 2199 && M >= 1 && M <= 12 && D >= 1 && D <= 31)) return false;
+  const dt = new Date(Date.UTC(Y, M - 1, D));
+  return dt.getUTCFullYear() === Y && dt.getUTCMonth() === M - 1 && dt.getUTCDate() === D;
+}
 function normalizeDate(s) {
   if (!s) return null;
-  // Try YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // Try M/D/YYYY or MM/DD/YYYY
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return okYMD(s.slice(0, 4), s.slice(5, 7), s.slice(8, 10)) ? s : null;
+  // YYYY/M/D and YYYY.M.D
+  const iso = s.match(/^(\d{4})[\/.](\d{1,2})[\/.](\d{1,2})$/);
+  if (iso) return okYMD(iso[1], iso[2], iso[3]) ? iso[1] + '-' + iso[2].padStart(2, '0') + '-' + iso[3].padStart(2, '0') : null;
+  // M/D/YYYY, M-D-YYYY, M.D.YYYY — and the same with a 2-digit year, which several
+  // banks export ("5/27/26"). An unrecognized date used to drop the row silently.
+  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/);
   if (m) {
     const mm = m[1].padStart(2, '0'), dd = m[2].padStart(2, '0');
-    return m[3] + '-' + mm + '-' + dd;
+    let yy = m[3];
+    if (yy.length === 2) yy = (parseInt(yy, 10) > 69 ? '19' : '20') + yy;   // 70..99 → 19xx
+    return okYMD(yy, mm, dd) ? yy + '-' + mm + '-' + dd : null;
+  }
+  // "May 27, 2026" / "27 May 2026" / "27-May-26"
+  const MON = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+  const t1 = s.match(/^([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{2,4})$/i);
+  const t2 = s.match(/^(\d{1,2})[\s\-]([a-z]{3})[a-z]*\.?[\s\-](\d{2,4})$/i);
+  const t = t1 ? { mo: t1[1], d: t1[2], y: t1[3] } : t2 ? { mo: t2[2], d: t2[1], y: t2[3] } : null;
+  if (t && MON[t.mo.toLowerCase()]) {
+    const yy = t.y.length === 2 ? (parseInt(t.y, 10) > 69 ? '19' : '20') + t.y : t.y;
+    const mo = MON[t.mo.toLowerCase()];
+    if (okYMD(yy, mo, t.d)) return yy + '-' + mo + '-' + String(t.d).padStart(2, '0');
   }
   return null;
 }
@@ -168,6 +198,7 @@ function BankImportScreen() {
   const [step, setStep] = useState(1);
   const [csvText, setCsvText] = useState('');
   const [parsedRows, setParsedRows] = useState([]);
+  const [badDates, setBadDates] = useState([]);
   const [taggedRows, setTaggedRows] = useState([]);
   const [committed, setCommitted] = useState(0);
   const [invertSign, setInvertSign] = useState(false);
@@ -183,10 +214,17 @@ function BankImportScreen() {
   }
   function processCSV(text) {
     const rows = parseCSV(text, { invertSign });
+    setBadDates(rows.badDates || []);
     setParsedRows(rows);
+    // Repeats WITHIN the file are duplicates too. isDuplicateTransaction only knows
+    // about rows already in the ledger, so a statement that contains the same line
+    // twice (a re-exported or concatenated download) sailed through with both copies.
+    const seenInFile = new Set();
     const tagged = rows.map(r => {
       const s = biAutoSuggest(r, store.properties);
-      const dup = isDuplicateTransaction(r.date, r.amount, r.desc);
+      const key = [r.date, r.amount, String(r.desc || '').trim().toLowerCase(), r.acct || ''].join('|');
+      const dup = isDuplicateTransaction(r.date, r.amount, r.desc) || seenInFile.has(key);
+      seenInFile.add(key);
       // Compute suggestions for later but only fill if autoTagOnLoad
       return {
         ...r,
@@ -227,9 +265,13 @@ function BankImportScreen() {
     // Rows the user DELIBERATELY un-skipped after seeing the "dup" tag are left
     // alone: that is an explicit decision to import anyway.
     const skipped = [];
+    const batchSeen = new Set();
     const keep = taggedRows.filter(r => !r.skip).filter(r => {
-      if (r.duplicate) return true;   // already flagged; the user chose to import it
+      const key = [r.date, r.amount, String(r.desc || '').trim().toLowerCase(), r.acct || ''].join('|');
+      if (r.duplicate) { batchSeen.add(key); return true; }   // already flagged; the user chose to import it
       if (isDuplicateTransaction(r.date, r.amount, r.desc)) { skipped.push(r); return false; }
+      if (batchSeen.has(key)) { skipped.push(r); return false; }   // identical row earlier in this same batch
+      batchSeen.add(key);
       return true;
     });
     const toAdd = keep.map(r => ({
@@ -240,7 +282,7 @@ function BankImportScreen() {
     commitImportRows(toAdd);
     setCommitted(toAdd.length);
     if (skipped.length) {
-      alert(skipped.length + ' row' + (skipped.length === 1 ? '' : 's') + ' already showed up in your transactions while you were reviewing — most likely someone else imported the same file. They were skipped so the amounts are not counted twice.');
+      alert(skipped.length + ' row' + (skipped.length === 1 ? '' : 's') + ' matched a transaction you already have (or an identical row earlier in this same file) and ' + (skipped.length === 1 ? 'was' : 'were') + ' skipped, so the amounts are not counted twice.');
     }
     setStep(5);
   }
@@ -252,9 +294,17 @@ function BankImportScreen() {
           <div className="crumbs">Bank import</div>
           <h1>{step === 5 ? `Imported ${committed} rows` : 'Import bank transactions'}</h1>
         </div>
-        {step < 5 && step > 1 && <Btn kind="ghost" sz="sm" onClick={() => { setStep(1); setCsvText(''); setParsedRows([]); setTaggedRows([]); }}>Start over</Btn>}
+        {step < 5 && step > 1 && <Btn kind="ghost" sz="sm" onClick={() => { setStep(1); setCsvText(''); setParsedRows([]); setTaggedRows([]); setBadDates([]); }}>Start over</Btn>}
       </div>
 
+      {step > 1 && step < 5 && badDates.length > 0 && (
+        <Card className="mb-16" style={{borderLeft: '3px solid var(--ochre)'}}>
+          <div className="card__body small" style={{padding: '12px 18px'}}>
+            <strong>{badDates.length} row{badDates.length === 1 ? '' : 's'} skipped — unreadable date</strong>
+            <span className="dim"> · e.g. {badDates.slice(0, 3).map(d => '"' + d + '"').join(', ')}. Supported: 2026-05-27, 5/27/2026, 5/27/26, 27-May-2026. Fix the date column and re-import to include them.</span>
+          </div>
+        </Card>
+      )}
       {/* Stepper */}
       {step < 5 && (
         <Card className="mb-16">
@@ -290,7 +340,7 @@ function BankImportScreen() {
       {step === 2 && <StepAccounts rows={parsedRows} onBack={() => setStep(1)} onApply={applyAccounts}/>}
       {step === 3 && <StepPreview rows={taggedRows} setRows={setTaggedRows} onBack={() => setStep(2)} onNext={() => setStep(4)}/>}
       {step === 4 && <StepCommit rows={taggedRows} onBack={() => setStep(3)} onCommit={commit}/>}
-      {step === 5 && <StepDone count={committed} onAnother={() => { setStep(1); setCsvText(''); setParsedRows([]); setTaggedRows([]); setCommitted(0); }}/>}
+      {step === 5 && <StepDone count={committed} onAnother={() => { setStep(1); setCsvText(''); setParsedRows([]); setTaggedRows([]); setBadDates([]); setCommitted(0); }}/>}
     </div>
   );
 }

@@ -53,7 +53,7 @@ function AddressBook() {
   const focusSet = focus ? new Set(liveFocusIds(focus)) : null;
   const all = store.contractors
     .filter(c => focusSet ? focusSet.has(c.id) : true)
-    .filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.specialty||'').toLowerCase().includes(search.toLowerCase()))
+    .filter(c => !search || String(c.name || '').toLowerCase().includes(search.toLowerCase()) || (c.specialty||'').toLowerCase().includes(search.toLowerCase()))
     .sort((a,b) => {
       const av = sv(a), bv = sv(b);
       let cmp;
@@ -62,8 +62,8 @@ function AddressBook() {
       if (cmp === 0 && sortKey !== 'ytd') cmp = (b.ytd||0) - (a.ytd||0);
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  const total = all.reduce((a,c) => a + c.ytd, 0);
-  const ten99 = store.contractors.filter(c => c.ytd >= 600 && !['scorp','ccorp'].includes(c.entityType));
+  const total = all.reduce((a,c) => a + (c.ytd || 0), 0);
+  const ten99 = store.contractors.filter(c => (c.ytd || 0) >= 600 && !['scorp','ccorp'].includes(c.entityType));
 
   return (
     <>
@@ -75,7 +75,7 @@ function AddressBook() {
           </div>
           <div className="stat stat--brick grow">
             <div className="stat__label">YTD paid (all)</div>
-            <div className="stat__value">{fmtMoney(store.contractors.reduce((a,c)=>a+c.ytd,0))}</div>
+            <div className="stat__value">{fmtMoney(store.contractors.reduce((a,c)=>a+(c.ytd||0),0))}</div>
           </div>
           <div className="stat grow">
             <div className="stat__label">Top contractor</div>
@@ -164,7 +164,7 @@ function ContractorDetail({ contractor, onEdit, onClose }) {
   const store = useStore();
   const year = parseInt(TODAY().slice(0,4));
   const status = ten99Status(contractor, year);
-  const txs = store.transactions.filter(t => t.payee && t.payee.trim() === contractor.name && t.category === 'Contractor Payment').sort((a,b) => b.date.localeCompare(a.date));
+  const txs = store.transactions.filter(t => t.payee && t.payee.trim() === contractor.name && t.category === 'Contractor Payment').sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
   const byProp = {};
   txs.forEach(t => { if (t.project) byProp[t.project] = (byProp[t.project] || 0) + Math.abs(t.amount); });
   const propList = Object.entries(byProp).sort((a,b) => b[1] - a[1]);
@@ -244,7 +244,7 @@ function ContractorDetail({ contractor, onEdit, onClose }) {
             {txs.slice(0, 5).map(t => (
               <div key={t.id} className="row gap-8 items-baseline" style={{paddingBottom: 4, borderBottom: '1px solid var(--rule-soft)'}}>
                 <span className="mono tiny dim" style={{width: 50}}>{fmtDate(t.date)}</span>
-                <span className="small grow" style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{t.desc.slice(0, 30)}</span>
+                <span className="small grow" style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{String(t.desc || '').slice(0, 30)}</span>
                 <span className="mono small" style={{color: 'var(--brick)'}}>{fmtMoney(t.amount)}</span>
               </div>
             ))}

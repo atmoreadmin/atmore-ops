@@ -78,8 +78,7 @@ function RentalsReport() {
   const isRental = p => (p.type === 'Rental' || rentalLane.includes(p.statusCode)) && !archiveLane.includes(p.statusCode);
 
   // Actual logged expenses tagged to each property within the month range.
-  const catKind = {};
-  (store.lists?.categories || []).forEach(c => { catKind[c.label] = c.kind; });
+  const catMap = categoryKindMap(store);
   const expByProp = {};
   const linesByProp = {};
   (store.transactions || []).forEach(t => {
@@ -94,7 +93,8 @@ function RentalsReport() {
       if (!prop) return;
       // Rental P&L rule: only Rental-prefixed categories count as rental expenses.
       if (!/^rental/i.test((pt.category || '').trim())) return;
-      const kind = catKind[pt.category];
+      const kind = catMap.kindOf(pt.category);
+      if (kind === 'transfer') return;   // transfers/draws/deposits aren't rental income or cost
       const isExp = kind === 'expense' ? true : kind === 'income' ? false : pt.amount < 0;
       (linesByProp[prop.id] = linesByProp[prop.id] || []).push({ ...pt, date: t.date, desc: t.desc, payee: t.payee, isExp });
       if (!isExp) return;
@@ -354,16 +354,15 @@ function PnlReport() {
 
   const rentalLane = getStatuses().filter(s => s.lane === 'rental').map(s => s.code);
   const isRentalProp = p => p && (p.type === 'Rental' || rentalLane.includes(p.statusCode));
-  const catKind = {};
-  (store.lists?.categories || []).forEach(c => { catKind[c.label] = c.kind; });
+  const catMap = categoryKindMap(store);
 
   // Flatten transactions (and their splits) into individual ledger lines in range.
   const lines = [];
   (store.transactions || []).forEach(t => {
     if (!t.date || t.date < from || t.date > to) return;
     const parts = (t.splits && t.splits.length)
-      ? t.splits.map(s => ({ srcId: t.id, bucket: s.bucket || t.bucket, amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
-      : [{ srcId: t.id, bucket: t.bucket, amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
+      ? t.splits.map(s => ({ srcId: t.id, bucket: s.bucket || t.bucket || bucketFor(s.project || t.project, s.category || t.category), amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
+      : [{ srcId: t.id, bucket: t.bucket || bucketFor(t.project, t.category), amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
     parts.forEach(p => {
       if (scope === 'rentals' && (!isRentalProp(getPropertyByAddr(p.project)) || !/^rental/i.test((p.category || '').trim()))) return;
       lines.push(p);
@@ -374,10 +373,25 @@ function PnlReport() {
   const inc = {}, exp = {};       // bucket -> { category: amount }
   const incL = {}, expL = {};     // bucket -> { category: [lines] }
   let unattributedRental = 0;
+  // Money that isn't profit or loss: account-to-account transfers, loan draws, refi
+  // proceeds, refundable deposits. Marked 'transfer' in Settings → Categories, kept out
+  // of both columns, and reported as its own line so nothing vanishes quietly.
+  const transferTotals = {};
+  let transferNet = 0;
+  // Categories that appear on transactions but aren't in the category list have no kind
+  // at all, so they fall back to the amount's sign — worth saying out loud, since that
+  // is exactly how a $470k transfer ends up counted as income.
+  const offListCats = {};
   lines.forEach(l => {
     const label = l.category || 'Uncategorized';
     const b = BUCKET_ORDER.includes(l.bucket) ? l.bucket : 'Unassigned';
-    const kind = catKind[l.category];
+    const kind = catMap.kindOf(l.category);
+    if (kind === 'transfer') {
+      transferTotals[label] = (transferTotals[label] || 0) + (l.amount || 0);
+      transferNet += (l.amount || 0);
+      return;
+    }
+    if (l.category && !catMap.listed(l.category)) offListCats[label] = (offListCats[label] || 0) + (l.amount || 0);
     const isInc = kind === 'income' ? true : kind === 'expense' ? false : (l.amount >= 0);
     if (isInc) { (inc[b] = inc[b] || {})[label] = (inc[b][label] || 0) + l.amount; ((incL[b] = incL[b] || {})[label] = incL[b][label] || []).push(l); }
     else { (exp[b] = exp[b] || {})[label] = (exp[b][label] || 0) + Math.abs(l.amount); ((expL[b] = expL[b] || {})[label] = expL[b][label] || []).push(l); }
@@ -387,7 +401,8 @@ function PnlReport() {
     (store.transactions || []).forEach(t => {
       if (!t.date || t.date < from || t.date > to) return;
       const handle = (amount, category, project) => {
-        const kind = catKind[category];
+        const kind = catMap.kindOf(category);
+        if (kind === 'transfer') return;
         const isInc = kind === 'income' ? true : kind === 'expense' ? false : (amount >= 0);
         if (isInc && !isRentalProp(getPropertyByAddr(project))) unattributedRental += amount;
       };
@@ -480,6 +495,26 @@ function PnlReport() {
         </div>
       </Card>
 
+      {(Object.keys(transferTotals).length > 0 || Object.keys(offListCats).length > 0) && (
+        <Card className="mt-16">
+          <div className="card__body small" style={{ lineHeight: 1.6 }}>
+            {Object.keys(transferTotals).length > 0 && (
+              <div className="mb-8">
+                <strong>Excluded from profit — transfers &amp; financing:</strong>{' '}
+                {Object.entries(transferTotals).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([c, v]) => c + ' ' + fmtMoney(v)).join(' · ')}
+                {' '}(net {fmtMoney(transferNet)}). Moving money between your own accounts, loan draws and refundable deposits aren't income or expense.
+              </div>
+            )}
+            {Object.keys(offListCats).length > 0 && (
+              <div className="dim">
+                {Object.keys(offListCats).length} categor{Object.keys(offListCats).length === 1 ? 'y' : 'ies'} on these transactions {Object.keys(offListCats).length === 1 ? 'is' : 'are'} not in your category list, so {Object.keys(offListCats).length === 1 ? 'it is' : 'they are'} sorted by the sign of the amount:{' '}
+                {Object.entries(offListCats).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 8).map(([c, v]) => c + ' ' + fmtMoney(v)).join(' · ')}
+                {Object.keys(offListCats).length > 8 ? ' …' : ''}. Add them in <a onClick={() => nav('/settings')} style={{ cursor: 'pointer' }}>Settings → Manage lists → Categories</a> to mark them Income, Expense, or Transfer.
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
       <div className="small dim mt-16" style={{ maxWidth: 760, lineHeight: 1.6 }}>
         Figures come from your logged transactions (splits counted individually) over the selected range.
         Categories are sorted into income and expense by their list setting; uncategorized lines are grouped by amount.

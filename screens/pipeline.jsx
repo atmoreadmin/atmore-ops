@@ -51,7 +51,7 @@ function PipelineScreen() {
     if (archived && !showArchive) return false;
     if (typeFilter !== 'all' && p.type !== typeFilter) return false;
     if (ownerFilter !== 'all' && p.assigned !== ownerFilter) return false;
-    if (search && !p.address.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !String(p.address || '').toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 

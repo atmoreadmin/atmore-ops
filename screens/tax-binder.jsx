@@ -11,12 +11,14 @@ function TaxBinderScreen() {
   const yearStr = String(year);
 
   // Rent collected — sum paid amount where paidOn falls in the year
-  const rentCollected = store.rentLedger
-    .filter(r => r.paidOn && r.paidOn.startsWith(yearStr))
-    .reduce((a,r) => a + r.paid, 0);
+  const paidRowsThisYear = store.rentLedger.filter(r => r.paidOn && String(r.paidOn).startsWith(yearStr));
+  const rentCollected = paidRowsThisYear.reduce((a,r) => a + (r.paid || 0), 0);
+  // Tenants who actually paid IN THIS YEAR. This used to count every currently-active
+  // lease, so a year with no activity read "$0 · 12 tenants".
+  const payingTenants = new Set(paidRowsThisYear.map(r => r.tenantId).filter(Boolean)).size;
 
   // Expenses by category — transactions in year with negative amount
-  const txInYear = store.transactions.filter(t => t.date.startsWith(yearStr));
+  const txInYear = store.transactions.filter(t => t.date && t.date.startsWith(yearStr));
   const expensesByCat = {};
   let totalExpenses = 0;
   txInYear.forEach(t => {
@@ -79,9 +81,9 @@ function TaxBinderScreen() {
       <Card className="mb-16">
         <div className="row" style={{padding: '4px 0'}}>
           <div className="stat stat--sage grow">
-            <div className="stat__label">Rent collected</div>
+            <div className="stat__label">Rent collected · rent ledger</div>
             <div className="stat__value">{fmtMoney(rentCollected)}</div>
-            <div className="stat__sub">across {store.tenants.filter(t => t.status === 'active').length} tenants</div>
+            <div className="stat__sub">marked paid in {yearStr}{payingTenants ? ' · ' + payingTenants + (payingTenants === 1 ? ' tenant' : ' tenants') : ''}</div>
           </div>
           <div className="stat stat--sage grow">
             <div className="stat__label">Other income</div>

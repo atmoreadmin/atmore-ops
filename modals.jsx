@@ -58,7 +58,7 @@ function SplitTransactionModal({ tx, onClose }) {
 
     // Auto-mark rent ledger if requested
     if (autoMark && isIncome) {
-      const month = tx.date.slice(0,7);
+      const month = String(tx.date || '').slice(0,7);
       cleaned.forEach(sp => {
         if (sp.category !== 'Rental Income') return;
         const property = getPropertyByAddr(sp.project);
@@ -446,7 +446,7 @@ function AddHOAModal({ propertyId, hoa, onClose }) {
           <div><div className="up dim mb-4">Username</div><input className="input mono" value={username} onChange={e => setUsername(e.target.value)} style={{width: '100%'}}/></div>
           <div><div className="up dim mb-4">Password</div><input className="input mono" type="password" value={password} onChange={e => setPassword(e.target.value)} style={{width: '100%'}}/></div>
         </div>
-        <div className="small dim">Stored in your browser's localStorage. In production this lives in the Google Sheet alongside the rest of your data.</div>
+        <div className="small dim">Stored in your browser's localStorage. In production this lives with the rest of your data in the synced backend.</div>
         <div className="row gap-8 mt-8">
           {editing && <Btn kind="danger" sz="sm" onClick={() => { if (confirm(`Remove ${hoa.name}?`)) { deleteHOA(hoa.id); onClose(); } }}>Delete</Btn>}
           <div className="grow"/>

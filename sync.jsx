@@ -277,6 +277,38 @@ function preserveMissingKeys(serverRow, localRow, tabName, audit, skip) {
   return out;
 }
 
+// Rows this device deleted that the Sheet still has. Drop them from the pulled
+// snapshot — otherwise they reappear — and report it so the caller re-sends the
+// delete instead of clearing dirty and forgetting it. The SharePoint path has done
+// this since it shipped (_finishPull → _dropTombstoned); the Sheet path never did,
+// so any auto-pull landing before the delete's push silently undid the deletion.
+function dropTombstonedFromSheet(state) {
+  const tombs = (state && state.tombstones) || [];
+  if (!tombs.length) return 0;
+  const byColl = {};
+  tombs.forEach(t => {
+    if (!t || t.id == null || !t.coll) return;
+    (byColl[t.coll] = byColl[t.coll] || new Set()).add(String(t.id));
+  });
+  let dropped = 0;
+  Object.keys(byColl).forEach(coll => {
+    const list = state[coll];
+    if (!Array.isArray(list)) return;
+    const ids = byColl[coll];
+    // A row RESTORED or re-created on the server after the delete was recorded must
+    // win — a version-history restore is the counter-case to "re-send the delete".
+    const tsAt = {};
+    tombs.forEach(t => { if (t && t.coll === coll && t.id != null) tsAt[String(t.id)] = String(t.at || ''); });
+    const kept = list.filter(r => {
+      if (!r || r.id == null || !ids.has(String(r.id))) return true;
+      const at = tsAt[String(r.id)] || '';
+      return !!(r.updatedAt && at && String(r.updatedAt) > at);
+    });
+    if (kept.length !== list.length) { dropped += list.length - kept.length; state[coll] = kept; }
+  });
+  return dropped;
+}
+
 // Convert pulled { tabs: {...} } → app state shape
 function deserializeFromSheet(pulledData, opts) {
   const audit = !!(opts && opts.audit);
@@ -292,6 +324,12 @@ function deserializeFromSheet(pulledData, opts) {
   // Same one-time-seed gate for the roster: losing it re-seeds four people who
   // may have been deliberately removed, on every reload.
   state._employeesSeeded = Store.state._employeesSeeded || state._employeesSeeded;
+  // Local bookkeeping that must survive a pull. These are not Sheet columns; dropping
+  // them re-armed the one-time tombstone audit (which then cleared every legitimate
+  // deletion record) and made both engines fall back to the retired size heuristic.
+  state._intentDeletes = Store.state._intentDeletes || state._intentDeletes || [];
+  state._intentSince   = Store.state._intentSince || state._intentSince || null;
+  state._tombAuditV2   = Store.state._tombAuditV2 || state._tombAuditV2 || false;
   // Deletion records ride along so this device honors deletes made elsewhere.
   state.tombstones = Array.isArray(tabs.Tombstones)
     ? tabs.Tombstones.filter(t => t && t.id != null).map(t => ({ coll: t.coll || '', id: String(t.id), at: t.at || '' }))
@@ -732,6 +770,28 @@ function deserializeFromSheet(pulledData, opts) {
     if (Object.keys(rescued).length) state._rescued = rescued;
   }
 
+  // ── Wipe guard, generalized ──────────────────────────────────────────────────
+  // Transactions had this guard; Properties and the other big lists did not, and
+  // that gap erased a whole portfolio. tabPresent() only catches a MISSING tab —
+  // an EMPTY one (`[]`) is Array.isArray-true, so it mapped to [] and wiped local.
+  // A present-but-empty tab is never a real mass deletion; it means a wrong sheet,
+  // a cleared tab, a header-only read, or a partial/throttled fetch. Keep local and
+  // mark dirty so the next push restores the tab.
+  [['Properties', 'properties', 3], ['Tenants', 'tenants', 3], ['RentLedger', 'rentLedger', 5],
+   ['Contractors', 'contractors', 3], ['Refis', 'refis', 2], ['Exchanges', 'exchanges', 2],
+   ['Maintenance', 'maintenance', 3], ['Offers', 'offers', 3], ['Leads', 'leads', 3],
+   ['SpendLog', 'spendLog', 5], ['Employees', 'employees', 2], ['WebAccounts', 'webAccounts', 2],
+  ].forEach(([tab, key, min]) => {
+    const rows = tabs[tab];
+    if (!Array.isArray(rows) || rows.length !== 0) return;
+    const local = Store.state[key] || [];
+    if (local.length > min && (state[key] || []).length === 0) {
+      state[key] = local;
+      if (window.SyncEngine) SyncEngine.dirty = true;
+      try { console.warn('[sync] ' + tab + ' tab came back EMPTY — kept ' + local.length + ' local rows and queued a push.'); } catch (e) {}
+    }
+  });
+
   return state;
 }
 
@@ -747,6 +807,8 @@ function deserializeFromSheet(pulledData, opts) {
 // lastWriteAt differs, the sheet changed elsewhere → pull (or flag a conflict if
 // we also have unsaved local edits).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const BACKEND_KEY = 'atmore-sync-backend';
+
 const SyncEngine = {
   status: 'local-only',
   message: '',
@@ -760,7 +822,27 @@ const SyncEngine = {
   _applyingRemote: false,
   _started: false,
 
-  autoOn() { return Sync.isConfigured() && (Sync.config.autoSync !== false); },
+  // Exactly ONE backend may write. A machine that has been moved to SharePoint keeps
+  // its old Apps Script URL in localStorage, and that alone used to be enough to keep
+  // this engine live — it would push local state over the Sheet and, worse, pull a
+  // stale/emptied Sheet back over good local data. The backend is now explicit.
+  backend() {
+    try {
+      const pinned = localStorage.getItem(BACKEND_KEY);
+      if (pinned === 'sheet' || pinned === 'sharepoint') return pinned;
+    } catch (e) {}
+    // Not pinned: SharePoint. The Sheet is retired, so it never becomes active by
+    // accident — only by an explicit pin from the Integration screen. Worst case here is
+    // local-only saving, which loses nothing; the opposite default overwrites real data.
+    return 'sharepoint';
+  },
+  setBackend(which) {
+    try { localStorage.setItem(BACKEND_KEY, which === 'sharepoint' ? 'sharepoint' : 'sheet'); } catch (e) {}
+    this.refreshConfig();
+  },
+  sheetLive() { return this.backend() === 'sheet'; },
+
+  autoOn() { return this.sheetLive() && Sync.isConfigured() && (Sync.config.autoSync !== false); },
 
   // ── Per-row change stamping ─────────────────────────────────────────────
   // The bridge merges the Sheet row-by-row on updatedAt (newer wins), so a
@@ -801,14 +883,38 @@ const SyncEngine = {
         const sig = this._rowSigFor(tab, r);
         if (m.get(id) !== sig) { r.updatedAt = now; m.set(id, sig); }
       });
-      for (const id of [...m.keys()]) {
+      // Split by INTENT, not by absence. This is the mint site that actually runs
+      // (the Sheet engine); inferring a delete from "id is no longer in the list" turned
+      // every wholesale array replacement — a repair pass, a bad load, a wipe — into
+      // hundreds of deletions, and those are now authoritative on pull, so they would
+      // strip rows from a restore. A row deleted through the app carries a record from
+      // markDeleted() and is honoured at any scale; an unexplained disappearance is
+      // dropped from the baseline WITHOUT a tombstone once it exceeds the plausible
+      // size for a hand deletion.
+      const gone = [...m.keys()].filter(id => !liveIds.has(id));
+      const intended = gone.filter(id => (typeof wasDeletedOnPurpose === 'function') && wasDeletedOnPurpose(coll, id));
+      const unexplained = gone.filter(id => intended.indexOf(id) < 0);
+      // On a build that records intent at every delete site, an unexplained vanish is
+      // by definition not a user action — never mint for it, at any size. The size
+      // fallback survives only for stores whose deletions predate intent recording.
+      const legacy = !(Store.state && Store.state._intentSince);
+      const bulkLoss = legacy ? unexplained.length > Math.max(5, Math.ceil(m.size * 0.25)) : unexplained.length > 0;
+      const honoured = bulkLoss ? intended : gone;
+      if (bulkLoss) {
+        unexplained.forEach(id => m.delete(id));
+        try { console.warn('[sync] ' + tab + ': ' + unexplained.length + ' of ' + m.size + ' rows vanished with no delete on record — treating as data loss, no deletions recorded.'); } catch (e) {}
+      }
+      for (const id of honoured) {
         // The deletion record is keyed by the STORE COLLECTION name, which is what
         // resolves it later (state[coll]). This used to record the sheet-tab name
         // instead ('Properties' rather than 'properties'), so state[coll] was
         // undefined and every one of these deletes was silently inert — which is
         // how a row deleted here could be re-adopted from a pull that still
         // carried it.
-        if (!liveIds.has(id)) { m.delete(id); tombs.push({ coll, id, at: now }); }
+        m.delete(id);
+        // Dedupe: this used to push blindly, so one id could accumulate many records.
+        const dup = tombs.find(t => t && t.coll === coll && String(t.id) === String(id));
+        if (dup) dup.at = now; else tombs.push({ coll, id, at: now });
       }
     }
     // Retention matches the bridge's 60 days.
@@ -839,9 +945,23 @@ const SyncEngine = {
     Store.onPreSave('stampRows', () => SyncEngine._stampChanges());
     Store.onPostSave('sheets', () => SyncEngine._onLocalChange());
 
+    // Listeners install BEFORE the not-configured early return. They used to sit
+    // after it, so a device that connected the Sheet mid-session (Integration →
+    // Sync → paste the URL) got no background poll and no unload flush for the
+    // rest of the session — its edits only left the machine on the next reload.
+    // Both handlers re-check isConfigured() every time they fire, so installing
+    // them early costs nothing while unconfigured.
+    this._installListeners();
+
     if (!Sync.isConfigured()) { this._set('local-only', 'Saved on this device only'); return; }
+    if (!this.sheetLive()) { this._set('local-only', 'Sheet sync is off — SharePoint is this account\u2019s backend'); return; }
     this._set('synced', 'Connected');
     if (this.autoOn()) this.openSync();
+  },
+
+  _installListeners() {
+    if (this._listening) return;
+    this._listening = true;
 
     // Poll for manual Sheet edits while the app is open: if the Sheet's
     // lastWriteAt moved and we have no local edits, pull it in.
@@ -851,7 +971,7 @@ const SyncEngine = {
       Sync.meta().then(m => {
         if (m && m.minAppBuild > APP_BUILD) { this._set('stale', 'A newer version of the app is available — refresh this page to keep saving.'); return; }
         const sheetAt = m && m.lastWriteAt;
-        if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;
+        this._noteSheetCounts(m);
         if (sheetAt && this.lastSheetWriteAt && sheetAt !== this.lastSheetWriteAt && !this.dirty) this.pullNow();
       }).catch(() => {});
     }, 60000);
@@ -889,6 +1009,7 @@ const SyncEngine = {
   _onLocalChange() {
     if (this._applyingRemote) return;          // pulls shouldn't mark dirty
     if (!Sync.isConfigured()) return;          // stay local-only
+    if (!this.sheetLive()) return;             // SharePoint owns the pill; don't claim it
     this.dirty = true;
     this._gen++;
     if (!this.autoOn()) { this._set('dirty', 'Unsaved changes'); return; }
@@ -897,18 +1018,117 @@ const SyncEngine = {
     this._pushTimer = setTimeout(() => this.pushNow(), 2500);  // debounce bursts of edits
   },
 
+  // Persisted high-water marks: the largest count this device has ever legitimately
+  // held (or seen on the Sheet) for each big list. Only ever raised, never lowered by
+  // a bad read — that is the whole point.
+  _HW_KEY: 'atmore-sync-highwater-v1',
+  _hw() { try { return JSON.parse(localStorage.getItem(this._HW_KEY)) || {}; } catch (e) { return {}; } },
+  _BIG_LISTS: [
+    ['properties',   'property',    'properties',   3],
+    ['transactions', 'transaction', 'transactions', 25],
+    ['tenants',      'tenant',      'tenants',      3],
+    ['rentLedger',   'rent row',    'rent rows',    5],
+    ['contractors',  'contractor',  'contractors',  3],
+  ],
+  // A user-forced push (the "Click to resolve" path) is an explicit assertion that
+  // this local state is the truth. Re-baseline DOWN to it, otherwise a deliberate
+  // bulk deletion wedges saving: mark stays at the old high, every auto-push blocks.
+  resetHighWater() {
+    const hw = {};
+    for (const [key] of this._BIG_LISTS) hw[key] = (Store.state[key] || []).length;
+    try { localStorage.setItem(this._HW_KEY, JSON.stringify(hw)); } catch (e) {}
+    this.lastSheetCounts = {};
+    for (const [key] of this._BIG_LISTS) this.lastSheetCounts[key] = hw[key];
+  },
+  // Call after a confirmed-good sync (push or pull) — raises the marks.
+  noteHighWater() {
+    const hw = this._hw();
+    let changed = false;
+    for (const [key] of this._BIG_LISTS) {
+      const n = (Store.state[key] || []).length;
+      if (n > (hw[key] || 0)) { hw[key] = n; changed = true; }
+    }
+    for (const [key] of this._BIG_LISTS) {
+      const sn = this.lastSheetCounts && this.lastSheetCounts[key];
+      if (typeof sn === 'number' && sn > (hw[key] || 0)) { hw[key] = sn; changed = true; }
+    }
+    if (changed) { try { localStorage.setItem(this._HW_KEY, JSON.stringify(hw)); } catch (e) {} }
+  },
+  // Distinct property ids referenced by dependent records. Unfalsifiable: tenants,
+  // rent rows and tagged transactions can only name a property that once existed.
+  _referencedPropCount() {
+    const s = Store.state || {};
+    const ids = new Set();
+    (s.tenants || []).forEach(t => { if (t && t.propertyId) ids.add(String(t.propertyId)); });
+    (s.rentLedger || []).forEach(r => { if (r && r.propertyId) ids.add(String(r.propertyId)); });
+    // Transaction `project` tags are FREE TEXT — typos, short names and dead tags mean
+    // the distinct count runs far above the real portfolio (168 vs 43 here), so they are
+    // reported for context but never used as the threshold. Only real foreign-key ids
+    // from tenants and rent rows count as evidence.
+    const byAddr = new Set();
+    (s.transactions || []).forEach(t => { if (t && t.project) byAddr.add(String(t.project).trim().toLowerCase()); });
+    return { ids: ids.size, addrs: byAddr.size };
+  },
+  // Returns a human message if the local store lost a large fraction of any big list.
+  _massLossCheck() {
+    const hw = this._hw();
+    // Evidence test first — it survives a wrong mark and a wiped Sheet alike.
+    const ref = this._referencedPropCount();
+    const localProps = (Store.state.properties || []).length;
+    const evidence = ref.ids;
+    if (evidence >= 4 && localProps < Math.ceil(evidence * 0.5)) {
+      return 'Save paused — this device has ' + localProps + ' propert' + (localProps === 1 ? 'y' : 'ies') +
+             ', but its tenants, rent rows and transactions still refer to ' + evidence + '.';
+    }
+    for (const [key, one, many, floor] of this._BIG_LISTS) {
+      // Whichever is larger: what this device once held, or what the Sheet holds now.
+      // Relying on the persisted mark alone meant a cleared-storage device (new browser
+      // profile, private window, fresh install before its first pull) had no mark, so
+      // an empty store pushed freely — the exact case the guard exists for.
+      const high = Math.max(hw[key] || 0, (this.lastSheetCounts && this.lastSheetCounts[key]) || 0);
+      if (high < Math.max(4, floor)) continue;          // too small to judge
+      const n = (Store.state[key] || []).length;
+      if (n < Math.ceil(high * 0.5)) {
+        return 'Save paused — this device has ' + n + ' ' + (n === 1 ? one : many) +
+               ' but had ' + high + ' before.';
+      }
+    }
+    return null;
+  },
+
+  // The server's own row counts, per list. The push guard needs these because the
+  // persisted high-water mark lives in localStorage — the very thing that gets
+  // cleared, corrupted, or is simply absent on a new browser profile or fresh
+  // install. A populated Sheet must still protect a device whose mark is gone.
+  lastSheetCounts: {},
+  _noteSheetCounts(m) {
+    if (!m || !m.counts) return;
+    const map = { Properties: 'properties', Transactions: 'transactions', Tenants: 'tenants', RentLedger: 'rentLedger', Contractors: 'contractors' };
+    Object.keys(map).forEach(tab => {
+      const n = m.counts[tab];
+      if (typeof n === 'number' && n >= 0) this.lastSheetCounts[map[tab]] = n;
+    });
+    if (m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;
+  },
   async pushNow(force) {
     if (!Sync.isConfigured()) return;
+    if (!this.sheetLive()) { this._set('local-only', 'Sheet sync is off — SharePoint is this account\u2019s backend'); return; }
     clearTimeout(this._pushTimer);
     // Fail-safe: refuse to overwrite a populated Sheet with near-empty local data
     // (corrupted localStorage, a bad load, a race on open). The push replaces the
     // whole Sheet, so a blank local state would wipe everyone's records.
     if (!force) {
-      const localN = (Store.state.properties || []).length;
-      const sheetN = this.lastSheetPropCount;
-      if (sheetN != null && sheetN >= 4 && localN < Math.ceil(sheetN * 0.5)) {
+      // Compare against a PERSISTED high-water mark, not the server's current count.
+      // The old check read lastSheetPropCount, so the moment one empty push landed
+      // (or the count refreshed from the now-empty sheet) sheetN became 0, the
+      // `>= 4` test failed, and the guard could never fire again — every later empty
+      // push sailed through. A high-water mark only rises, so it stays honest.
+      // It also covers every big list: a store emptied of transactions or tenants
+      // used to push freely because only properties were checked.
+      const blocked = this._massLossCheck();
+      if (blocked) {
         this.dirty = true;
-        this._set('blocked', `Save paused — this device has ${localN} propert${localN === 1 ? 'y' : 'ies'} but the Sheet has ${sheetN}. Click to resolve.`);
+        this._set('blocked', blocked + ' Click to resolve.');
         return;
       }
     }
@@ -952,6 +1172,7 @@ const SyncEngine = {
       else { try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; } catch (e) {} }
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
       if (pullMergedAfter) { await this.pullNow(); return; }   // adopt the merged result
+      if (force) this.resetHighWater(); else this.noteHighWater();
       this._set('synced', 'All changes saved');
     } catch (e) {
       if (String(e.message).indexOf('OUTDATED_BUILD') >= 0) {
@@ -970,10 +1191,16 @@ const SyncEngine = {
 
   async pullNow() {
     if (!Sync.isConfigured()) return;
+    // A pull from the retired Sheet is the dangerous direction: it overwrites good local
+    // data with whatever the abandoned Sheet still holds.
+    if (!this.sheetLive()) { this._set('local-only', 'Sheet sync is off — SharePoint is this account\u2019s backend'); return; }
     this._set('syncing', 'Loading latest…');
     try {
       const data = await Sync.pull();
       const newState = deserializeFromSheet(data);
+      // Honour this device's deletions BEFORE the snapshot is committed, and keep the
+      // delete pending so the next push removes the rows from the Sheet too.
+      const revived = dropTombstonedFromSheet(newState);
       this._applyingRemote = true;
       Store.state = Store.ensureShape(newState);
       Store.save();
@@ -981,6 +1208,14 @@ const SyncEngine = {
       this._applyingRemote = false;
       this._initSigs();   // pulled rows are the new baseline — must not restamp as local edits
       this.dirty = false;
+      // A resurrected row was dropped above, so the Sheet still holds it — keep the
+      // delete pending. Clearing dirty here is what made the deletion unrecoverable:
+      // the row was persisted back and the push that would remove it never ran.
+      if (revived) {
+        this.dirty = true;
+        clearTimeout(this._pushTimer);
+        this._pushTimer = setTimeout(() => this.pushNow(), 600);
+      }
       // Rows this device had that the Sheet didn't (a push that failed or was
       // interrupted — e.g. a bank import). deserializeFromSheet kept them; open a
       // baseline gap so they're stamped and pushed instead of adopted as synced.
@@ -1000,9 +1235,13 @@ const SyncEngine = {
         }
       }
       this.lastSyncedAt = new Date().toISOString();
-      try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties; } catch (e) {}
+      try { const m = await Sync.meta(); if (m && m.lastWriteAt) this.lastSheetWriteAt = m.lastWriteAt; this._noteSheetCounts(m); } catch (e) {}
       Sync.saveConfig({ lastSyncedAt: this.lastSyncedAt, lastSheetWriteAt: this.lastSheetWriteAt });
-      this._set('synced', 'Loaded latest from Sheet');
+      // The rescue above may have set dirty (records this device still has to push).
+      // Declaring 'synced' here would overwrite that and claim everything is up.
+      this.noteHighWater();
+      if (this.dirty) this._set('dirty', 'Saving records the Sheet didn\u2019t have…');
+      else this._set('synced', 'Loaded latest from Sheet');
     } catch (e) {
       this._applyingRemote = false;
       this._set('error', 'Couldn’t load: ' + e.message);
@@ -1012,13 +1251,14 @@ const SyncEngine = {
   // On app open: reconcile this device with the Sheet.
   async openSync() {
     if (!Sync.isConfigured()) return;
+    if (!this.sheetLive()) { this._set('local-only', 'Sheet sync is off — SharePoint is this account\u2019s backend'); return; }
     this._set('syncing', 'Checking Sheet…');
     try {
       const m = await Sync.meta();
       if (m && m.minAppBuild > APP_BUILD) { this._set('stale', 'A newer version of the app is available — refresh this page to keep saving.'); return; }
       const sheetAt = m && m.lastWriteAt ? m.lastWriteAt : null;
       const totalRows = m && m.counts ? Object.values(m.counts).reduce((a, n) => a + (n || 0), 0) : 0;
-      if (m && m.counts && m.counts.Properties != null) this.lastSheetPropCount = m.counts.Properties;
+      this._noteSheetCounts(m);
       const firstContact = !this.lastSyncedAt;   // never synced from this device/URL
 
       // First time connecting to this Sheet: seed it if empty, otherwise adopt it.
@@ -1055,6 +1295,7 @@ const SyncEngine = {
     this.lastSyncedAt = c.lastSyncedAt || null;        // re-read (a new URL clears these)
     this.lastSheetWriteAt = c.lastSheetWriteAt || null;
     if (!Sync.isConfigured()) { this.dirty = false; this._set('local-only', 'Saved on this device only'); return; }
+    if (!this.sheetLive()) { this.dirty = false; this._set('local-only', 'Sheet sync is off — SharePoint is this account\u2019s backend'); return; }
     this._set('synced', 'Connected');
     if (this.autoOn()) this.openSync();
   },
