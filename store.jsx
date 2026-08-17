@@ -92,6 +92,9 @@ const Store = {
     if (!state.lists || typeof state.lists !== 'object') state.lists = {};
     if (!state.completedEvents || typeof state.completedEvents !== 'object') state.completedEvents = {};
     if (!state.uiState || typeof state.uiState !== 'object') state.uiState = { selectedPropertyId: null, propertyTab: 'summary' };
+    // Legacy property aliases with no sheet column — see foldLegacyPropDDFields. Run here
+    // (not only at load) so an import, a pull, or a cross-tab rehydrate can't reintroduce them.
+    try { foldLegacyPropDDFields(state); } catch (e) {}
     return state;
   },
 
@@ -124,6 +127,7 @@ const Store = {
       }
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
+      if (foldLegacyPropDDFields(this.state)) this.save();
       if (dedupeIds(this.state)) this.save();
       if (collapseDuplicateRecords(this.state)) this.save();
       if (collapseDuplicateCategories(this.state)) this.save();
@@ -1816,6 +1820,27 @@ function collapseDuplicateRecords(state) {
   return removed;
 }
 
+// Properties used to carry dueDiligenceFee / dueDiligenceDays / dueDiligenceDeadline as
+// aliases of acqDDFee / ddDate. They have no sheet column, so they never reached
+// SharePoint and showed up as permanent schema drift. Fold any value into the real
+// field (only when it is empty) and drop the aliases. Offers keep their own copies —
+// those are real columns.
+function foldLegacyPropDDFields(state) {
+  let changed = false;
+  (state.properties || []).forEach(p => {
+    if ('dueDiligenceFee' in p) {
+      if (p.acqDDFee == null && p.dueDiligenceFee != null) p.acqDDFee = p.dueDiligenceFee;
+      delete p.dueDiligenceFee; changed = true;
+    }
+    if ('dueDiligenceDeadline' in p) {
+      if (!p.ddDate && p.dueDiligenceDeadline) p.ddDate = p.dueDiligenceDeadline;
+      delete p.dueDiligenceDeadline; changed = true;
+    }
+    if ('dueDiligenceDays' in p) { delete p.dueDiligenceDays; changed = true; }
+  });
+  return changed;
+}
+
 function dedupeIds(state, opts) {
   const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
   const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100],['exchanges','ex',100]];
@@ -2513,9 +2538,6 @@ function addProperty(propData) {
       ddDate: propData.ddDate || null,
       signingDate: propData.signingDate || null,
       closingTime: propData.closingTime || null,
-      dueDiligenceFee: propData.acqDDFee || null,
-      dueDiligenceDays: propData.dueDiligenceDays || null,
-      dueDiligenceDeadline: propData.ddDate || null,
       contractDate: propData.signingDate || null,
       purchaseDate: null,
       purchasePrice: propData.purchasePrice || null,
