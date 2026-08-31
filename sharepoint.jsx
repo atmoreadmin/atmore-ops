@@ -2018,6 +2018,46 @@ const SPSync = {
           try { await SP.graph(op.url, { method: 'PATCH', body: JSON.stringify(fields) }); } catch (e3) {}
         }
       }
+      // 3. POST ops cannot be probed in place — there is no item yet. Re-sending the
+      //    same body is guaranteed to fail the same way, which is how a new record
+      //    could sit unsent forever while the log said only "see column notes above"
+      //    with no notes above it. So: create the row with Title alone (that always
+      //    takes), then PATCH the remaining fields one at a time to name the culprit.
+      //    On success the row is real, so register it and drop the op instead of
+      //    re-queueing.
+      if (op.method === 'POST') {
+        let created = null;
+        const fields = clean();
+        try { created = await SP.graph(base + '/items', { method: 'POST', body: JSON.stringify({ fields }) }); }
+        catch (e) {
+          try { created = await SP.graph(base + '/items', { method: 'POST', body: JSON.stringify({ fields: { Title: fields.Title || String(op.recId) } }) }); }
+          catch (e0) { created = null; }
+          if (created && created.id) {
+            const itemUrl = base + '/items/' + created.id + '/fields';
+            for (const [k, v] of Object.entries(fields)) {
+              if (k === 'Title') continue;
+              try { await SP.graph(itemUrl, { method: 'PATCH', body: JSON.stringify({ [k]: v }) }); }
+              catch (e2) {
+                let saved = false;
+                if (typeof v === 'string' && await this._widenTextColumn(base, tab, k)) {
+                  try { await SP.graph(itemUrl, { method: 'PATCH', body: JSON.stringify({ [k]: v }) }); saved = true; } catch (e4) {}
+                }
+                if (!saved && typeof v === 'string') {
+                  const alt = await this._aliasColumn(base, tab, k);
+                  if (alt) { try { await SP.graph(itemUrl, { method: 'PATCH', body: JSON.stringify({ [alt]: v }) }); saved = true; } catch (e5) {} }
+                }
+                if (!saved) noteBad(tab, k, String(e2.message || e2).slice(0, 90));
+              }
+            }
+          }
+        }
+        if (created && created.id) {
+          const idx = this._items[tab]; const m = this._sigs[tab];
+          if (idx) idx.set(op.recId, created.id);
+          if (m) m.set(op.recId, op.sig);
+          continue;
+        }
+      }
       out.push({ ...op, body: op.method === 'POST' ? { fields: clean() } : clean() });
     }
     SP.saveConfig({ skipFields: skipCfg, skipFieldsAt: Object.keys(skipCfg).length ? new Date().toISOString() : null });

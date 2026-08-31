@@ -128,6 +128,7 @@ const Store = {
       // Lazy migration — offers added after v10; seed sample data exactly once
       if (!this.state.offers) this.state.offers = [];
       if (foldLegacyPropDDFields(this.state)) this.save();
+      try { if (remintPoisonIds(this.state)) this.save(); } catch (e) { console.error('remintPoisonIds', e); }
       if (dedupeIds(this.state)) this.save();
       if (collapseDuplicateRecords(this.state)) this.save();
       if (collapseDuplicateCategories(this.state)) this.save();
@@ -1839,6 +1840,35 @@ function foldLegacyPropDDFields(state) {
     if ('dueDiligenceDays' in p) { delete p.dueDiligenceDays; changed = true; }
   });
   return changed;
+}
+
+// Ids minted while the high-water mark was corrupted carry an absurd digit run
+// (rm1555252525686525000...). They are locally valid but far past SharePoint's
+// numeric range, so those records are refused on every push and show up forever
+// as "present here / missing in SharePoint" in the divergence export. Re-mint them
+// to a normal id. Parent collections are excluded: children hang off their ids, so
+// re-keying one silently re-parents rows — those are handled by the explicit
+// "Create columns & backfill" repair instead.
+function remintPoisonIds(state) {
+  // Inline, not a module-scope const: Store.load() runs at top level, before any
+  // const declared below it is initialized (same trap dedupeIds documents).
+  const POISON_PARENTS = new Set(['properties', 'tenants', 'hoas', 'exchanges']);
+  const changes = [];
+  Object.keys(state || {}).forEach(coll => {
+    const rows = state[coll];
+    if (!Array.isArray(rows) || POISON_PARENTS.has(coll)) return;
+    rows.forEach(r => {
+      if (!r || typeof r !== 'object') return;
+      const id = String(r.id || '');
+      const m = id.match(/^([a-z]+)(\d{13,})/i);
+      if (!m) return;
+      const from = id;
+      r.id = nextId(rows, m[1], 100);
+      changes.push({ coll, from, to: r.id, why: 'id out of range', at: new Date().toISOString() });
+    });
+  });
+  if (changes.length) state._idRepairs = (state._idRepairs || []).concat(changes).slice(-100);
+  return changes.length;
 }
 
 function dedupeIds(state, opts) {
