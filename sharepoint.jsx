@@ -52,7 +52,30 @@ const SP = {
   },
   saveConfig(patch) {
     this.config = { ...(this.config || this.loadConfig()), ...patch };
-    localStorage.setItem(SP_KEY, JSON.stringify(this.config));
+    const json = JSON.stringify(this.config);
+    try { localStorage.setItem(SP_KEY, json); }
+    catch (e) {
+      // localStorage full (the app state mirror can take the whole 5 MB). This
+      // record MUST land or the next boot forgets which lists exist, re-provisions,
+      // and re-uploads the whole database — every time. Make room and retry.
+      for (const k of ['sp_activity', 'atmore-trace', 'sp_conflicts', 'sync_acked_v1']) { try { localStorage.removeItem(k); } catch (e2) {} }
+      try { localStorage.setItem(SP_KEY, json); }
+      catch (e3) { console.error('SharePoint config could not be saved — storage full', e3); }
+    }
+    try { if (window.Store && Store._idbPut) Store._idbPut(SP_KEY, json).catch(() => {}); } catch (e) {}
+  },
+  // localStorage lost the config (quota) but IndexedDB kept it.
+  async restoreConfigFromIDB() {
+    try {
+      if ((this.config || this.loadConfig()).listIds || !window.Store || !Store._idbGet) return false;
+      const raw = await Store._idbGet(SP_KEY);
+      if (!raw) return false;
+      const saved = JSON.parse(raw);
+      if (!saved || !saved.listIds) return false;
+      this.config = { ...saved, ...SP_TENANT };
+      try { localStorage.setItem(SP_KEY, raw); } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   },
 
   available() { return typeof msal !== 'undefined'; },
@@ -681,6 +704,25 @@ const SPSync = {
     }
   },
 
+  // Rows for the app, one per record id. Every item used to be mapped, so a list
+  // holding two server items for one RecID handed the app two identical rows under
+  // one id; the load-time id repair then re-minted the second as a NEW record and
+  // pushed it — one more copy per reload, per device, forever. Tasks and SpendLog
+  // reached tens of thousands of rows this way.
+  _survivorRows(tabName, items) {
+    const idx = this._items[tabName] || new Map();
+    const keepItem = new Set([...idx.values()].map(String));
+    const out = [];
+    let dropped = 0;
+    items.forEach(it => {
+      const rid = (it.fields || {}).RecID;
+      if (rid != null && !keepItem.has(String(it.id))) { dropped++; return; }
+      out.push(this._rowFromItem(tabName, it));
+    });
+    if (dropped) this.logLine(tabName + ': ' + dropped.toLocaleString() + ' duplicate server row' + (dropped === 1 ? '' : 's') + ' ignored (queued for removal)');
+    return out;
+  },
+
   _indexTab(tabName, items) {
     const idx = new Map();
     // Two server items under one record id (what a list provisioned without its
@@ -754,6 +796,7 @@ const SPSync = {
       Store.notify();
       SyncEngine._applyingRemote = false;
       this._baseline(newState);
+      this._collapseAfterPull();
       this._applyRepush();
       this._reissueDeletes(revived);
       // Same rescue the clean branch does below, and it was missing here: rows this
@@ -790,6 +833,7 @@ const SPSync = {
     SyncEngine._applyingRemote = false;
     this._baseline();
     SyncEngine.dirty = false;
+    if (this._collapseAfterPull()) { SyncEngine.dirty = true; this._set('dirty', 'Saving…'); this._queueFlush(500); return; }
     // Not an early return: a rebuilt list still needs this device's pending
     // deletions re-sent, and _reissueDeletes works again now that the reset
     // leaves real (empty) Maps behind.
@@ -820,6 +864,18 @@ const SPSync = {
     SyncEngine.lastSyncedAt = new Date().toISOString();
     if (bigLists.length) this._set('synced', '⚠ Approaching SharePoint\u2019s 5,000-item list limit: ' + bigLists.join(', ') + ' — time to archive older records');
     else this._set('synced', doneMsg);
+  },
+
+  // Same absence / same person under two ids (the multiplication bug). Runs against
+  // the adopted state WITH the baseline already holding both copies, so the loser
+  // shows up in the next diff as an intended delete and is removed from SharePoint.
+  _collapseAfterPull() {
+    try {
+      if (typeof collapseContentDuplicates !== 'function') return 0;
+      const n = collapseContentDuplicates(Store.state);
+      if (n) { Store.save(); Store.notify(); this.logLine('Collapsed ' + n.toLocaleString() + ' duplicate time-off / people record' + (n === 1 ? '' : 's') + ' \u2014 removing the copies from SharePoint'); }
+      return n;
+    } catch (e) { return 0; }
   },
 
   // Rows this device had that SharePoint didn't. deserializeFromSheet keeps them in
@@ -889,8 +945,8 @@ const SPSync = {
       const raw = new Map();
       items.forEach(it => raw.set(String(it.id), { id: it.id, fields: it.fields || {} }));
       this._rawItems[tabName] = raw;
-      tabs[tabName] = items.map(it => this._rowFromItem(tabName, it));
       this._indexTab(tabName, items);
+      tabs[tabName] = this._survivorRows(tabName, items);
       if (listIds[tabName]) await this._grabDelta(tabName, sid, listIds[tabName]);
     }
     this.logLine('Full reload from SharePoint (' + (allTabs.length - missing.length) + ' of ' + allTabs.length + ' lists)');
@@ -968,8 +1024,8 @@ const SPSync = {
       // only discoverable from the data, and _rowFromItem below must already know
       // about it or it reads the abandoned original column.
       this._adoptAliases(t, items);
-      tabs[t] = items.map(it => this._rowFromItem(t, it));
       this._indexTab(t, items);
+      tabs[t] = this._survivorRows(t, items);
     }
     this.logLine('Picked up ' + changed + ' change' + (changed === 1 ? '' : 's') + ' from SharePoint');
     this._finishPull(tabs, [], 'Updated from SharePoint');
@@ -1388,7 +1444,7 @@ const SPSync = {
       const payload = serializeForSheet(Store.state).tabs;
       // Collect every parent-tab operation, then send in $batch chunks — bank
       // imports create hundreds of rows at once and must not go one-by-one.
-      const ops = [];
+      let ops = [];
       // Recover from a lost POST response: if a previous flush died mid-batch
       // while creating items, the create may have landed without us recording the
       // item id — a blind retry would duplicate the row. Re-index those lists by
@@ -1513,6 +1569,31 @@ const SPSync = {
             if (idx.has(id)) ops.push({ method: 'DELETE', url: '/sites/' + sid + '/lists/' + lid + '/items/' + idx.get(id), tab: t, recId: id, del: true });
             else m.delete(id);
           }
+        }
+      }
+      if (ops.length > 25) {
+        const by = {};
+        ops.forEach(o => { const k = o.tab + ' ' + (o.del ? 'delete' : o.method === 'POST' ? 'new' : 'update'); by[k] = (by[k] || 0) + 1; });
+        const top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, n]) => n.toLocaleString() + ' ' + k).join(', ');
+        this.logLine('Saving ' + ops.length.toLocaleString() + ' change' + (ops.length === 1 ? '' : 's') + ': ' + top);
+        // A single save that would CREATE more rows in one list than the list already
+        // holds locally, on a list SharePoint already has rows for, is a duplication
+        // storm (lost baseline, forgotten list id), not real work. Hold the creates,
+        // keep the updates/deletes, and say so — the user can force a re-send from
+        // Settings \u2192 Integration once the cause is known.
+        const creates = {};
+        ops.forEach(o => { if (o.method === 'POST') creates[o.tab] = (creates[o.tab] || 0) + 1; });
+        const held = [];
+        for (const [t, n] of Object.entries(creates)) {
+          const serverHas = (this._items[t] || new Map()).size;
+          const forcedTab = (this._repushTabs && this._repushTabs.has(t)) || (this._forceRepush && this._forceRepush[t]);
+          if (!forcedTab && serverHas > 50 && n > Math.max(200, serverHas)) held.push(t + ' (' + n.toLocaleString() + ')');
+        }
+        if (held.length) {
+          const heldSet = new Set(held.map(h => h.split(' (')[0]));
+          const before = ops.length;
+          ops = ops.filter(o => !(o.method === 'POST' && heldSet.has(o.tab)));
+          this.logLine('\u26a0 Held back ' + (before - ops.length).toLocaleString() + ' new-row saves for ' + held.join(', ') + ' \u2014 that many new rows at once is almost certainly a duplication loop, not real records. Updates and deletes still saved.');
         }
       }
       let pending = ops, attempt = 0, badOps = [], repairRounds = 0, unsent = 0;
@@ -2145,6 +2226,7 @@ const SPSync = {
   async _bootOnce() {
     try {
       if (!SP.account()) { this._set('error', 'SharePoint sign-in needed — open Integration → SharePoint'); return; }
+      if (await SP.restoreConfigFromIDB()) this.logLine('Recovered SharePoint list settings from this computer\u2019s backup copy');
       // Schema catch-up: lists provisioned by an older build may lack columns
       // this build writes (e.g. updatedAt), or may be missing entirely (a new
       // build added SpendLog / Employees / TimeOff). provision() is idempotent
@@ -2171,7 +2253,8 @@ const SPSync = {
         // A newly created list starts empty on the server, so every local row has
         // to go up. The pull below rebuilds the baseline from local state, so the
         // reset must happen after it — flag it and let _applyRepush do it.
-        const fresh = Object.keys(SP.config.listIds || {}).filter(t => !hadLists.has(t));
+        const fresh = Object.keys(SP.config.listIds || {}).filter(t => !hadLists.has(t) && !(this._repushedOnce || (this._repushedOnce = new Set())).has(t));
+        fresh.forEach(t => this._repushedOnce.add(t));
         if (fresh.length) this.markRepush(fresh);
       }
       await this.pull();

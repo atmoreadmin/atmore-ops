@@ -693,7 +693,8 @@ const Store = {
       // saved on this computer — no alarm, just a one-time note. Only when IDB is also
       // failing is the tab genuinely the only copy.
       if (!this._lsFull) { this._lsFull = true; console.warn('Store: localStorage full (' + (e && e.name) + ') — relying on IndexedDB for local saves'); }
-      if (this._idbOk) { this._runHooks(this._postSave); return; }
+      // The IDB write is in flight; it decides whether this is a problem (see _idbWrite).
+      if (this._idbOk !== false) { this._runHooks(this._postSave); return; }
       // A failed local save used to be a console.warn nobody sees. The app keeps
       // looking normal, so you keep working — and a reload silently loses
       // everything since the last write that DID land. Quota exhaustion is the
@@ -733,14 +734,20 @@ const Store = {
     }
   },
 
-  _idbOk: false,
+  _idbOk: null,   // null = not yet proven, true = working, false = failed
   _idbWrite(json) {
     this._idbPut(STORAGE_KEY, json).then(() => {
       this._idbOk = true;
       // localStorage was full but IDB took it: clear the scary state if it was raised
       // before IDB proved itself.
       if (this._saveFailed) { this._saveFailed = false; try { if (window.SyncEngine) SyncEngine._set('idle', 'Saved on this computer'); } catch (e) {} }
-    }).catch(e => { this._idbOk = false; console.warn('Store: IndexedDB write failed', e); });
+    }).catch(e => {
+      this._idbOk = false; console.warn('Store: IndexedDB write failed', e);
+      if (this._lsFull && !this._saveFailed) {
+        this._saveFailed = true;
+        try { alert('Atmore Operations can\u2019t save to this computer (storage full and IndexedDB failed).\n\nYour recent changes are still in this tab and will go up to SharePoint, but do NOT close this tab until the status bar says everything is saved.'); } catch (e2) {}
+      }
+    });
   },
 
   notify() {
@@ -1995,6 +2002,7 @@ function remintPoisonIds(state) {
       if (!m) return;
       const from = id;
       r.id = nextId(rows, m[1], 100);
+      try { markDeleted(state, coll, from); } catch (e) {}
       changes.push({ coll, from, to: r.id, why: 'id out of range', at: new Date().toISOString() });
     });
   });
@@ -2003,6 +2011,7 @@ function remintPoisonIds(state) {
 }
 
 function dedupeIds(state, opts) {
+  let dropped = 0;
   // Duplicate ids in these collections were the source of the calendar's phantom
   // duplicates: two records sharing an id produce two events with the SAME key, so
   // React renders both and completing one completes the other. Only contractors,
@@ -2018,19 +2027,30 @@ function dedupeIds(state, opts) {
   const changes = [];
   for (const [coll, prefix, start] of specs) {
     const rows = state[coll]; if (!Array.isArray(rows)) continue;
-    const seen = new Set();
+    const seen = new Map();
+    const sigOf = r => { try { const c = { ...r }; delete c.updatedAt; return JSON.stringify(c); } catch (e) { return Math.random(); } };
+    const drop = new Set();
     for (const r of rows) {
       if (!r) continue;
       const id = String(r.id || '');
-      if (!id || seen.has(id)) {
+      const prev = id ? seen.get(id) : null;
+      if (prev && sigOf(prev) === sigOf(r)) {
+        // Same id, same content: the same record delivered twice (a double pull, a
+        // duplicated server row). Re-minting this manufactured a brand-new duplicate
+        // that then synced everywhere — the multiplication bug. Drop it instead.
+        drop.add(r); dropped++;
+        continue;
+      }
+      if (!id || prev) {
         r.id = nextId(rows, prefix, start);
         changes.push({ coll, from: id || '(blank)', to: r.id, at: new Date().toISOString() });
       }
-      seen.add(String(r.id));
+      seen.set(String(r.id), r);
     }
+    if (drop.size) state[coll] = rows.filter(r => !drop.has(r));
   }
   if (changes.length) state._idRepairs = (state._idRepairs || []).concat(changes).slice(-100);
-  return changes.length;
+  return changes.length + dropped;
 }
 // A tombstone whose record is still here is self-contradictory: the record was
 // re-created (or the delete was never real) and the delete is the stale half.
