@@ -713,6 +713,8 @@ function deserializeFromSheet(pulledData, opts) {
         note: r.note || '', updatedAt: r.updatedAt || null })))
     : (Store.state.timeOff || []);
 
+  try { if (typeof collapseContentDuplicates === 'function') collapseContentDuplicates(state); } catch (e) {}
+
   // Pipeline statuses — present tab authoritative; absent/empty keeps local, then seed.
   if (Array.isArray(tabs.Statuses) && tabs.Statuses.length) {
     state.statuses = tabs.Statuses.map(r => ({

@@ -194,8 +194,10 @@ function addTimeOff(rec) {
   // no error, invisible on the calendar. Store it the right way round.
   const start = (rec.endDate && rec.endDate < rec.startDate) ? rec.endDate : rec.startDate;
   const end = (rec.endDate && rec.endDate < rec.startDate) ? rec.startDate : (rec.endDate || rec.startDate);
+  if (addDaysISO(start, 60) < end) return Store.warn('That is more than 60 days of time off — check the end date (year typo?).');
   Store.update(s => {
     s.timeOff = s.timeOff || [];
+    if (s.timeOff.some(t => t.employeeId === rec.employeeId && t.startDate === start && (t.endDate || t.startDate) === end)) return;
     s.timeOff.push({
       id: nextId(s.timeOff, 'to', 101),
       employeeId: rec.employeeId,

@@ -184,8 +184,13 @@ const Store = {
       if (!this.state.offers) this.state.offers = [];
       if (foldLegacyPropDDFields(this.state)) this.save();
       try { if (remintPoisonIds(this.state)) this.save(); } catch (e) { console.error('remintPoisonIds', e); }
-      if (dedupeIds(this.state)) this.save();
+      // Order matters: a same-id pair in spendLog/employees/timeOff is the SAME record
+      // (a pull merge landed twice), so collapse those first. Running dedupeIds first
+      // re-minted the second copy under a fresh id — a brand-new duplicate that was then
+      // pushed, pulled by the other device, and multiplied on every load.
       if (collapseDuplicateRecords(this.state)) this.save();
+      if (collapseContentDuplicates(this.state)) this.save();
+      if (dedupeIds(this.state)) this.save();
       if (collapseDuplicateCategories(this.state)) this.save();
       if (clearContradictedTombstones(this.state)) this.save();
       // Versioned: the marker alone was set by an earlier load, so the one-time audit
@@ -1913,6 +1918,37 @@ function collapseDuplicateRecords(state) {
     }
     if (keep.size !== rows.length) state[coll] = [...keep.values()];
   }
+  return removed;
+}
+
+// Duplicates that already escaped under DIFFERENT ids (the re-mint bug above, or two
+// devices logging the same absence / person before syncing). Same person + same dates
+// + same type is the same absence; same name is the same person. Keep the oldest copy,
+// tombstone the rest so the delete reaches SharePoint and every other device, and
+// re-point time off at the surviving employee id.
+function collapseContentDuplicates(state) {
+  let removed = 0;
+  const older = (a, b) => String(a.updatedAt || '') <= String(b.updatedAt || '') ? a : b;
+  const collapse = (coll, keyOf, onDrop) => {
+    const rows = state[coll];
+    if (!Array.isArray(rows) || rows.length < 2) return;
+    const keep = new Map();
+    for (const r of rows) {
+      if (!r) continue;
+      const k = keyOf(r); if (!k) { keep.set('id:' + r.id, r); continue; }
+      const prev = keep.get(k);
+      if (!prev) { keep.set(k, r); continue; }
+      const win = older(prev, r), lose = win === prev ? r : prev;
+      keep.set(k, win); removed++;
+      try { markDeleted(state, coll, lose.id); } catch (e) {}
+      if (onDrop) onDrop(lose, win);
+    }
+    if (keep.size !== rows.length) state[coll] = [...keep.values()];
+  };
+  const empRemap = new Map();
+  collapse('employees', e => String(e.name || '').trim().toLowerCase(), (lose, win) => empRemap.set(String(lose.id), win.id));
+  if (empRemap.size) (state.timeOff || []).forEach(t => { const w = empRemap.get(String(t.employeeId)); if (w) t.employeeId = w; });
+  collapse('timeOff', t => t.startDate ? [t.employeeId, t.startDate, t.endDate || t.startDate, t.type || 'pto', t.halfDay ? 'h' : 'f'].join('|') : '');
   return removed;
 }
 
