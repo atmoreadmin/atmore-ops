@@ -361,8 +361,8 @@ function PnlReport() {
   (store.transactions || []).forEach(t => {
     if (!t.date || t.date < from || t.date > to) return;
     const parts = (t.splits && t.splits.length)
-      ? t.splits.map(s => ({ srcId: t.id, bucket: s.bucket || t.bucket || bucketFor(s.project || t.project, s.category || t.category), amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
-      : [{ srcId: t.id, bucket: t.bucket || bucketFor(t.project, t.category), amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
+      ? t.splits.map(s => ({ srcId: t.id, bucket: s.bucket || t.bucket || '', amount: s.amount || 0, category: s.category || '', project: s.project || '', date: t.date, desc: t.desc, payee: t.payee, split: true }))
+      : [{ srcId: t.id, bucket: t.bucket || '', amount: t.amount || 0, category: t.category || '', project: t.project || '', date: t.date, desc: t.desc, payee: t.payee }];
     parts.forEach(p => {
       if (scope === 'rentals' && (!isRentalProp(getPropertyByAddr(p.project)) || !/^rental/i.test((p.category || '').trim()))) return;
       lines.push(p);

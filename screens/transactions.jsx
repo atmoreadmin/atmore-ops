@@ -88,8 +88,8 @@ function TransactionsScreen() {
     if (txFocusSet) return txFocusSet.has(t.id);
     if (acctFilter !== 'all' && String(t.acct) !== String(acctFilter)) return false;
     if (catFilter !== 'all' && t.category !== catFilter) return false;
-    // Match the bucket the P&L actually files this row under, explicit or derived.
-    const effBucket = t.bucket || bucketFor(t.project, t.category);
+    // Bucket is only ever what the user set — imports arrive Unassigned on purpose.
+    const effBucket = t.bucket || '';
     if (bucketFilter !== 'all' && (bucketFilter === 'none' ? !!effBucket : effBucket !== bucketFilter)) return false;
     if (onlyUntagged && t.category && t.project) return false;
     if (showSelectedOnly && !selected.has(t.id)) return false;
@@ -366,7 +366,7 @@ function TransactionsScreen() {
                         {isSplit ? <Tag tone="blue">{t.splits.length} splits</Tag>
                           : t.category ? <Tag tone="ghost">{t.category}</Tag>
                           : <Tag tone="ochre" title={`Suggestion: ${suggestion.category}`}>{suggestion.category ? `?  ${suggestion.category}` : '?  unknown'}</Tag>}
-                        {(() => { const b = t.bucket || bucketFor(t.project, t.category); return b && <span className="tiny dim" title={t.bucket ? 'Bucket' : 'Bucket (inferred from property and category)'} style={t.bucket ? null : {opacity: 0.65}}>{b}</span>; })()}
+                        {t.bucket && <span className="tiny dim" title="Bucket">{t.bucket}</span>}
                         </div>
                       </td>}
                       {showCol('project') && <td>

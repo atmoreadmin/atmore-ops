@@ -1033,12 +1033,9 @@ window.RENTAL_REPAIR_CATS = RENTAL_REPAIR_CATS;
 // never treated as a real property (so they don't show on the Properties tab
 // or get flagged as orphaned transactions).
 const OVERHEAD_PROJECTS = ['Office', 'Rentals (general)'];
-// P&L bucket for a transaction that has no explicit one. Only bank-imported rows are
-// affected: 'bucket' is written solely by the add/edit and split modals, so every
-// imported row (the bulk of the ledger) arrived blank and the P&L filed ALL of it
-// under "Unassigned" — leaving the Properties / Rentals / Office sections and the
-// Transactions bucket filter permanently empty. Derived from what the row already
-// says; nothing is written to the record, so a user-set bucket always wins.
+// Suggested P&L bucket from property + category. NOT applied automatically anywhere:
+// imported rows stay Unassigned until the user files them (their call — inference was
+// mis-filing rows). Kept as a helper for suggestion UI only.
 function bucketFor(project, category) {
   const p = String(project || '').toLowerCase().trim();
   const c = String(category || '').trim();

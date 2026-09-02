@@ -277,6 +277,7 @@ function BankImportScreen() {
     const toAdd = keep.map(r => ({
       date: r.date, acct: r.acct, desc: r.desc, amount: r.amount,
       payee: r.payee, category: r.category, project: r.project,
+      bucket: '', // left Unassigned by design — the user files it later
       batch: 'import-' + TODAY(),
     }));
     commitImportRows(toAdd);
