@@ -1956,6 +1956,11 @@ function collapseContentDuplicates(state) {
   collapse('employees', e => String(e.name || '').trim().toLowerCase(), (lose, win) => empRemap.set(String(lose.id), win.id));
   if (empRemap.size) (state.timeOff || []).forEach(t => { const w = empRemap.get(String(t.employeeId)); if (w) t.employeeId = w; });
   collapse('timeOff', t => t.startDate ? [t.employeeId, t.startDate, t.endDate || t.startDate, t.type || 'pto', t.halfDay ? 'h' : 'f'].join('|') : '');
+  // Byte-identical rows under different ids — what the re-mint bug manufactured for
+  // tasks and the spend log. Everything but id / updatedAt must match exactly, so a
+  // genuinely repeated check or task with any difference at all is left alone.
+  const identical = r => { try { const c = { ...r }; delete c.id; delete c.updatedAt; return JSON.stringify(c, Object.keys(c).sort()); } catch (e) { return ''; } };
+  for (const coll of ['reminders', 'spendLog', 'maintenance', 'offers']) collapse(coll, identical);
   return removed;
 }
 

@@ -1137,6 +1137,7 @@ const SPSync = {
       const loc = new Map((localTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
       const rem = new Map((remoteTabs[t] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
       const rows = [];
+      const blindFields = {}, blindSample = {};
       for (const [id, r] of rem) {
         const mineRow = loc.get(id);
         if (!mineRow) {
@@ -1167,7 +1168,7 @@ const SPSync = {
             // Only worth a human's attention when we DO have baseline knowledge for
             // this tab and this row is the exception. Otherwise stay quiet.
             if (haveBase) { this.noteConflict(t, id, k, mine, theirs, ''); conflicts++; }
-            else keptBlind++;
+            else { keptBlind++; blindFields[k] = (blindFields[k] || 0) + 1; if (!blindSample[k]) blindSample[k] = ' (e.g. ' + id + ': here ' + JSON.stringify(mine) + ' / SharePoint ' + JSON.stringify(theirs) + ')'; }
             continue;
           }
           const was = baseRow[k];
@@ -1182,7 +1183,10 @@ const SPSync = {
       for (const [id, r] of loc) if (!rem.has(id)) rows.push(r);   // created here, not pushed yet
       // Visibility without the flood: one line naming the scale, instead of a
       // review card per field that nobody can act on.
-      if (keptBlind) this.logLine('No baseline for ' + t + ' yet — kept this device’s values for ' + keptBlind + ' field(s) and will re-check next sync');
+      if (keptBlind) {
+        const top = Object.entries(blindFields).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => k + ' ×' + n.toLocaleString() + (blindSample[k] || '')).join('; ');
+        this.logLine('No baseline for ' + t + ' yet — kept this device’s values for ' + keptBlind + ' field(s) and will re-check next sync. Fields: ' + top);
+      }
       outTabs[t] = rows;
     }
     for (const t of Object.keys(localTabs)) if (!(t in outTabs)) outTabs[t] = localTabs[t];
