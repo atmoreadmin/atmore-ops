@@ -910,13 +910,28 @@ const SyncEngine = {
     for (const [tab, coll] of Object.entries(MERGED_COLLECTIONS)) {
       const m = this._rowSigs[tab] || (this._rowSigs[tab] = new Map());
       const liveIds = new Set();
+      // Two passes. A person edits a handful of rows per save; when EVERY existing row
+      // in a collection reads as changed at once, that is a repair pass, a restored
+      // local copy or a shape change — not edits. Stamping all of them (22,000 tasks
+      // got one identical timestamp) made every row disagree with SharePoint on
+      // updatedAt, so each sync re-sent the whole database and stayed throttled.
+      // Rebaseline those silently; SharePoint's own field diff still sends any real
+      // value change. Brand-new rows (a bank import) are always stamped.
+      const changed = [];
       (Store.state[coll] || []).forEach(r => {
         if (!r || r.id == null) return;
         const id = String(r.id);
         liveIds.add(id);
         const sig = this._rowSigFor(tab, r);
-        if (m.get(id) !== sig) { r.updatedAt = now; m.set(id, sig); }
+        if (m.get(id) !== sig) changed.push([id, r, sig]);
       });
+      const existingChanged = changed.filter(([id]) => m.has(id)).length;
+      const mass = existingChanged > 100 && existingChanged > m.size * 0.5;
+      if (mass) { try { console.warn('[sync] ' + tab + ': ' + existingChanged + ' of ' + m.size + ' rows changed in one save — treating as a repair, not edits; no updatedAt stamps.'); } catch (e) {} }
+      for (const [id, r, sig] of changed) {
+        if (!mass || !m.has(id)) r.updatedAt = now;
+        m.set(id, sig);
+      }
       // Split by INTENT, not by absence. This is the mint site that actually runs
       // (the Sheet engine); inferring a delete from "id is no longer in the list" turned
       // every wholesale array replacement — a repair pass, a bad load, a wipe — into

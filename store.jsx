@@ -148,6 +148,9 @@ const Store = {
       this.state = this.ensureShape(env.data);
       if (!this.state.uiState) this.state.uiState = { selectedPropertyId: null, propertyTab: 'summary' };
       console.warn('Store: restored newer local copy from IndexedDB (' + new Date(env.savedAt).toLocaleString() + ')');
+      // A different copy of the data, not edits: the change-stamper must baseline
+      // from it, not diff it against the copy it replaced.
+      try { if (window.SyncEngine) SyncEngine._rowSigs = null; } catch (e) {}
       this.save(); this.notify();
     }).catch(e => console.warn('Store: IndexedDB read failed', e));
   },
