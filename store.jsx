@@ -98,12 +98,67 @@ const Store = {
     return state;
   },
 
+  // IndexedDB is the primary local copy. localStorage is capped at ~5 MB and shared by
+  // every page on the origin (all of atmoreadmin.github.io), so a real-sized ledger
+  // overflowed it and the app declared "storage full" — while the tab's memory was
+  // the only copy. IDB holds hundreds of MB. localStorage stays as a synchronous
+  // mirror so first paint never waits on an async read.
+  _idb: null,
+  _idbOpen() {
+    if (this._idb) return this._idb;
+    this._idb = new Promise((res, rej) => {
+      try {
+        if (!window.indexedDB) return rej(new Error('no indexedDB'));
+        const req = indexedDB.open('atmore-ops', 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore('kv'); };
+        req.onsuccess = () => res(req.result);
+        req.onerror = () => rej(req.error || new Error('idb open failed'));
+        req.onblocked = () => rej(new Error('idb blocked'));
+      } catch (e) { rej(e); }
+    });
+    return this._idb;
+  },
+  async _idbGet(key) {
+    const db = await this._idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get(key);
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+    });
+  },
+  async _idbPut(key, val) {
+    const db = await this._idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(val, key);
+      tx.oncomplete = () => res(true); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error('idb aborted'));
+    });
+  },
+  async _idbDel(key) {
+    try { const db = await this._idbOpen(); await new Promise((res) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(key); tx.oncomplete = res; tx.onerror = res; }); } catch (e) {}
+  },
+  // After the synchronous load, adopt the IDB copy when it is NEWER than what
+  // localStorage had (or localStorage had nothing usable) — that is exactly the case
+  // where localStorage was full and the last real saves only landed in IDB.
+  _adoptIDB(lsSavedAt) {
+    this._idbGet(STORAGE_KEY).then(raw => {
+      if (!raw) return;
+      const env = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!env || !env.data || !Array.isArray(env.data.properties)) return;
+      if ((env.savedAt || 0) <= (lsSavedAt || 0)) return;
+      if (this._mutatedSinceLoad) { console.warn('Store: newer IndexedDB copy found but this tab already has edits — keeping the tab\u2019s state'); return; }
+      this.state = this.ensureShape(env.data);
+      if (!this.state.uiState) this.state.uiState = { selectedPropertyId: null, propertyTab: 'summary' };
+      console.warn('Store: restored newer local copy from IndexedDB (' + new Date(env.savedAt).toLocaleString() + ')');
+      this.save(); this.notify();
+    }).catch(e => console.warn('Store: IndexedDB read failed', e));
+  },
+
   load() {
     let saved = null;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) saved = JSON.parse(raw);
     } catch (e) {}
+    try { this._adoptIDB(saved && saved.savedAt); } catch (e) {}
     // Accept ANY saved state whose shape is recognizable, not just the current
     // version stamp. This used to be `saved._v === 12` exactly, so a store written
     // by any other build — an older machine opening the app for the first time in a
@@ -620,12 +675,20 @@ const Store = {
     try {
       stampRowIds(this.state);
       BC('save:stringify+setItem');
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ _v:12, data: this.state }));
+      const json = JSON.stringify({ _v:12, savedAt: Date.now(), data: this.state });
+      this._idbWrite(json);
+      localStorage.setItem(STORAGE_KEY, json);
+      this._lsFull = false;
       this._saveFailed = false;
       BC('save:postSave-hooks');
       this._runHooks(this._postSave);
       BC('save:done');
     } catch (e) {
+      // localStorage refused (quota). If the IndexedDB write is landing, the change IS
+      // saved on this computer — no alarm, just a one-time note. Only when IDB is also
+      // failing is the tab genuinely the only copy.
+      if (!this._lsFull) { this._lsFull = true; console.warn('Store: localStorage full (' + (e && e.name) + ') — relying on IndexedDB for local saves'); }
+      if (this._idbOk) { this._runHooks(this._postSave); return; }
       // A failed local save used to be a console.warn nobody sees. The app keeps
       // looking normal, so you keep working — and a reload silently loses
       // everything since the last write that DID land. Quota exhaustion is the
@@ -655,7 +718,7 @@ const Store = {
           if (window.SyncEngine) SyncEngine._set('local-broken', 'This computer can\u2019t save locally — its browser storage is full. Recent changes live only in this tab: keep it open until they reach SharePoint.');
         } catch (e2) {}
         try {
-          alert('Atmore Operations can\u2019t save to this computer\u2019s storage — it is full.\n\nYour recent changes are still in this tab and will go up to SharePoint, but do NOT close this tab until the status bar says everything is saved.');
+          alert('Atmore Operations can\u2019t save to this computer (' + ((e && e.name) || 'storage error') + ').\n\nYour recent changes are still in this tab and will go up to SharePoint, but do NOT close this tab until the status bar says everything is saved.');
         } catch (e2) {}
       }
       // Even when the local write failed, the change must still be scheduled for
@@ -663,6 +726,16 @@ const Store = {
       // state is now the only copy. Guarded so a recovered save doesn't run twice.
       if (!recovered) this._runHooks(this._postSave);
     }
+  },
+
+  _idbOk: false,
+  _idbWrite(json) {
+    this._idbPut(STORAGE_KEY, json).then(() => {
+      this._idbOk = true;
+      // localStorage was full but IDB took it: clear the scary state if it was raised
+      // before IDB proved itself.
+      if (this._saveFailed) { this._saveFailed = false; try { if (window.SyncEngine) SyncEngine._set('idle', 'Saved on this computer'); } catch (e) {} }
+    }).catch(e => { this._idbOk = false; console.warn('Store: IndexedDB write failed', e); });
   },
 
   notify() {
@@ -691,6 +764,7 @@ const Store = {
 
   update(mutator) {
     BC('update:mutator');
+    this._mutatedSinceLoad = true;
     mutator(this.state);
     BC('update:save');
     this.save();
@@ -701,6 +775,7 @@ const Store = {
 
   reset() {
     localStorage.removeItem(STORAGE_KEY);
+    this._idbDel(STORAGE_KEY);
     this.load();
     this.notify();
   },
