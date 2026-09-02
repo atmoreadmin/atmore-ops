@@ -603,6 +603,25 @@ const SHEET_SCHEMA = {
       { key: 'status',     label: 'Status',      type: 'enum', notes: 'on / transferred / off' },
     ],
   },
+  HOAs: {
+    description: 'HOA / POA accounts per property — dues, portal login, last verified. FK → Properties.id. Every HOA on a property gets its own row (the hoa1/hoa2 columns on Properties are a legacy export convenience and only carry the first two).',
+    pk: 'id',
+    rowSource: (s) => (s.hoas || []).map(h => ({
+      id: h.id, propertyId: h.propertyId || '', name: h.name || '', website: h.website || '',
+      username: h.username || '', password: h.password || '', monthly: h.monthly ?? null,
+      lastVerified: h.lastVerified || '',
+    })),
+    columns: [
+      { key: 'id',           label: 'ID',           type: 'string', required: true },
+      { key: 'propertyId',   label: 'Property ID',  type: 'fk', required: true, notes: 'References Properties.id' },
+      { key: 'name',         label: 'HOA Name',     type: 'string' },
+      { key: 'website',      label: 'Portal URL',   type: 'url' },
+      { key: 'username',     label: 'Username',     type: 'string' },
+      { key: 'password',     label: 'Password',     type: 'string' },
+      { key: 'monthly',      label: 'Monthly Dues', type: 'money' },
+      { key: 'lastVerified', label: 'Last Verified',type: 'date' },
+    ],
+  },
   CompletedEvents: {
     description: 'Calendar events marked done. One row per completed event key (derived rent/lease/tax/insurance events; tasks track their own done flag).',
     pk: 'key',

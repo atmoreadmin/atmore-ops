@@ -669,6 +669,26 @@ const Store = {
     this.subs.forEach(fn => fn());
   },
 
+  // Refusals the user can see. A mutator that declines to write — missing required
+  // field, duplicate name, no such record — used to just `return`: the dialog closed,
+  // nothing was saved, and nothing said so. That is the whole "it doesn't save and
+  // never gives an error" class of bug. warn() surfaces it and returns false so
+  // callers can `return Store.warn(...)` in one line.
+  warnings: [],
+  warn(msg) {
+    if (!msg) return false;
+    const w = { id: 'w' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), msg: String(msg) };
+    this.warnings = [...this.warnings, w].slice(-4);
+    // Deferred: warn() is often called from inside update(), and notifying
+    // mid-mutation re-renders against half-applied state.
+    setTimeout(() => this.notify(), 0);
+    return false;
+  },
+  clearWarning(id) {
+    this.warnings = this.warnings.filter(w => w.id !== id);
+    this.notify();
+  },
+
   update(mutator) {
     BC('update:mutator');
     mutator(this.state);
@@ -1639,10 +1659,13 @@ const UTILITY_TYPES = [
 const UTILITY_STATUS = { '': 'Not set up', on: 'On — our name', transferred: 'Transferred', off: 'Off' };
 const UTILITY_STATUS_TONE = { '': 'ghost', on: 'sage', transferred: 'blue', off: 'brick' };
 
-// True once any utility has a provider, account, or non-default status.
+// True once any utility has a provider, account, non-default status, or a note.
+// The note counts: it is the only field on a note-only setup, and callers use this
+// to decide whether the whole utilities object is worth keeping.
 function utilitiesSetUp(p) {
   const u = p && p.utilities;
   if (!u) return false;
+  if (u.note) return true;
   return UTILITY_TYPES.some(t => {
     const r = u[t.key];
     return r && (r.provider || r.account || (r.status && r.status !== ''));
@@ -1872,7 +1895,16 @@ function remintPoisonIds(state) {
 }
 
 function dedupeIds(state, opts) {
-  const leaf = [['contractors','c',100],['refis','rf',100],['leads','ld',100]];
+  // Duplicate ids in these collections were the source of the calendar's phantom
+  // duplicates: two records sharing an id produce two events with the SAME key, so
+  // React renders both and completing one completes the other. Only contractors,
+  // refis and leads were ever checked — reminders, maintenance, time off, employees
+  // and offers, all of which feed the calendar, were not.
+  const leaf = [
+    ['contractors','c',100], ['refis','rf',100], ['leads','ld',100],
+    ['reminders','rm',101], ['maintenance','mt',101], ['timeOff','to',101],
+    ['employees','em',1], ['offers','of',101],
+  ];
   const parent = [['properties','p',1000],['tenants','tn',100],['hoas','h',100],['exchanges','ex',100]];
   const specs = (opts && opts.deep) ? leaf.concat(parent) : leaf;
   const changes = [];
@@ -2131,10 +2163,14 @@ function addMonthsISO(iso, n) {
 
 // ─── Property mutations ───
 function updateProperty(propId, patch) {
+  let found = false;
   Store.update(s => {
     const p = s.properties.find(x => x.id === propId);
-    if (p) Object.assign(p, patch);
+    if (p) { Object.assign(p, patch); found = true; }
   });
+  // Editing a property that is no longer in this device's copy (deleted on another
+  // machine, or an id that changed under a sync) wrote nothing and said nothing.
+  if (!found) Store.warn('That property is no longer in this copy of the data — your changes were not saved. Sync, reopen it, and re-enter them.');
 }
 
 // Permanently remove a property and cascade-clean its dependents. Transactions
@@ -2232,12 +2268,15 @@ function addMaintenance(rec) {
     const id = nextId(s.maintenance, 'mt', 101);
     s.maintenance.push({ id, status: 'open', ...rec });
   });
+  if (!rec || !rec.date) Store.warn('Work log saved without a date — it will not appear on the Calendar until you set one.');
 }
 function updateMaintenance(id, patch) {
+  let found = false;
   Store.update(s => {
     const m = (s.maintenance || []).find(x => x.id === id);
-    if (m) Object.assign(m, patch);
+    if (m) { Object.assign(m, patch); found = true; }
   });
+  if (!found) Store.warn('That work log no longer exists here — your change was not saved. Sync and try again.');
 }
 function deleteMaintenance(id) {
   Store.update(s => { markDeleted(s, 'maintenance', id); s.maintenance = (s.maintenance || []).filter(m => m.id !== id); });
@@ -2253,12 +2292,17 @@ function addReminder(rec) {
     const id = nextId(s.reminders, 'rm', 101);
     s.reminders.push({ id, recurrence: 'none', done: false, lastDone: null, priority: 'normal', checklist: [], ...rec });
   });
+  // A task with no due date is legal but invisible — the calendar has nowhere to put
+  // it, which for years looked exactly like a task that failed to save.
+  if (!rec || !rec.dueDate) Store.warn('Task saved without a due date — it will not appear on the Calendar until you set one.');
 }
 function updateReminder(id, patch) {
+  let found = false;
   Store.update(s => {
     const r = (s.reminders || []).find(x => x.id === id);
-    if (r) Object.assign(r, patch);
+    if (r) { Object.assign(r, patch); found = true; }
   });
+  if (!found) Store.warn('That task no longer exists here — your change was not saved. Sync and try again.');
 }
 function deleteReminder(id) {
   Store.update(s => { markDeleted(s, 'reminders', id); s.reminders = (s.reminders || []).filter(r => r.id !== id); });
@@ -2266,9 +2310,11 @@ function deleteReminder(id) {
 // Mark a reminder complete. One-off → done. Recurring → log lastDone and roll the
 // due date forward by its cadence (skipping past any missed cycles so it lands in the future).
 function completeReminder(id) {
+  let found = false;
   Store.update(s => {
     const r = (s.reminders || []).find(x => x.id === id);
     if (!r) return;
+    found = true;
     const today = TODAY();
     r.lastDone = today;
     const months = RECURRENCE_MONTHS[r.recurrence] || 0;
@@ -2279,14 +2325,17 @@ function completeReminder(id) {
     r.dueDate = next;
     r.done = false;
   });
+  if (!found) Store.warn('That task no longer exists here — nothing was marked complete.');
 }
 // All open reminders due within `withinDays` (includes overdue back to -daysPast).
+// A task with no property is a real task ("General"); requiring one here silently
+// hid every general task from the dashboard.
 function getUpcomingReminders(withinDays = 14, daysPast = 30) {
   const today = TODAY();
   return (Store.state.reminders || [])
     .filter(r => !r.done && r.dueDate)
-    .map(r => ({ reminder: r, property: getProperty(r.propertyId), days: daysBetween(today, r.dueDate) }))
-    .filter(x => x.property && x.days != null && x.days <= withinDays && x.days >= -daysPast)
+    .map(r => ({ reminder: r, property: getProperty(r.propertyId) || null, days: daysBetween(today, r.dueDate) }))
+    .filter(x => x.days != null && x.days <= withinDays && x.days >= -daysPast)
     .sort((a, b) => a.reminder.dueDate.localeCompare(b.reminder.dueDate));
 }
 
@@ -3501,24 +3550,33 @@ function buildCalendarEvents(fromIso, toIso) {
 
   // Time off — one chip per day of each approved absence
   (s.timeOff || []).forEach(t => {
+    if (!t.startDate) return;
     const emp = (s.employees || []).find(e => e.id === t.employeeId);
-    if (!emp || !t.startDate) return;
-    const end = t.endDate || t.startDate;
-    for (let d = t.startDate, guard = 0; d <= end && guard < 90; d = addDaysISO(d, 1), guard++) {
+    // An absence whose employee record is gone (removed, or not yet pulled on this
+    // device) used to vanish from the calendar entirely. Show it — an unexplained
+    // gap in the schedule is worse than a row labelled "Unassigned".
+    const who = emp ? emp.name : 'Unassigned';
+    // An inverted range (end before start) ended the loop immediately and produced
+    // no chips at all: saved, no error, invisible. Read it in the order that works.
+    const a = t.endDate && t.endDate < t.startDate ? t.endDate : t.startDate;
+    const b = t.endDate && t.endDate < t.startDate ? t.startDate : (t.endDate || t.startDate);
+    for (let d = a, guard = 0; d <= b && guard < 400; d = addDaysISO(d, 1), guard++) {
       push({ key: 'timeoff:' + t.id + ':' + d, cat: 'timeoff', date: d, timeOffId: t.id,
-        title: emp.name + ' — ' + (TIME_OFF_LABEL[t.type] || 'Time off') + (t.halfDay ? ' (half day)' : ''),
+        title: who + ' — ' + (TIME_OFF_LABEL[t.type] || 'Time off') + (t.halfDay ? ' (half day)' : ''),
         sub: t.note || '', done: false });
     }
   });
 
-  // Tasks (reminders) — open only; recurring tasks show their next occurrence
+  // Tasks (reminders). Completed one-offs stay on their due date as a done chip:
+  // dropping them made a task the user had just ticked disappear from the month
+  // entirely, which read as "it didn't save" and left no way to undo the tick.
   (s.reminders || []).forEach(r => {
-    if (r.done || !r.dueDate) return;
+    if (!r.dueDate) return;
     const prop = getProperty(r.propertyId);
     push({
       key: 'task:' + r.id, cat: 'task', date: r.dueDate, taskId: r.id,
       title: r.title, sub: prop ? prop.address : 'General', propertyId: r.propertyId,
-      priority: r.priority || 'normal', recurrence: r.recurrence || 'none', done: false,
+      priority: r.priority || 'normal', recurrence: r.recurrence || 'none', done: !!r.done,
     });
   });
 
@@ -3595,13 +3653,16 @@ function buildCalendarEvents(fromIso, toIso) {
       sub: prop ? prop.address : '', propertyId: r.propertyId, done: isEventDone(k) });
   });
 
-  // 1031 exchange deadlines (45-day ID + 180-day close)
+  // 1031 exchange deadlines (45-day ID + 180-day close). The date is part of the
+  // key: keyed on the exchange alone, editing the relinquished sale date carried the
+  // old "done" tick onto the new deadline, so a live deadline showed up pre-completed.
   (s.exchanges || []).forEach(e => {
     if (e.status !== 'active' || !e.relinquishedSoldDate) return;
-    const k45 = 'x45:' + e.id, k180 = 'x180:' + e.id;
-    push({ key: k45, cat: 'exch', date: addDaysISO(e.relinquishedSoldDate, 45),
+    const d45 = addDaysISO(e.relinquishedSoldDate, 45), d180 = addDaysISO(e.relinquishedSoldDate, 180);
+    const k45 = 'x45:' + e.id + ':' + d45, k180 = 'x180:' + e.id + ':' + d180;
+    push({ key: k45, cat: 'exch', date: d45,
       title: '45-day 1031 ID deadline', sub: e.relinquishedAddress || '', done: isEventDone(k45) });
-    push({ key: k180, cat: 'exch', date: addDaysISO(e.relinquishedSoldDate, 180),
+    push({ key: k180, cat: 'exch', date: d180,
       title: '180-day 1031 close', sub: e.relinquishedAddress || '', done: isEventDone(k180) });
   });
 
@@ -3624,7 +3685,13 @@ function buildCalendarEvents(fromIso, toIso) {
 
   out.forEach(e => { e.days = daysBetween(today, e.date); });
   out.sort((a, b) => a.date.localeCompare(b.date) || CAL_CAT_ORDER.indexOf(a.cat) - CAL_CAT_ORDER.indexOf(b.cat));
-  return out;
+  // Last line of defence against visible duplicates. Keys are unique per source
+  // record, so a repeat means two records share an id (mid-sync, or data that
+  // predates the id repair). dedupeIds fixes the cause on load; collapsing here
+  // means the user never sees the same chip twice in the meantime, and React never
+  // gets two children with one key.
+  const seenKeys = new Set();
+  return out.filter(e => { if (seenKeys.has(e.key)) return false; seenKeys.add(e.key); return true; });
 }
 
 // Upcoming events for the dashboard peek: a window around today, open items only.
@@ -3635,10 +3702,15 @@ function getUpcomingCalendarEvents(withinDays = 21, daysPast = 14) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-// Complete an event regardless of kind (task vs. derived milestone).
+// Complete an event regardless of kind (task vs. derived milestone). Every kind
+// toggles: a task ticked by mistake can be un-ticked, which the task branch used to
+// make impossible (completeReminder only ever moved forward).
 function completeCalendarEvent(e) {
   if (!e) return;
-  if (e.taskId) completeReminder(e.taskId);
+  if (e.taskId) {
+    if (e.done) updateReminder(e.taskId, { done: false });
+    else completeReminder(e.taskId);
+  }
   else if (e.maintId) updateMaintenance(e.maintId, { status: e.done ? 'open' : 'done' });
   else toggleEventDone(e.key);
 }

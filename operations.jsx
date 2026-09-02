@@ -154,10 +154,11 @@ function weeklySpendSummary(anyDateInWeek) {
 // ─── Employees & time off ───
 function addEmployee(name) {
   const n = (name || '').trim();
-  if (!n) return;
+  if (!n) return Store.warn('Enter a name before adding someone.');
+  let ok = true;
   Store.update(s => {
     s.employees = s.employees || [];
-    if (s.employees.some(e => String(e.name || '').toLowerCase() === n.toLowerCase())) return;
+    if (s.employees.some(e => String(e.name || '').toLowerCase() === n.toLowerCase())) { ok = false; return; }
     const id = nextId(s.employees, 'em', 1);
     // Ids get reused, and a stale delete for this id may still be circulating.
     // Stamping the re-creation lets it outrank that older delete (see
@@ -165,14 +166,17 @@ function addEmployee(name) {
     s.employees.push({ id, name: n, updatedAt: new Date().toISOString() });
     s.tombstones = (s.tombstones || []).filter(t => !(t.coll === 'employees' && String(t.id) === String(id)));
   });
+  if (!ok) return Store.warn(n + ' is already on the list — nothing was added.');
 }
 function renameEmployee(id, name) {
   const n = (name || '').trim();
-  if (!n) return;
+  if (!n) return Store.warn('A name cannot be blank.');
+  let found = false;
   Store.update(s => {
     const e = (s.employees || []).find(x => x.id === id);
-    if (e) { e.name = n; e.updatedAt = new Date().toISOString(); }
+    if (e) { e.name = n; e.updatedAt = new Date().toISOString(); found = true; }
   });
+  if (!found) return Store.warn('That person is no longer on the list — the rename was not saved.');
 }
 // Removing someone takes their time-off records with them.
 function removeEmployee(id) {
@@ -184,14 +188,20 @@ function removeEmployee(id) {
   });
 }
 function addTimeOff(rec) {
+  if (!rec || !rec.startDate) return Store.warn('Pick a start date — time off with no date cannot be saved or shown on the Calendar.');
+  if (!rec.employeeId) return Store.warn('Pick who this time off is for.');
+  // An end date before the start produced a record that rendered zero days: saved,
+  // no error, invisible on the calendar. Store it the right way round.
+  const start = (rec.endDate && rec.endDate < rec.startDate) ? rec.endDate : rec.startDate;
+  const end = (rec.endDate && rec.endDate < rec.startDate) ? rec.startDate : (rec.endDate || rec.startDate);
   Store.update(s => {
     s.timeOff = s.timeOff || [];
     s.timeOff.push({
       id: nextId(s.timeOff, 'to', 101),
       employeeId: rec.employeeId,
       type: TIME_OFF_TYPES.includes(rec.type) ? rec.type : 'pto',
-      startDate: rec.startDate,
-      endDate: rec.endDate || rec.startDate,
+      startDate: start,
+      endDate: end,
       halfDay: !!rec.halfDay,
       note: rec.note || '',
       updatedAt: new Date().toISOString(),
@@ -199,10 +209,12 @@ function addTimeOff(rec) {
   });
 }
 function updateTimeOff(id, patch) {
+  let found = false;
   Store.update(s => {
     const t = (s.timeOff || []).find(x => x.id === id);
-    if (t) Object.assign(t, patch, { updatedAt: new Date().toISOString() });
+    if (t) { Object.assign(t, patch, { updatedAt: new Date().toISOString() }); found = true; }
   });
+  if (!found) return Store.warn('That time-off record no longer exists here — your change was not saved.');
 }
 function deleteTimeOff(id) {
   Store.update(s => { markDeleted(s, 'timeOff', id); s.timeOff = (s.timeOff || []).filter(t => t.id !== id); });

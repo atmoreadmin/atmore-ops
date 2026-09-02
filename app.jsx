@@ -207,6 +207,26 @@ function SyncGate() {
 // this page load.
 const TWEAKS_READY = typeof useTweaks === 'function' && typeof TweaksPanel === 'function';
 
+// Refusals from the data layer, on screen. Before this, a mutation that declined to
+// write (blank name, missing date, record deleted elsewhere) closed the dialog and
+// said nothing — the single biggest source of "it doesn't save and gives no error".
+function SaveWarnings() {
+  useStore();
+  const list = Store.warnings || [];
+  if (!list.length) return null;
+  return (
+    <div className="savewarn">
+      {list.map(w => (
+        <div key={w.id} className="savewarn__item">
+          <span className="savewarn__mark">!</span>
+          <span className="grow">{w.msg}</span>
+          <button className="savewarn__x" onClick={() => Store.clearWarning(w.id)} aria-label="Dismiss">×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const store = useStore();
   const route = useRoute();
@@ -301,6 +321,7 @@ function App() {
     <div className="app">
       <SyncGate />
       <OfflineBar />
+      <SaveWarnings />
       <header className="topbar">
         <div className="topbar__row">
           <AtmoreLogo />

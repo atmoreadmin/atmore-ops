@@ -459,13 +459,23 @@ function deserializeFromSheet(pulledData, opts) {
     // Taxes
     const tax = { annualAmount: num(p.taxAnnual), dueDate: p.taxDueDate || '', escrowed: truthy(p.taxEscrowed), taxId: p.taxParcel || '' };
     out.taxes = (tax.annualAmount != null || tax.taxId || tax.dueDate) ? tax : null;
-    // Utilities — synced tab authoritative for provider/account/status; else keep
-    // local structure. The per-property note still rides on the Properties column.
-    if (utilByP) {
+    // Utilities — the synced tab is authoritative ONLY for properties it actually
+    // has rows for. A property with no rows means "not pushed yet" far more often
+    // than "cleared everywhere", and treating the empty group as authoritative wiped
+    // freshly-saved utilities on the next pull (saved, blank again, forever).
+    // Keep local in that case; the note rides on the Properties column either way.
+    const utilRows = utilByP ? (utilByP[p.id] || []) : null;
+    const typedUtil = utilRows ? utilRows.filter(r => r.type) : null;
+    if (typedUtil && typedUtil.length) {
       const u = {};
-      (utilByP[p.id] || []).forEach(r => { if (r.type) u[r.type] = { provider: r.provider || '', account: r.account || '', status: r.status || '' }; });
-      out.utilities = Object.keys(u).length ? u : null;
+      typedUtil.forEach(r => { u[r.type] = { provider: r.provider || '', account: r.account || '', status: r.status || '' }; });
+      if ((local.utilities || {}).note) u.note = local.utilities.note;
+      out.utilities = u;
     } else {
+      // Rows present but none carry a type = the Type column is missing or refused
+      // server-side. Those rows identify nothing, so local stays authoritative
+      // rather than being replaced by an empty object (which read as "no utilities").
+      if (utilRows && utilRows.length) window.__utilTypeless = (window.__utilTypeless || 0) + utilRows.length;
       out.utilities = local.utilities || null;
     }
     if (p.utilityNote) { out.utilities = { ...(out.utilities || {}), note: p.utilityNote }; }
@@ -538,8 +548,32 @@ function deserializeFromSheet(pulledData, opts) {
   // A pull can re-introduce standalone copies of split slices — drop them here too.
   if (typeof dedupeSplitMaterializations === 'function') dedupeSplitMaterializations(state);
 
-  // HOAs were rebuilt from the flat hoa1/hoa2 columns during the Properties pass.
-  state.hoas = tabPresent('Properties') ? rebuiltHoas : (Store.state.hoas || []);
+  // HOAs. The dedicated tab is authoritative when present — it carries EVERY HOA on a
+  // property with its own stable id and lastVerified date. The flat hoa1/hoa2 columns
+  // rebuilt during the Properties pass are the legacy fallback only: they hold at most
+  // two per property, so a third HOA used to be deleted on every pull, and they carry no
+  // id or lastVerified, so both were re-minted/blanked every time. Recover those two
+  // fields from this device's copy when falling back.
+  if (childTab('HOAs')) {
+    state.hoas = tabs.HOAs.filter(h => h && h.id != null).map(h => ({
+      id: String(h.id), propertyId: h.propertyId || '', name: h.name || '', website: h.website || '',
+      username: h.username || '', password: h.password || '', monthly: num(h.monthly),
+      lastVerified: h.lastVerified || '',
+    }));
+  } else if (tabPresent('Properties')) {
+    const localHoa = new Map();
+    (Store.state.hoas || []).forEach(h => { localHoa.set(String(h.propertyId) + '|' + String(h.name || '').toLowerCase(), h); });
+    state.hoas = rebuiltHoas.map(h => {
+      const prev = localHoa.get(String(h.propertyId) + '|' + String(h.name || '').toLowerCase());
+      return prev ? { ...h, id: prev.id, lastVerified: prev.lastVerified || '' } : h;
+    });
+    // Rows beyond the two the flat columns can carry are invisible to this path —
+    // keep them rather than dropping them on the floor.
+    const seen = new Set(state.hoas.map(h => String(h.propertyId) + '|' + String(h.name || '').toLowerCase()));
+    (Store.state.hoas || []).forEach(h => { const k = String(h.propertyId) + '|' + String(h.name || '').toLowerCase(); if (!seen.has(k)) state.hoas.push(h); });
+  } else {
+    state.hoas = Store.state.hoas || [];
+  }
 
   // Contractors — 1099 history no longer synced; keep local. YTD recomputed from transactions.
   const localContractors = {};

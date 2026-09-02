@@ -17,7 +17,10 @@ const SP_SCOPES = ['Sites.Manage.All', 'Sites.ReadWrite.All', 'User.Read'];
 // 5 = added SpendLog, Employees, TimeOff.
 // 6 = those three were created without their RecID column; re-provision + repair.
 // 7 = AppLocks list (multi-user record locking, presence.jsx).
-const SP_SCHEMA_VER = 7;
+// 8 = HOAs list. HOAs previously rode along as hoa1*/hoa2* columns on Properties, so a
+//     third HOA never reached SharePoint and was deleted from every device on the next
+//     pull, and lastVerified was blanked on every pull.
+const SP_SCHEMA_VER = 8;
 // Coordination list — not app data, so it lives outside SHEET_SCHEMA and is
 // never serialized, pulled into state, or counted in sync totals.
 const SP_LOCK_LIST = { name: 'AppLocks', columns: ['RecID', 'Holder', 'Session', 'Label', 'AcquiredAt', 'HeartbeatAt'] };
@@ -361,6 +364,9 @@ const SP = {
   },
 
   _titleFor(row) {
+    // Child rows have no id/name of their own; a composite reads far better than the
+    // · placeholder when you are looking at the list in SharePoint.
+    if (row.propertyId && row.type) return String(row.propertyId + ' — ' + row.type).slice(0, 250);
     return String(row.address || row.desc || row.title || row.name || row.label || row.org || row.buyer || row.month || row.pattern || row.key || row.id || '·').slice(0, 250);
   },
   _typeMap(tabName) {
@@ -516,7 +522,7 @@ SP.loadConfig();
 // pull all lists on open and rebuild state through deserializeFromSheet (the
 // items round-trip the exact sheet-tab row shape).
 const SP_CONFIG_TABS = ['Lists', 'Statuses', 'AutoTagRules', 'CompletedEvents'];
-const SP_CHILD_TABS = { StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
+const SP_CHILD_TABS = { HOAs: ['Properties', 'propertyId'], StageHistory: ['Properties', 'propertyId'], FeeItems: ['Properties', 'propertyId'], Utilities: ['Properties', 'propertyId'], TransactionSplits: ['Transactions', 'txId'], TenantRentHistory: ['Tenants', 'tenantId'], ContractorTen99: ['Contractors', 'contractorId'], ExchangeDraws: ['Exchanges', 'exchangeId'] };
 const SP_PARENT_TABS = ['Properties', 'Transactions', 'Tenants', 'RentLedger', 'Contractors', 'Refis', 'Exchanges', 'Leads', 'Offers', 'Tasks', 'Maintenance', 'WebAccounts', 'SpendLog', 'Employees', 'TimeOff'];
 window.SP_PARENT_TABS_PUBLIC = SP_PARENT_TABS;   // sync-health.jsx compares these lists
 // Published for sync-health.jsx: it needs tab→collection to tell a record this
@@ -531,6 +537,7 @@ const SP_DETAIL_MERGE = {
   TransactionSplits: { key: r => r.rowId ? String(r.rowId) : '', fields: ['txId', 'project', 'category', 'amount', 'bucket'], ordBy: r => String(r.txId || '') },
   TenantRentHistory: { key: r => r.rowId ? String(r.rowId) : '', fields: ['tenantId', 'effectiveDate', 'amount', 'note'], ordBy: r => String(r.tenantId || '') },
   Utilities:         { key: r => (r.propertyId && r.type) ? r.propertyId + '|' + r.type : '', fields: ['provider', 'account', 'status'] },
+  HOAs:              { key: r => r.id ? String(r.id) : '', fields: ['propertyId', 'name', 'website', 'username', 'password', 'monthly', 'lastVerified'] },
   ContractorTen99:   { key: r => (r.contractorId && r.taxYear != null) ? r.contractorId + '|' + r.taxYear : '', fields: ['status', 'issuedDate', 'amountReported'] },
 };
 
@@ -719,6 +726,13 @@ const SPSync = {
   // Apply a pulled snapshot: rebuild app state, rebaseline, surface status.
   _finishPull(tabs, bigLists, doneMsg) {
     const newState = deserializeFromSheet({ tabs });
+    // Utility rows that came back with no Type: they cannot be matched to a utility,
+    // so the merge kept this device's copy. Say so — silence here looked like
+    // "utilities keep going blank" for weeks.
+    if (window.__utilTypeless) {
+      this.logLine('\u26a0 ' + window.__utilTypeless + ' Utilities row(s) came back with no Type — kept this computer\'s utilities. Run Create columns & backfill to add the Type column.');
+      window.__utilTypeless = 0;
+    }
     this._lastPullAt = Date.now();
     this._ready = true;
     // Rows this device deleted that the server still has. Drop them from the
