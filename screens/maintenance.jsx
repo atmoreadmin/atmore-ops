@@ -187,7 +187,7 @@ function RemindersPanel({ p }) {
 }
 
 let _taskChkSeq = 0;
-function newChkId() { return 'ck' + Date.now().toString(36) + (_taskChkSeq++) + DEVICE_TAG; }
+function newChkId() { return 'ck' + Date.now().toString(36) + (_taskChkSeq++) + deviceTag(); }
 
 function ReminderForm({ reminder, propertyId, defaultDate, onClose }) {
   const editing = !!reminder;

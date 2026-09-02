@@ -191,9 +191,10 @@ const Store = {
       // (a pull merge landed twice), so collapse those first. Running dedupeIds first
       // re-minted the second copy under a fresh id — a brand-new duplicate that was then
       // pushed, pulled by the other device, and multiplied on every load.
-      if (collapseDuplicateRecords(this.state)) this.save();
-      if (collapseContentDuplicates(this.state)) this.save();
-      if (dedupeIds(this.state)) this.save();
+      // Each guarded: a repair that throws must not stop the app from opening.
+      try { if (collapseDuplicateRecords(this.state)) this.save(); } catch (e) { console.error('collapseDuplicateRecords', e); }
+      try { if (collapseContentDuplicates(this.state)) this.save(); } catch (e) { console.error('collapseContentDuplicates', e); }
+      try { if (dedupeIds(this.state)) this.save(); } catch (e) { console.error('dedupeIds', e); }
       if (collapseDuplicateCategories(this.state)) this.save();
       if (clearContradictedTombstones(this.state)) this.save();
       // Versioned: the marker alone was set by an earlier load, so the one-time audit
@@ -1418,7 +1419,7 @@ function getAutoTagRules() {
   return Store.state.autoTagRules || [];
 }
 function compileAutoTagRule(r) { try { return new RegExp(r.pattern, 'i'); } catch (e) { return null; } }
-function newAutoTagId() { return 'atr' + Date.now().toString(36) + Math.floor(Math.random() * 1e3) + DEVICE_TAG; }
+function newAutoTagId() { return 'atr' + Date.now().toString(36) + Math.floor(Math.random() * 1e3) + deviceTag(); }
 function addAutoTagRule(rule) {
   const id = newAutoTagId();
   Store.update(s => { ensureAutoTagRules(s); s.autoTagRules.push({ id, conf: 80, project: '', ...rule }); });
@@ -1844,16 +1845,21 @@ function tagTransaction(txId, fields) {
 // same time both compute rm151, and the sync then merges two unrelated records
 // into one (each seeing a blend of the other's fields). A short per-device tag
 // makes concurrently-minted ids distinct — rm151k3 vs rm151b7.
-const DEVICE_TAG = (() => {
-  try {
-    let t = localStorage.getItem('device_tag');
-    if (!t || !/^[a-z0-9]{2}$/.test(t)) {
-      t = Math.random().toString(36).slice(2, 4).replace(/[^a-z0-9]/g, 'q');
-      localStorage.setItem('device_tag', t);
-    }
-    return t;
-  } catch (e) { return 'zz'; }
-})();
+// A function, not a const: nextId runs from Store.load() at module top level, before
+// any const declared this far down is initialized — referencing one there throws
+// (ReferenceError: before initialization) and the app never mounts.
+var _deviceTagCache = null;
+function deviceTag() {
+  if (_deviceTagCache) return _deviceTagCache;
+  let t = null;
+  try { t = localStorage.getItem('device_tag'); } catch (e) {}
+  if (!t || !/^[a-z0-9]{2}$/.test(t)) {
+    t = Math.random().toString(36).slice(2, 4).replace(/[^a-z0-9]/g, 'q');
+    try { localStorage.setItem('device_tag', t); } catch (e) {}
+  }
+  _deviceTagCache = t || 'zz';
+  return _deviceTagCache;
+}
 function nextId(list, prefix, start) {
   const rows = Array.isArray(list) ? list : [];
   const used = new Set(rows.map(r => String(r && r.id || '')));
@@ -1865,20 +1871,21 @@ function nextId(list, prefix, start) {
     const m = String(r && r.id || '').match(rx);
     // A malformed id (absurdly long digit run) parses to Infinity/NaN, and a
     // non-finite high-water mark poisons every id minted afterwards.
-    if (m) { const v = parseInt(m[1], 10); if (Number.isFinite(v)) n = Math.max(n, v + 1); }
+    // Poison ids (13+ digits) are excluded so the counter stays in the normal range.
+    if (m && m[1].length <= 12) { const v = parseInt(m[1], 10); if (Number.isFinite(v)) n = Math.max(n, v + 1); }
   }
   if (!Number.isFinite(n)) n = start;
   // Hard bound. This search must never be able to block the tab: a spin here
   // freezes the whole app with no error, which is unreportable and unfixable
   // from the outside.
   let guard = 0;
-  while ((used.has(prefix + n) || used.has(prefix + n + DEVICE_TAG)) && guard < 200000) { n++; guard++; }
+  while ((used.has(prefix + n) || used.has(prefix + n + deviceTag())) && guard < 200000) { n++; guard++; }
   if (guard >= 200000) {
     try { BC('nextId:GUARD-TRIPPED prefix=' + prefix + ' rows=' + rows.length + ' n=' + n); } catch (e) {}
-    return prefix + Date.now() + DEVICE_TAG;
+    return prefix + Date.now() + deviceTag();
   }
   try { if (guard > 500) BC('nextId:slow prefix=' + prefix + ' scanned=' + guard); } catch (e) {}
-  return prefix + n + DEVICE_TAG;
+  return prefix + n + deviceTag();
 }
 // Repairs rows that already collided. Only the LATER holder of an id is re-minted,
 // so every existing propertyId/tenantId reference keeps pointing at the first row —
@@ -1912,7 +1919,7 @@ function stampRowIds(state) {
 // The list is inline for the same reason dedupeIds inlines its specs: Store.load()
 // runs at top level, before any module-scope const below it is initialized.
 function collapseDuplicateRecords(state) {
-  const colls = ['spendLog', 'employees', 'timeOff'];
+  const colls = ['spendLog', 'employees', 'timeOff', 'reminders', 'maintenance', 'offers'];
   let removed = 0;
   for (const coll of colls) {
     const rows = state[coll];
@@ -1950,7 +1957,8 @@ function collapseContentDuplicates(state) {
       if (!prev) { keep.set(k, r); continue; }
       const win = older(prev, r), lose = win === prev ? r : prev;
       keep.set(k, win); removed++;
-      try { markDeleted(state, coll, lose.id); } catch (e) {}
+      // Same id on both copies = one record delivered twice; no delete to record.
+      if (String(lose.id) !== String(win.id)) { try { markDeleted(state, coll, lose.id); } catch (e) {} }
       if (onDrop) onDrop(lose, win);
     }
     if (keep.size !== rows.length) state[coll] = [...keep.values()];
@@ -1999,21 +2007,37 @@ function remintPoisonIds(state) {
   // Inline, not a module-scope const: Store.load() runs at top level, before any
   // const declared below it is initialized (same trap dedupeIds documents).
   const POISON_PARENTS = new Set(['properties', 'tenants', 'hoas', 'exchanges']);
+  // Only real record collections — never meta arrays (_intentDeletes, tombstones,
+  // _idRepairs…), whose entries carry an "id" that names ANOTHER record; re-minting
+  // those lost the delete for the poisoned server copy and recorded a bogus one.
+  const RECORD_COLLS = ['transactions', 'rentLedger', 'contractors', 'refis', 'leads', 'offers', 'reminders',
+    'maintenance', 'webAccounts', 'spendLog', 'employees', 'timeOff'];
   const changes = [];
-  Object.keys(state || {}).forEach(coll => {
+  const pendingDeletes = [];
+  RECORD_COLLS.forEach(coll => {
     const rows = state[coll];
     if (!Array.isArray(rows) || POISON_PARENTS.has(coll)) return;
-    rows.forEach(r => {
-      if (!r || typeof r !== 'object') return;
-      const id = String(r.id || '');
-      const m = id.match(/^([a-z]+)(\d{13,})/i);
-      if (!m) return;
-      const from = id;
-      r.id = nextId(rows, m[1], 100);
-      try { markDeleted(state, coll, from); } catch (e) {}
+    const poison = rows.filter(r => r && typeof r === 'object' && /^[a-z]+\d{13,}/i.test(String(r.id || '')));
+    if (!poison.length) return;
+    // Linear, not quadratic: with 20,000 poisoned rows, calling nextId (a full scan)
+    // per row froze the tab at "Loading…" for minutes.
+    const used = new Set(rows.map(r => String(r && r.id || '')));
+    const hw = {};
+    // High-water from HEALTHY ids only — a poison id's leading digits would push the
+    // counter into the billions and every later mint would follow it there.
+    rows.forEach(r => { const m = String(r && r.id || '').match(/^([a-z]+)(\d{1,12})(?!\d)/i); if (m) hw[m[1]] = Math.max(hw[m[1]] || 100, parseInt(m[2], 10) + 1); });
+    const tag = deviceTag();
+    poison.forEach(r => {
+      const from = String(r.id), prefix = from.match(/^([a-z]+)/i)[1];
+      let n = hw[prefix] || 100;
+      while (used.has(prefix + n) || used.has(prefix + n + tag)) n++;
+      hw[prefix] = n + 1;
+      r.id = prefix + n + tag; used.add(r.id);
+      pendingDeletes.push([coll, from]);
       changes.push({ coll, from, to: r.id, why: 'id out of range', at: new Date().toISOString() });
     });
   });
+  pendingDeletes.forEach(([coll, from]) => { try { markDeleted(state, coll, from); } catch (e) {} });
   if (changes.length) state._idRepairs = (state._idRepairs || []).concat(changes).slice(-100);
   return changes.length;
 }
@@ -3199,12 +3223,20 @@ function collapseDuplicateCategories(state) {
 // Deletions the user actually asked for. Written at the delete call site (not inferred
 // from a diff), kept in state so they survive a reload and reach the push, and pruned
 // once they have been sent. `coll` matches the state key: 'properties', 'tenants', …
+var _intentIdx = new WeakMap();   // _intentDeletes array -> Set of keys
+function _intentKeys(list) {
+  let set = _intentIdx.get(list);
+  if (!set || set.size !== list.length) { set = new Set(list.map(d => d && (d.coll + ':' + d.id))); _intentIdx.set(list, set); }
+  return set;
+}
 function markDeleted(s, coll, id) {
   if (!s || !coll || id == null) return;
   s._intentDeletes = Array.isArray(s._intentDeletes) ? s._intentDeletes : [];
   const key = coll + ':' + String(id);
-  if (s._intentDeletes.some(d => d && (d.coll + ':' + d.id) === key)) return;
+  const keys = _intentKeys(s._intentDeletes);
+  if (keys.has(key)) return;
   s._intentDeletes.push({ coll, id: String(id), at: new Date().toISOString() });
+  keys.add(key);
   // Bounded: a record older than 90 days has long since been applied everywhere.
   if (s._intentDeletes.length > 500) {
     const cutoff = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
@@ -3213,8 +3245,7 @@ function markDeleted(s, coll, id) {
 }
 function wasDeletedOnPurpose(coll, id) {
   const list = (Store.state && Store.state._intentDeletes) || [];
-  const key = coll + ':' + String(id);
-  return list.some(d => d && (d.coll + ':' + d.id) === key);
+  return _intentKeys(list).has(coll + ':' + String(id));
 }
 
 // With intent recorded at every delete site, a deletion record minted AFTER intent
@@ -3466,7 +3497,7 @@ function addListItem(listKey, item) {
       if (item && item.kind !== undefined && item.kind !== null && item.kind !== '') existing.kind = item.kind;
       return;
     }
-    const id = listKey + '-' + Date.now().toString(36) + (_listSeq++) + DEVICE_TAG;
+    const id = listKey + '-' + Date.now().toString(36) + (_listSeq++) + deviceTag();
     s.lists[listKey].push({ id, archived: false, isDefault: false, ...item, label: label || item.label });
   });
 }
@@ -3573,7 +3604,7 @@ let _acctSeq = 0;
 function addAccount(label, kind) {
   // Device-tagged: two machines adding an account in the same millisecond would
   // otherwise mint one id, and the id IS the sync key.
-  const id = 'acct-' + Date.now().toString(36) + (_acctSeq++) + DEVICE_TAG;
+  const id = 'acct-' + Date.now().toString(36) + (_acctSeq++) + deviceTag();
   Store.update(s => {
     s.accounts = s.accounts || [];
     s.accounts.push({ id, label: (label || '').trim(), kind: kind || 'checking' });
@@ -4052,7 +4083,7 @@ Object.assign(window, {
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
-  nextId, dedupeIds, idRepairLog, DEVICE_TAG, markDeleted, wasDeletedOnPurpose,
+  nextId, dedupeIds, idRepairLog, deviceTag, markDeleted, wasDeletedOnPurpose,
   getExchange, updateExchange,
   commitImportRows,
   STATUS_LABEL, STATUS_ORDER, STAGE_LABEL_MAP,

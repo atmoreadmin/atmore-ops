@@ -683,7 +683,7 @@ function WebAccountsEditor() {
         const i = s.webAccounts.findIndex(w => w.id === editId);
         if (i >= 0) s.webAccounts[i] = { ...s.webAccounts[i], ...draft, updatedAt: new Date().toISOString() };
       } else {
-        s.webAccounts.push({ id: 'wa' + Date.now().toString(36) + (_waSeq++) + DEVICE_TAG, ...draft });
+        s.webAccounts.push({ id: 'wa' + Date.now().toString(36) + (_waSeq++) + deviceTag(), ...draft });
       }
     });
     close();
