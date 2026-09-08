@@ -918,6 +918,13 @@ const SPSync = {
   async _pull() {
     this._set('syncing', 'Loading from SharePoint…');
     const tabs = {};
+    // What the server held BEFORE this pull. The rescue pass in deserializeFromSheet
+    // needs it to tell "deleted elsewhere" (was on the server, now isn't) from
+    // "never pushed" (never was). It used to read the freshly rebuilt index, which
+    // by construction lacks every row that was just deleted — so every remote
+    // delete was judged a failed push and re-created. That is how a task deleted
+    // on one computer came back on the other, and came back again on every pull.
+    if (this._items) this._prevItems = Object.assign({}, this._items);
     this._items = {}; this._childItems = {}; this._rawItems = {}; this._delta = {};
     const allTabs = [...SP_PARENT_TABS, ...Object.keys(SP_CHILD_TABS), ...SP_CONFIG_TABS];
     const bigLists = [];
@@ -1018,6 +1025,7 @@ const SPSync = {
     this._lastPullAt = Date.now();
     if (!changed) { if (SyncEngine.dirty) this._queueFlush(500); return; }
     const tabs = {};
+    if (this._items) this._prevItems = Object.assign({}, this._items);   // see _pull
     for (const [t, raw] of Object.entries(this._rawItems)) {
       const items = [...raw.values()];
       // Same as the full pull: a replacement column created on another machine is
@@ -1073,7 +1081,7 @@ const SPSync = {
     const localTabs = serializeForSheet(Store.state).tabs;
     const remoteTabs = serializeForSheet(remoteState).tabs;
     const outTabs = {};
-    let conflicts = 0, tookTheirs = 0;
+    let conflicts = 0, tookTheirs = 0, deletedThere = 0;
     for (const t of Object.keys(remoteTabs)) {
       const det = SP_DETAIL_MERGE[t];
       if (det) {
@@ -1113,7 +1121,16 @@ const SPSync = {
           }
           rows.push(out);
         }
-        for (const [k, r] of loc) if (!rem.has(k)) rows.push(r);
+        // Local rows the server no longer has. In the baseline → the server had it
+        // and someone deleted it: let the delete stand unless we edited it since
+        // (edit vs delete — keep ours, flag it). Not in the baseline → created here.
+        for (const [k, r] of loc) {
+          if (rem.has(k)) continue;
+          const was = base.get(k);
+          if (!was) { rows.push(r); continue; }
+          if (JSON.stringify(r) === JSON.stringify(was)) { deletedThere++; continue; }
+          rows.push(r); this.noteConflict(t, k, '(deleted elsewhere)', 'kept', 'deleted', ''); conflicts++;
+        }
         for (const r of keyless) rows.push(r);
         if (keyless.length) this.logLine(keyless.length + ' ' + t + ' row(s) have no row id yet — kept as-is, they will be identified on the next save');
         if (det.ordBy) {
@@ -1180,7 +1197,19 @@ const SPSync = {
         }
         rows.push(out);
       }
-      for (const [id, r] of loc) if (!rem.has(id)) rows.push(r);   // created here, not pushed yet
+      // Local rows the server no longer has. This used to keep every one of them as
+      // "created here, not pushed yet" — which was also true of every row someone
+      // ELSE had just deleted, so the delete was undone and the row re-uploaded on
+      // the next save. The baseline is the tiebreaker: the server told us about it →
+      // it was deleted there. Unchanged here → honour the delete. Edited here since →
+      // keep ours and flag it (edit vs delete needs a human).
+      for (const [id, r] of loc) {
+        if (rem.has(id)) continue;
+        const bs = base.get(id);
+        if (!bs || bs[0] === '\u0000') { rows.push(r); continue; }
+        if (bs === JSON.stringify(r)) { deletedThere++; continue; }
+        rows.push(r); this.noteConflict(t, id, '(deleted elsewhere)', 'kept your edited copy', 'deleted', ''); conflicts++;
+      }
       // Visibility without the flood: one line naming the scale, instead of a
       // review card per field that nobody can act on.
       if (keptBlind) {
@@ -1191,6 +1220,7 @@ const SPSync = {
     }
     for (const t of Object.keys(localTabs)) if (!(t in outTabs)) outTabs[t] = localTabs[t];
     if (conflicts) this._saveConflicts();
+    if (deletedThere) this.logLine('Removed ' + deletedThere + ' record' + (deletedThere === 1 ? '' : 's') + ' deleted on another computer');
     return { state: deserializeFromSheet({ tabs: outTabs }), conflicts, tookTheirs };
   },
 

@@ -765,9 +765,13 @@ function deserializeFromSheet(pulledData, opts) {
   // recorded on the state so the caller can drop them from its post-pull baseline
   // (otherwise they'd look already-saved and never get written) and flush.
   //
-  // In SharePoint mode SPSync._items[tab] is an even stronger signal: it maps
-  // RecID → SharePoint item id only for rows that genuinely exist server-side.
-  const spItems = (window.SPSync && SPSync.liveOn && SPSync.liveOn() && SPSync._items) || null;
+  // In SharePoint mode the item index from BEFORE this pull is an even stronger
+  // signal: it maps RecID → SharePoint item id for rows the server genuinely held.
+  // It must be the PREVIOUS index — the current one is rebuilt from this very pull
+  // and so lacks every row that was just deleted elsewhere, which made every remote
+  // delete look like a failed push and re-created it (tasks deleted on one machine
+  // reappeared on the other, then multiplied).
+  const spItems = (window.SPSync && SPSync.liveOn && SPSync.liveOn() && SPSync._prevItems) || null;
   {
     const tombAt = new Map();
     (Store.state.tombstones || []).forEach(t => {
@@ -793,9 +797,12 @@ function deserializeFromSheet(pulledData, opts) {
         if (pulled.has(id)) continue;
         // A tombstone only suppresses the rescue if the delete is newer than the
         // record; a re-created record outlives an older delete.
-        const tomb = tombAt.get(tab + ':' + id);
+        // Tombstones are keyed by the store collection ('reminders'), not the tab
+        // ('Tasks') — the old lookup never matched, so a row this device deleted
+        // could be rescued right back.
+        const tomb = tombAt.get(coll + ':' + id);
         if (tomb != null && !(String(r.updatedAt || '') > tomb)) continue;
-        const serverHadIt = spIdx ? spIdx.has(id) : ackedBefore.has(id);
+        const serverHadIt = (!!spIdx && spIdx.has(id)) || (!!ackedBefore && ackedBefore.has(id));
         if (serverHadIt) continue;          // genuinely deleted elsewhere
         state[coll].push(r);
         (rescued[tab] = rescued[tab] || []).push(id);
