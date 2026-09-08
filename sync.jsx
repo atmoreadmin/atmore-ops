@@ -772,6 +772,11 @@ function deserializeFromSheet(pulledData, opts) {
   // delete look like a failed push and re-created it (tasks deleted on one machine
   // reappeared on the other, then multiplied).
   const spItems = (window.SPSync && SPSync.liveOn && SPSync.liveOn() && SPSync._prevItems) || null;
+  // Third signal: this device's own merge baseline. Anything in it was handed to us
+  // by the server at the last pull (or confirmed by our own push), so its absence
+  // now is a remote delete — never a failed import. Still the PREVIOUS baseline at
+  // this point; _finishPull rebuilds it after this returns.
+  const spSigs = (spItems !== null || (window.SPSync && SPSync.liveOn && SPSync.liveOn())) && SPSync._sigs || null;
   {
     const tombAt = new Map();
     (Store.state.tombstones || []).forEach(t => {
@@ -790,7 +795,8 @@ function deserializeFromSheet(pulledData, opts) {
       ServerAck.syncTab(tab, [...pulled]);
       // No prior knowledge and no SharePoint index: can't distinguish a remote
       // delete from a failed push, so keep the old conservative behaviour.
-      if (!ackedBefore && !spIdx) continue;
+      const spBase = spSigs && spSigs[tab];
+      if (!ackedBefore && !spIdx && !spBase) continue;
       for (const r of (Store.state[coll] || [])) {
         if (!r || r.id == null) continue;
         const id = String(r.id);
@@ -802,8 +808,10 @@ function deserializeFromSheet(pulledData, opts) {
         // could be rescued right back.
         const tomb = tombAt.get(coll + ':' + id);
         if (tomb != null && !(String(r.updatedAt || '') > tomb)) continue;
-        const serverHadIt = (!!spIdx && spIdx.has(id)) || (!!ackedBefore && ackedBefore.has(id));
+        const serverHadIt = (!!spIdx && spIdx.has(id)) || (!!ackedBefore && ackedBefore.has(id)) || (!!spBase && spBase.has(id));
         if (serverHadIt) continue;          // genuinely deleted elsewhere
+        // Never rescue a row this device itself deleted (queued delete not yet sent).
+        if (typeof wasDeletedOnPurpose === 'function' && wasDeletedOnPurpose(coll, id)) continue;
         state[coll].push(r);
         (rescued[tab] = rescued[tab] || []).push(id);
       }

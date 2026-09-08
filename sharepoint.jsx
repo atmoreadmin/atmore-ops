@@ -1124,12 +1124,17 @@ const SPSync = {
         // Local rows the server no longer has. In the baseline → the server had it
         // and someone deleted it: let the delete stand unless we edited it since
         // (edit vs delete — keep ours, flag it). Not in the baseline → created here.
+        // The delete WINS even over a local edit. Keeping the edited copy re-uploaded
+        // it as a brand-new item, so the row came back on every machine — the
+        // exact "I deleted it and it reappeared" report. A delete is a deliberate act;
+        // a lost edit to a row someone else removed is the lesser harm, and it is
+        // logged by name so it can be re-entered if it mattered.
         for (const [k, r] of loc) {
           if (rem.has(k)) continue;
           const was = base.get(k);
           if (!was) { rows.push(r); continue; }
-          if (JSON.stringify(r) === JSON.stringify(was)) { deletedThere++; continue; }
-          rows.push(r); this.noteConflict(t, k, '(deleted elsewhere)', 'kept', 'deleted', ''); conflicts++;
+          deletedThere++;
+          if (JSON.stringify(r) !== JSON.stringify(was)) this.logLine('Dropped your unsaved edit to ' + t + ' ' + k + ' \u2014 that row was deleted on another computer');
         }
         for (const r of keyless) rows.push(r);
         if (keyless.length) this.logLine(keyless.length + ' ' + t + ' row(s) have no row id yet — kept as-is, they will be identified on the next save');
@@ -1203,12 +1208,18 @@ const SPSync = {
       // the next save. The baseline is the tiebreaker: the server told us about it →
       // it was deleted there. Unchanged here → honour the delete. Edited here since →
       // keep ours and flag it (edit vs delete needs a human).
+      // Same rule as the detail branch: once the server has dropped a row it knew
+      // about, it stays dropped here too — an edited local copy is NOT kept, because
+      // keeping it meant re-creating the row for everyone. A '\u0000deleted' sentinel
+      // means THIS device deleted it and the DELETE is queued — also gone.
       for (const [id, r] of loc) {
         if (rem.has(id)) continue;
         const bs = base.get(id);
-        if (!bs || bs[0] === '\u0000') { rows.push(r); continue; }
-        if (bs === JSON.stringify(r)) { deletedThere++; continue; }
-        rows.push(r); this.noteConflict(t, id, '(deleted elsewhere)', 'kept your edited copy', 'deleted', ''); conflicts++;
+        if (!bs) { rows.push(r); continue; }
+        deletedThere++;
+        const coll = SP_COLL[t];
+        if (coll) this.noteTombstone(t, id);
+        if (bs[0] !== '\u0000' && bs !== JSON.stringify(r)) this.logLine('Dropped your unsaved edit to ' + t + ' ' + id + ' (' + String(r.title || r.name || r.address || r.desc || '').slice(0, 40) + ') \u2014 that row was deleted on another computer');
       }
       // Visibility without the flood: one line naming the scale, instead of a
       // review card per field that nobody can act on.
@@ -1630,6 +1641,10 @@ const SPSync = {
           this.logLine('\u26a0 Held back ' + (before - ops.length).toLocaleString() + ' new-row saves for ' + held.join(', ') + ' \u2014 that many new rows at once is almost certainly a duplication loop, not real records. Updates and deletes still saved.');
         }
       }
+      const delsByTab = {};
+      ops.forEach(o => { if (o.del) delsByTab[o.tab] = (delsByTab[o.tab] || 0) + 1; });
+      if (Object.keys(delsByTab).length) this.logLine('Deleting from SharePoint: ' + Object.entries(delsByTab).map(([t, n]) => t + ' \u00d7' + n).join(', '));
+      const gone404 = [];
       let pending = ops, attempt = 0, badOps = [], repairRounds = 0, unsent = 0;
       while (pending.length) {
         const next = [];
@@ -1656,12 +1671,15 @@ const SPSync = {
             // (another device, or our own overlapping retry). Requeue quietly —
             // the next pass writes against the fresh version. No user-facing error.
             if (x.status === 409) { next.push(op); return; }
+            // PATCH of an item someone else deleted: the delete wins. This used to
+            // re-create the row ("the surviving edit wins"), which was the single
+            // biggest way a deleted task came back for everyone — any pending edit,
+            // forced re-push or column backfill on a stale machine resurrected it.
+            // Drop it here, record the deletion so it cannot be rescued, log it by name.
             if (x.status === 404 && op.method === 'PATCH' && !op.del) {
               const ii = this._items[op.tab]; if (ii) ii.delete(op.recId);
-              try {
-                const listUrl = op.url.slice(0, op.url.indexOf('/items/'));
-                next.push({ method: 'POST', url: listUrl + '/items', body: { fields: SP._fieldsFor(op.tab, JSON.parse(op.sig)) }, tab: op.tab, recId: op.recId, sig: op.sig });
-              } catch (e) {}
+              const mm = this._sigs[op.tab]; if (mm) mm.delete(op.recId);
+              gone404.push({ tab: op.tab, id: op.recId, sig: op.sig });
               return;
             }
             if (x.status === 404 && op.del) {
@@ -1709,6 +1727,15 @@ const SPSync = {
           this.logLine('\u2717 ' + badOps.length + ' change(s) SharePoint would not accept — see column notes above');
           badOps = [];
         }
+      }
+      if (gone404.length) {
+        const byColl = {};
+        gone404.forEach(g => { const c = SP_COLL[g.tab]; if (c) (byColl[c] = byColl[c] || new Set()).add(String(g.id)); this.noteTombstone(g.tab, g.id); });
+        SyncEngine._applyingRemote = true;
+        try {
+          Store.update(s => { for (const [c, ids] of Object.entries(byColl)) if (Array.isArray(s[c])) s[c] = s[c].filter(r => !(r && ids.has(String(r.id)))); });
+        } finally { SyncEngine._applyingRemote = false; }
+        gone404.forEach(g => { let label = ''; try { const r = JSON.parse(g.sig); label = String(r.title || r.name || r.address || r.desc || '').slice(0, 40); } catch (e) {} this.logLine('Removed ' + g.tab + ' ' + g.id + (label ? ' (' + label + ')' : '') + ' \u2014 deleted on another computer while you were editing it'); });
       }
       // Child rows: resync the whole group whenever a parent's children changed.
       let childGroups = 0, cfgTabs = 0, childFailed = 0, childDebt = 0;
@@ -2546,7 +2573,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build b20</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20260908b</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
