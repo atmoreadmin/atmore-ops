@@ -11,7 +11,8 @@ function isoToParts(iso) { const [y,m,d] = iso.split('-').map(Number); return { 
 function ymToIso(y, m, d) { return y + '-' + String(m+1).padStart(2,'0') + '-' + String(d).padStart(2,'0'); }
 
 // Relative due/overdue chip for an event's day count.
-function eventDueChip(days, done) {
+function eventDueChip(days, done, cat) {
+  if (done && cat === 'timeoff') return { text: days < 0 ? 'taken' : 'done', tone: 'sage' };
   if (done) return { text: 'done', tone: 'sage' };
   if (days == null) return { text: '', tone: 'ghost' };
   if (days < 0) return { text: `${-days}d overdue`, tone: 'brick' };
@@ -201,7 +202,7 @@ function MonthGrid({ cursor, today, visible, onStep, onToday, onDay }) {
 }
 
 function EventLine({ e, showDate, onEditTask }) {
-  const chip = eventDueChip(e.days, e.done);
+  const chip = eventDueChip(e.days, e.done, e.cat);
   const d = isoToParts(e.date);
   return (
     <div className="row gap-12 items-start" style={{padding: '11px 16px', borderBottom: '1px solid var(--rule-soft)', opacity: e.done ? 0.55 : 1}}>

@@ -3730,7 +3730,7 @@ function buildCalendarEvents(fromIso, toIso) {
     for (let d = a, guard = 0; d <= b && guard < 400; d = addDaysISO(d, 1), guard++) {
       push({ key: 'timeoff:' + t.id + ':' + d, cat: 'timeoff', date: d, timeOffId: t.id,
         title: who + ' — ' + (TIME_OFF_LABEL[t.type] || 'Time off') + (t.halfDay ? ' (half day)' : ''),
-        sub: t.note || '', done: false });
+        sub: t.note || '', done: isEventDone('timeoff:' + t.id + ':' + d) || d < today });
     }
   });
 
