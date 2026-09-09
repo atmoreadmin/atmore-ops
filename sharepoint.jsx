@@ -1091,6 +1091,7 @@ const SPSync = {
         // deleted; edited on both sides → keep mine and flag it.
         const base = new Map();
         try { JSON.parse((this._detailBase || {})[t] || '[]').forEach(r => base.set(det.key(r), r)); } catch (e) {}
+        const haveDetBase = base.size > 0;
         // Rows with no stable key cannot be matched — but they must NOT be dropped.
         // They were filtered out of `loc` and never re-added, so any child row
         // missing its key (one created before the key column existed, or added
@@ -1112,7 +1113,7 @@ const SPSync = {
             // server-side is a missing column, not a cleared value.
             if (!(f in r) || (unbackedDet.has(f) && (r[f] == null || r[f] === ''))) { out[f] = mine[f]; continue; }
             if (eq(mine[f], r[f])) { out[f] = mine[f]; continue; }
-            if (!was) { out[f] = mine[f]; continue; }
+            if (!was) { if (haveDetBase) out[f] = mine[f]; else { out[f] = r[f]; tookTheirs++; } continue; }
             if (eq(mine[f], was[f])) { out[f] = r[f]; tookTheirs++; continue; }
             if (eq(r[f], was[f])) { out[f] = mine[f]; continue; }
             out[f] = mine[f];
@@ -1185,12 +1186,17 @@ const SPSync = {
           if (!(k in r) || (unbacked.has(k) && (theirs == null || theirs === ''))) { out[k] = mine; continue; }
           if (eq(mine, theirs)) { out[k] = mine; continue; }
           if (!baseRow) {
-            // Keep local: without a baseline we cannot tell who changed what.
-            out[k] = mine;
-            // Only worth a human's attention when we DO have baseline knowledge for
-            // this tab and this row is the exception. Otherwise stay quiet.
-            if (haveBase) { this.noteConflict(t, id, k, mine, theirs, ''); conflicts++; }
-            else { keptBlind++; blindFields[k] = (blindFields[k] || 0) + 1; if (!blindSample[k]) blindSample[k] = ' (e.g. ' + id + ': here ' + JSON.stringify(mine) + ' / SharePoint ' + JSON.stringify(theirs) + ')'; }
+            if (haveBase) {
+              // Row is new on both sides with the same id — keep ours and flag it.
+              out[k] = mine; this.noteConflict(t, id, k, mine, theirs, ''); conflicts++;
+            } else {
+              // No baseline knowledge for the whole tab: this device's copy is a
+              // cache from some earlier session, SharePoint's is what the other
+              // machines have saved since. Taking the local value here re-uploaded
+              // stale data on every restart. The server wins.
+              out[k] = theirs; tookTheirs++;
+              keptBlind++; blindFields[k] = (blindFields[k] || 0) + 1; if (!blindSample[k]) blindSample[k] = ' (e.g. ' + id + ': here ' + JSON.stringify(mine) + ' / SharePoint ' + JSON.stringify(theirs) + ')';
+            }
             continue;
           }
           const was = baseRow[k];
@@ -1225,7 +1231,7 @@ const SPSync = {
       // review card per field that nobody can act on.
       if (keptBlind) {
         const top = Object.entries(blindFields).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => k + ' ×' + n.toLocaleString() + (blindSample[k] || '')).join('; ');
-        this.logLine('No baseline for ' + t + ' yet — kept this device’s values for ' + keptBlind + ' field(s) and will re-check next sync. Fields: ' + top);
+        this.logLine('No baseline for ' + t + ' yet — took SharePoint’s values for ' + keptBlind + ' field(s). Fields: ' + top);
       }
       outTabs[t] = rows;
     }
@@ -1468,6 +1474,34 @@ const SPSync = {
     // last-known server state to tell an add apart from a delete.
     this._detailBase = {};
     Object.keys(SP_DETAIL_MERGE).forEach(t => { this._detailBase[t] = JSON.stringify(payload[t] || []); });
+    this._persistBaseline();
+  },
+
+  // The baseline used to live only in memory, so every restart / Ctrl+F5 began
+  // with "no baseline": the merge kept this computer's CACHED values over
+  // SharePoint's newer ones and then pushed them back up — each restart undid the
+  // other machine's recent edits ("stale data reappears"). Keep it in IndexedDB
+  // so a cold start still knows what the server last handed us.
+  _persistBaseline() {
+    try {
+      const pack = m => { const o = {}; for (const [k, v] of Object.entries(m || {})) o[k] = v instanceof Map ? [...v.entries()] : v; return o; };
+      const blob = JSON.stringify({ at: Date.now(), sigs: pack(this._sigs), childSigs: pack(this._childSigs), cfgSigs: this._cfgSigs || {}, detailBase: this._detailBase || {} });
+      Store._idbPut('sp_baseline', blob).catch(e => console.warn('SPSync: baseline persist failed', e));
+    } catch (e) { console.warn('SPSync: baseline persist failed', e); }
+  },
+  async _restoreBaseline() {
+    if (this._sigs) return false;
+    try {
+      const raw = await Store._idbGet('sp_baseline');
+      if (!raw) return false;
+      const env = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!env || !env.sigs) return false;
+      const unpack = o => { const r = {}; for (const [k, v] of Object.entries(o || {})) r[k] = new Map(v); return r; };
+      this._sigs = unpack(env.sigs); this._childSigs = unpack(env.childSigs); this._cfgSigs = env.cfgSigs || {}; this._detailBase = env.detailBase || {};
+      this._restoredBaseline = true;
+      this.logLine('Restored last-sync baseline from this computer (' + new Date(env.at).toLocaleString() + ')');
+      return true;
+    } catch (e) { console.warn('SPSync: baseline restore failed', e); return false; }
   },
 
   // Diff current state against the baseline → per-item Graph operations.
@@ -1954,6 +1988,7 @@ const SPSync = {
       if (childGroups) parts.push(childGroups + ' detail group' + (childGroups === 1 ? '' : 's'));
       if (cfgTabs) parts.push('settings');
       if (parts.length) this.logLine('Saved ' + parts.join(', ') + ' \u2713');
+      this._persistBaseline();   // the signatures just advanced to what we saved
       this._maybeBackup();
     } catch (e) {
       const auth = /token|sign|auth|login|interaction/i.test(String(e.message || e));
@@ -2288,6 +2323,7 @@ const SPSync = {
     try {
       if (!SP.account()) { this._set('error', 'SharePoint sign-in needed — open Integration → SharePoint'); return; }
       if (await SP.restoreConfigFromIDB()) this.logLine('Recovered SharePoint list settings from this computer\u2019s backup copy');
+      await this._restoreBaseline();
       // Schema catch-up: lists provisioned by an older build may lack columns
       // this build writes (e.g. updatedAt), or may be missing entirely (a new
       // build added SpendLog / Employees / TimeOff). provision() is idempotent

@@ -930,8 +930,8 @@ function TransactionEditor({ tx, onClose }) {
             style={{width: '100%', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5}}></textarea>
         </div>
 
-        {editing && tx.importBatch && (
-          <div className="small dim">Originally imported in batch <span className="mono">{tx.importBatch}</span></div>
+        {editing && (
+          <div className="small dim">Record <span className="mono">{tx.id}</span>{tx.importBatch ? <> · imported in batch <span className="mono">{tx.importBatch}</span></> : null}</div>
         )}
 
         <div className="row gap-8 mt-8 items-center">
