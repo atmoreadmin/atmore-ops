@@ -85,7 +85,6 @@ function dealMilestones(p) {
   if (p.saleSigningDate)
     out.push({ key: 'salesign:' + p.id + ':' + p.saleSigningDate, date: p.saleSigningDate, title: 'Sale signing' + t(p.saleSigningTime) });
   if (p.ddDate) out.push({ key: 'dd:' + p.id + ':' + p.ddDate, date: p.ddDate, title: 'Due-diligence deadline' });
-  if (p.expectedCloseDate) out.push({ key: 'close:' + p.id + ':' + p.expectedCloseDate, date: p.expectedCloseDate, title: 'Expected closing' });
   const past = p.statusCode === 'I';
   out.forEach(m => { m.past = past && m.date < TODAY(); });
   return out.sort((a, b) => String(a.date||'').localeCompare(String(b.date||'')));

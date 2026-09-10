@@ -1992,6 +1992,8 @@ function foldLegacyPropDDFields(state) {
       delete p.dueDiligenceDeadline; changed = true;
     }
     if ('dueDiligenceDays' in p) { delete p.dueDiligenceDays; changed = true; }
+    // expectedCloseDate retired — the offer's proposed close now lives in saleSigningDate.
+    if (p.expectedCloseDate) { if (!p.saleSigningDate) p.saleSigningDate = p.expectedCloseDate; p.expectedCloseDate = null; changed = true; }
   });
   return changed;
 }
@@ -2971,7 +2973,8 @@ function applyOfferToProperty(p, offer, today) {
     d.setDate(d.getDate() + Number(offer.dueDiligenceDays));
     p.buyerDDDate = d.toISOString().slice(0, 10);
   }
-  if (offer.closeDate) p.expectedCloseDate = offer.closeDate;
+  if (offer.closeDate && !p.saleSigningDate) p.saleSigningDate = offer.closeDate;
+  p.expectedCloseDate = null;   // retired: merged into saleSigningDate
   if (!p.contractDate && today) p.contractDate = today;
 }
 
@@ -3792,11 +3795,6 @@ function buildCalendarEvents(fromIso, toIso) {
     if (p.ddDate) {
       const k = 'dd:' + p.id + ':' + p.ddDate;
       push({ key: k, cat: 'deal', date: p.ddDate, title: 'Due-diligence deadline',
-        sub: p.address, propertyId: p.id, done: isEventDone(k) });
-    }
-    if (p.expectedCloseDate) {
-      const k = 'close:' + p.id + ':' + p.expectedCloseDate;
-      push({ key: k, cat: 'deal', date: p.expectedCloseDate, title: 'Expected closing',
         sub: p.address, propertyId: p.id, done: isEventDone(k) });
     }
   });
