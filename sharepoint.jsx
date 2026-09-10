@@ -1103,9 +1103,14 @@ const SPSync = {
         const rem = new Map((remoteTabs[t] || []).filter(r => r && det.key(r)).map(r => [det.key(r), r]));
         const rows = [];
         const unbackedDet = this._unbacked(t);
+        // Rows deleted on THIS computer (the intent list survives restarts even when
+        // the baseline did not). Without this, a row deleted here and still on the
+        // server read as "added elsewhere" and came back — the HOA "N/A" report.
+        const detColl = { HOAs: 'hoas' }[t];
+        const deletedHere = k => detColl && typeof wasDeletedOnPurpose === 'function' && wasDeletedOnPurpose(detColl, k);
         for (const [k, r] of rem) {
           const mine = loc.get(k);
-          if (!mine) { if (!base.has(k)) rows.push(r); continue; }
+          if (!mine) { if (deletedHere(k)) continue; if (!base.has(k)) rows.push(r); continue; }
           const was = base.get(k);
           const out = { ...r };
           for (const f of det.fields) {
