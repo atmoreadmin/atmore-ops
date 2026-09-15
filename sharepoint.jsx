@@ -1083,6 +1083,20 @@ const SPSync = {
     const outTabs = {};
     let conflicts = 0, tookTheirs = 0, deletedThere = 0;
     for (const t of Object.keys(remoteTabs)) {
+      if (t === 'CompletedEvents') {
+        // Ticks merge per key: everything SharePoint has, minus what THIS computer
+        // un-ticked since its last pull, plus what it ticked and hasn't saved yet.
+        // Falling through to the generic rule lost a fresh tick when a pull raced
+        // the save — the "Signing keeps coming back" report.
+        const base = new Set(); try { JSON.parse((this._cfgSigs || {})[t] || '[]').forEach(r => r && r.key && base.add(String(r.key))); } catch (e) {}
+        const rem = new Map(); (remoteTabs[t] || []).forEach(r => r && r.key && rem.set(String(r.key), r));
+        const loc = new Map(); (localTabs[t] || []).forEach(r => r && r.key && loc.set(String(r.key), r));
+        const rows = [];
+        for (const [k, r] of rem) { if (loc.has(k) || !base.has(k)) rows.push(r); }
+        for (const [k, r] of loc) { if (!rem.has(k) && !base.has(k)) rows.push(r); }
+        outTabs[t] = rows;
+        continue;
+      }
       const det = SP_DETAIL_MERGE[t];
       if (det) {
         // Detail rows with a stable identity: merge row-by-row rather than

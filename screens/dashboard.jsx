@@ -368,8 +368,22 @@ function PipelineGlanceCard({ counts }) {
   );
 }
 
+// "Next 14 days" filter — which event kinds to show. Persisted per computer.
+const NEXT14_KEY = 'dash.next14.hidden';
+const NEXT14_KINDS = [
+  { id: 'signing',  label: 'Signings' },
+  { id: 'dd',       label: 'DD deadlines' },
+  { id: 'exch',     label: '1031 deadlines' },
+  { id: 'reminder', label: 'Tasks' },
+  { id: 'done',     label: 'Completed' },
+];
 function ThisWeekCard({ properties }) {
   const today = TODAY();
+  const [hidden, setHidden] = useState(() => { try { return new Set(JSON.parse(localStorage.getItem(NEXT14_KEY) || '[]')); } catch (e) { return new Set(); } });
+  function toggleKind(id) {
+    const n = new Set(hidden); n.has(id) ? n.delete(id) : n.add(id);
+    setHidden(n); localStorage.setItem(NEXT14_KEY, JSON.stringify([...n]));
+  }
   // Upcoming events: signing dates, DD dates (next 14 days)
   const events = [];
   properties.forEach(p => {
@@ -402,14 +416,14 @@ function ThisWeekCard({ properties }) {
     const iso45 = d45.toISOString().slice(0,10);
     const days45 = daysBetween(today, iso45);
     if (days45 >= -2 && days45 <= 14) {
-      events.push({ key: 'x45:' + e.id, date: iso45, days: days45, label: '45-day 1031 deadline · ' + e.relinquishedAddress, addr: '', type: 'red' });
+      events.push({ key: 'x45:' + e.id, date: iso45, days: days45, label: '45-day 1031 deadline · ' + e.relinquishedAddress, addr: '', type: 'red', kind: 'exch' });
     }
     const d180 = new Date(e.relinquishedSoldDate + 'T12:00:00');
     d180.setDate(d180.getDate() + 180);
     const iso180 = d180.toISOString().slice(0,10);
     const days180 = daysBetween(today, iso180);
     if (days180 >= -2 && days180 <= 14) {
-      events.push({ key: 'x180:' + e.id, date: iso180, days: days180, label: '180-day 1031 close · ' + e.relinquishedAddress, addr: '', type: 'red' });
+      events.push({ key: 'x180:' + e.id, date: iso180, days: days180, label: '180-day 1031 close · ' + e.relinquishedAddress, addr: '', type: 'red', kind: 'exch' });
     }
   });
 
@@ -424,9 +438,11 @@ function ThisWeekCard({ properties }) {
     events.push({ key: 'rem:' + r.id, reminderId: r.id, date: r.dueDate, days, label: r.title + (r.recurrence && r.recurrence !== 'none' ? ' · ' + RECURRENCE_LABEL[r.recurrence].toLowerCase() : ''), addr: prop.address, type: 'reminder', id: prop.id });
   });
   events.sort((a,b) => a.date.localeCompare(b.date));
-  events.forEach(e => { e.done = isEventDone(e.key); });
+  events.forEach(e => { e.done = isEventDone(e.key); e.kind = e.kind || e.type; });
   events.sort((a,b) => (a.done === b.done) ? a.date.localeCompare(b.date) : (a.done ? 1 : -1));
-  const outstanding = events.filter(e => !e.done).length;
+  const total = events.length;
+  const shown = events.filter(e => !hidden.has(e.kind) && !(e.done && hidden.has('done')));
+  const outstanding = shown.filter(e => !e.done).length;
 
   return (
     <Card>
@@ -437,9 +453,24 @@ function ThisWeekCard({ properties }) {
         </div>
       }/>
       <div className="card__body">
-        {events.length === 0 ? <Empty title="Nothing scheduled" sub="No upcoming signings, DD dates, or deadlines."/> :
+        <div className="row gap-6 wrap items-center" style={{marginBottom: 12}}>
+          <span className="up dim" style={{marginRight: 2}}>Show</span>
+          {NEXT14_KINDS.map(k => {
+            const off = hidden.has(k.id);
+            return (
+              <button key={k.id} onClick={() => toggleKind(k.id)} title={off ? 'Show ' + k.label.toLowerCase() : 'Hide ' + k.label.toLowerCase()}
+                style={{padding: '3px 9px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5,
+                  border: '1px solid var(--rule)', background: off ? 'transparent' : 'var(--paper-3)',
+                  color: off ? 'var(--ink-4)' : 'var(--ink-2)', opacity: off ? 0.6 : 1, textDecoration: off ? 'line-through' : 'none'}}>
+                {k.label}
+              </button>
+            );
+          })}
+        </div>
+        {total === 0 ? <Empty title="Nothing scheduled" sub="No upcoming signings, DD dates, or deadlines."/> :
+         shown.length === 0 ? <Empty title="Nothing to show" sub={'All ' + total + ' upcoming item' + (total === 1 ? ' is' : 's are') + ' hidden by the filters above.'}/> :
           <div className="col gap-10">
-            {events.slice(0, 8).map((e,i) => (
+            {shown.slice(0, 8).map((e,i) => (
               <div key={e.key || i} className="row gap-12 items-start" style={{paddingBottom: 8, borderBottom:'1px solid var(--rule-soft)', opacity: e.done ? 0.5 : 1}}>
                 <button
                   onClick={(ev) => { ev.stopPropagation(); if (e.reminderId) { completeReminder(e.reminderId); } else { toggleEventDone(e.key); } }}
