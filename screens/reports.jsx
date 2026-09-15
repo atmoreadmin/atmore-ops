@@ -394,7 +394,10 @@ function PnlReport() {
     if (l.category && !catMap.listed(l.category)) offListCats[label] = (offListCats[label] || 0) + (l.amount || 0);
     const isInc = kind === 'income' ? true : kind === 'expense' ? false : (l.amount >= 0);
     if (isInc) { (inc[b] = inc[b] || {})[label] = (inc[b][label] || 0) + l.amount; ((incL[b] = incL[b] || {})[label] = incL[b][label] || []).push(l); }
-    else { (exp[b] = exp[b] || {})[label] = (exp[b][label] || 0) + Math.abs(l.amount); ((expL[b] = expL[b] || {})[label] = expL[b][label] || []).push(l); }
+    // Expense lines net: a positive row under an expense category is a refund or
+    // reversal and REDUCES that line. Math.abs here counted the $1,464 overdraft
+    // credit as a $1,464 charge.
+    else { (exp[b] = exp[b] || {})[label] = (exp[b][label] || 0) - l.amount; ((expL[b] = expL[b] || {})[label] = expL[b][label] || []).push(l); }
   });
   // Heads-up: rental income that isn't tagged to a specific property is invisible in rentals scope.
   if (scope === 'rentals') {
