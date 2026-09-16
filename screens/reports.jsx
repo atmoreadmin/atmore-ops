@@ -535,6 +535,18 @@ function PnlSection({ title, groups, total, tone, sign }) {
   const [open, setOpen] = useState(null);
   const [editTx, setEditTx] = useState(null);
   const [splitTx, setSplitTx] = useState(null);
+  const [sel, setSel] = useState(() => new Set());
+  const [bulk, setBulk] = useState({ category: '', project: '', bucket: '' });
+  const toggleSel = id => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const applyBulk = () => {
+    const patch = {};
+    if (bulk.category) patch.category = bulk.category;
+    if (bulk.project) patch.project = bulk.project;
+    if (bulk.bucket) patch.bucket = bulk.bucket;
+    if (!Object.keys(patch).length) return;
+    sel.forEach(id => tagTransaction(id, patch));
+    setSel(new Set()); setBulk({ category: '', project: '', bucket: '' });
+  };
   const openLine = l => {
     const src = (Store.state.transactions || []).find(x => x.id === l.srcId);
     if (!src) return;
@@ -569,8 +581,14 @@ function PnlSection({ title, groups, total, tone, sign }) {
                   <tr>
                     <td colSpan={2} style={{ padding: 0, background: 'var(--paper-3)' }}>
                       <div style={{ padding: '4px 12px 8px 26px', maxHeight: 320, overflowY: 'auto' }}>
+                        {(() => { const ids = catLines.filter(l => l.srcId && !l.split).map(l => l.srcId); const all = ids.length > 0 && ids.every(id => sel.has(id)); return (
+                          <div className="row gap-10 items-center" style={{ padding: '4px 0' }}>
+                            <input type="checkbox" checked={all} disabled={!ids.length} title="Select all in this category" onChange={() => setSel(s => { const n = new Set(s); all ? ids.forEach(id => n.delete(id)) : ids.forEach(id => n.add(id)); return n; })} style={{ margin: 0 }} />
+                            <span className="tiny dim">{all ? 'Deselect all' : 'Select all'}{ids.length < catLines.length ? ' (splits excluded)' : ''}</span>
+                          </div>); })()}
                         {[...catLines].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((l, i) => (
-                          <div key={i} className="row gap-10 items-center" title={l.srcId ? (l.split ? 'Click to edit the split' : 'Click to edit this transaction') : undefined} onClick={l.srcId ? () => openLine(l) : undefined} style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: l.srcId ? 'pointer' : 'default' }}>
+                          <div key={i} className="row gap-10 items-center" title={l.srcId ? (l.split ? 'Click to edit the split' : 'Click to edit this transaction') : undefined} onClick={l.srcId ? () => openLine(l) : undefined} style={{ padding: '5px 0', borderTop: '1px solid var(--rule-soft)', cursor: l.srcId ? 'pointer' : 'default', background: sel.has(l.srcId) ? 'var(--paper-2)' : undefined }}>
+                            <input type="checkbox" checked={!!l.srcId && sel.has(l.srcId)} disabled={!l.srcId || !!l.split} title={l.split ? 'Split transactions must be edited individually' : 'Select for bulk assign'} onClick={e => e.stopPropagation()} onChange={() => toggleSel(l.srcId)} style={{ margin: 0, flexShrink: 0 }} />
                             <span className="mono small dim" style={{ width: 64, flexShrink: 0 }}>{fmtDate(l.date)}</span>
                             <span className="small grow" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: l.srcId ? 'underline' : 'none', textDecorationColor: 'var(--rule)', textUnderlineOffset: 3 }}>{l.desc}{l.payee && <span className="dim">{' · ' + l.payee}</span>}</span>
                             {l.split && <Tag tone="blue">split</Tag>}
@@ -596,6 +614,27 @@ function PnlSection({ title, groups, total, tone, sign }) {
             </tfoot>
           </table>
         )}
+      {sel.size > 0 && (
+        <div className="row gap-10 items-center wrap" style={{ position: 'sticky', bottom: 0, padding: '10px 14px', background: 'var(--paper)', borderTop: '2px solid var(--rule)', boxShadow: '0 -4px 12px rgba(0,0,0,0.06)' }}>
+          <span className="small" style={{ fontWeight: 600 }}>{sel.size} selected</span>
+          <ManagedSelect listKey="categories" value={bulk.category} onChange={v => setBulk(b => ({ ...b, category: v }))} style={{ minWidth: 170 }} />
+          <select className="select" value={bulk.project} onChange={e => setBulk(b => ({ ...b, project: e.target.value }))} style={{ minWidth: 190 }}>
+            <option value="">Property — keep</option>
+            <optgroup label="Overhead">{OVERHEAD_PROJECTS.map(o => <option key={o} value={o}>{o}</option>)}</optgroup>
+            <optgroup label="Properties">{sortedProperties().map(p => <option key={p.id} value={p.address}>{p.address}</option>)}</optgroup>
+          </select>
+          <select className="select" value={bulk.bucket} onChange={e => setBulk(b => ({ ...b, bucket: e.target.value }))} style={{ minWidth: 130 }}>
+            <option value="">Bucket — keep</option>
+            <option value="Properties">Properties</option>
+            <option value="Rentals">Rentals</option>
+            <option value="Office">Office</option>
+          </select>
+          <span className="tiny dim">Blank fields are left unchanged.</span>
+          <div className="grow" />
+          <Btn sz="sm" kind="ghost" onClick={() => setSel(new Set())}>Clear</Btn>
+          <Btn sz="sm" kind="primary" disabled={!bulk.category && !bulk.project && !bulk.bucket} onClick={applyBulk}>Assign {sel.size}</Btn>
+        </div>
+      )}
       {editTx && <TransactionEditor tx={editTx} onClose={() => setEditTx(null)} />}
       {splitTx && <SplitTransactionModal tx={splitTx} onClose={() => setSplitTx(null)} />}
     </Card>
