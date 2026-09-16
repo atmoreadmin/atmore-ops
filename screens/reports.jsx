@@ -544,7 +544,7 @@ function PnlSection({ title, groups, total, tone, sign }) {
     if (bulk.project) patch.project = bulk.project;
     if (bulk.bucket) patch.bucket = bulk.bucket;
     if (!Object.keys(patch).length) return;
-    sel.forEach(id => tagTransaction(id, patch));
+    tagTransactions([...sel], patch);
     setSel(new Set()); setBulk({ category: '', project: '', bucket: '' });
   };
   const openLine = l => {

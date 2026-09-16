@@ -1836,6 +1836,15 @@ function tagTransaction(txId, fields) {
   });
 }
 
+// Bulk variant: one Store.update (one re-render, one save, one sync) for many rows.
+function tagTransactions(txIds, fields) {
+  const ids = new Set(txIds);
+  if (!ids.size) return;
+  Store.update(s => {
+    s.transactions = s.transactions.map(t => ids.has(t.id) ? { ...t, ...fields } : t);
+  });
+}
+
 // ─── Unique id minting ───
 // Ids used to be prefix+(list.length+100), which reuses an id after any delete:
 // two rows share one id, and every sync/round-trip collapses them (the later row
@@ -4077,7 +4086,7 @@ Object.assign(window, {
   Store, useStore, TODAY,
   getProperty, getPropertyByAddr, getTenant, getTenantsForProperty, getActiveTenants,
   getLedgerForMonth, ensureLedgerForMonth, getLedgerForTenant, dedupeRentLedger, getTxForProperty, untaggedTransactions, getCurrentMonth,
-  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, setUI,
+  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, tagTransactions, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
