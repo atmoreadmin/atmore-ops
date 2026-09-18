@@ -608,6 +608,7 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
   const [buyer, setBuyer]             = usePS(init ? (init.buyer || '') : '');
   const [offerPrice, setOfferPrice]   = usePS(init && init.offerPrice != null ? String(init.offerPrice) : (p.listPrice != null ? String(p.listPrice) : ''));
   const [earnest, setEarnest]         = usePS(init && init.earnestMoney != null ? String(init.earnestMoney) : '');
+  const [ddFee, setDdFee]             = usePS(init && init.dueDiligenceFee != null ? String(init.dueDiligenceFee) : (p.saleDDCollected != null ? String(p.saleDDCollected) : ''));
   const [financing, setFinancing]     = usePS(init ? (init.financing || 'Conventional') : 'Conventional');
   const [concessions, setConcessions] = usePS(init ? String(offerTotalConcessions(init) || '') : '');
   const [closeDate, setCloseDate]     = usePS(init ? (init.closeDate || '') : '');
@@ -624,6 +625,7 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
     setBuyer(o.buyer || '');
     setOfferPrice(o.offerPrice != null ? String(o.offerPrice) : '');
     setEarnest(o.earnestMoney != null ? String(o.earnestMoney) : '');
+    setDdFee(o.dueDiligenceFee != null ? String(o.dueDiligenceFee) : '');
     setFinancing(o.financing || 'Conventional');
     setConcessions(String(offerTotalConcessions(o) || ''));
     setCloseDate(o.closeDate || '');
@@ -694,7 +696,8 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
         <div><div className="up dim mb-4">Buyer</div><input className="input" value={buyer} onChange={e => setBuyer(e.target.value)} style={{width: '100%'}}/></div>
         <div><div className="up dim mb-4">Contract price</div><CloseoutMoney value={offerPrice} onChange={setOfferPrice}/></div>
       </div>
-      <div className="grid g-3 mb-8">
+      <div className="grid g-4 mb-8">
+        <div><div className="up dim mb-4">Due diligence fee</div><CloseoutMoney value={ddFee} onChange={setDdFee}/></div>
         <div><div className="up dim mb-4">Earnest money</div><CloseoutMoney value={earnest} onChange={setEarnest}/></div>
         <div>
           <div className="up dim mb-4">Financing</div>
@@ -759,7 +762,7 @@ function UnderContractDialog({ property, onBack, onClose, initialNote }) {
         <Btn kind="primary" onClick={() => {
           goUnderContract(p.id, {
             offerId: sel === 'manual' ? null : sel,
-            terms: { buyer, offerPrice, earnestMoney: earnest, financing, concessionsTotal: concessions, closeDate, contingencies },
+            terms: { buyer, offerPrice, earnestMoney: earnest, dueDiligenceFee: ddFee, financing, concessionsTotal: concessions, closeDate, contingencies },
             closing: { attorney, attorneyContact, buyerDDDate: buyerDD, saleSigningDate, saleSigningTime },
             note,
           });

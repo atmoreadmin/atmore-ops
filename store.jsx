@@ -3002,6 +3002,7 @@ function goUnderContract(propId, { offerId = null, terms = {}, closing = {}, not
       buyer: t.buyer || (offer && offer.buyer) || 'Buyer',
       offerPrice: t.offerPrice != null && t.offerPrice !== '' ? Number(t.offerPrice) : (offer ? offer.offerPrice : null),
       earnestMoney: t.earnestMoney != null && t.earnestMoney !== '' ? Number(t.earnestMoney) : (offer ? offer.earnestMoney : null),
+      dueDiligenceFee: t.dueDiligenceFee != null && t.dueDiligenceFee !== '' ? Number(t.dueDiligenceFee) : (offer ? offer.dueDiligenceFee : null),
       financing: t.financing || (offer && offer.financing) || 'Conventional',
       closeDate: t.closeDate || (offer && offer.closeDate) || '',
       contingencies: t.contingencies || (offer && offer.contingencies) || [],
