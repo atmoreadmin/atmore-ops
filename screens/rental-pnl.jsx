@@ -33,6 +33,12 @@ function pnlCarrying(p) {
     insurance: ins.premium ? Math.round(ins.premium / 12 * 100) / 100 : 0,
   };
 }
+function pnlEscrowed(p, key) {
+  const ld = p.loanDetail || {};
+  if (key === 'tax') return !!(ld.escrowedTaxes || (p.taxes && p.taxes.escrowed));
+  if (key === 'insurance') return !!(ld.escrowedInsurance || (p.insurance && p.insurance.escrowed));
+  return false;
+}
 function pnlCarryTotal(c) { return PNL_CARRY_TYPES.reduce((a, t) => a + (Number(c[t.key]) || 0), 0); }
 
 // All rental-tagged transactions for a property (direct + split slices).
@@ -72,17 +78,23 @@ function pnlPropertyYear(p, year) {
     const inn = mtx.reduce((a, t) => a + (t.amount > 0 ? t.amount : 0), 0);
     const exp = mtx.reduce((a, t) => a + (t.amount < 0 ? -t.amount : 0), 0);
     const owned = ownFrom && ym >= ownFrom && ym <= ownTo;
-    let carryMo = 0; const carryDetail = [];
+    let carryMo = 0; const carryDetail = [], escrowSkipped = [];
     if (owned) {
+      const actual = ct => mtx.some(t => t.amount < 0 && ct.re.test(t.category || ''));
+      const mortCt = PNL_CARRY_TYPES[0];
+      // Mortgage counts this month if paid (actual) or carried (recurring).
+      const mortgageCounted = actual(mortCt) || (Number(carry.mortgage) || 0) > 0;
       PNL_CARRY_TYPES.forEach(ct => {
         const amt = Number(carry[ct.key]) || 0;
         if (!amt) return;
-        // If an actual Rental-tagged charge of this type is logged this month, use it (it's already in `exp`).
-        const hasActual = mtx.some(t => t.amount < 0 && ct.re.test(t.category || ''));
-        if (!hasActual) { carryMo += amt; carryDetail.push(ct.label); }
+        // An actual Rental-tagged charge of this type this month replaces the recurring one (it's already in `exp`).
+        if (actual(ct)) return;
+        // Escrowed taxes/insurance ride inside the mortgage payment — don't count them again.
+        if (mortgageCounted && pnlEscrowed(p, ct.key)) { escrowSkipped.push(ct.label); return; }
+        carryMo += amt; carryDetail.push(ct.label);
       });
     }
-    months.push({ ym, m, owned, in: inn, exp, carry: carryMo, carryDetail, net: inn - exp - carryMo, txCount: mtx.length, future: ym > TODAY().slice(0, 7) });
+    months.push({ ym, m, owned, in: inn, exp, carry: carryMo, carryDetail, escrowSkipped, net: inn - exp - carryMo, txCount: mtx.length, future: ym > TODAY().slice(0, 7) });
   }
   const tot = f => months.filter(x => !x.future).reduce((a, x) => a + x[f], 0);
   return { months, in: tot('in'), exp: tot('exp'), carry: tot('carry'), net: tot('net'), hasActivity: months.some(x => x.txCount > 0 || (x.owned && !x.future)) };
@@ -165,6 +177,7 @@ function PnlMonthTxModal({ p, m, onClose }) {
             </div>
           );
         })}
+        {m.escrowSkipped && m.escrowSkipped.length > 0 && <div className="tiny dim" style={{paddingTop: 8}}>{m.escrowSkipped.join(' & ')} escrowed in the mortgage payment — not counted separately.</div>}
         <div className="row between small items-center" style={{paddingTop: 10}}>
           <span className="dim">In {fmtMoney(m.in)} · charges {fmtMoney(-m.exp)} · carrying {fmtMoney(-m.carry)}</span>
           <span className="mono" style={{fontWeight: 600, color: m.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>Net {fmtMoney(m.net)}</span>
