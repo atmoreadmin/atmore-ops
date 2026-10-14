@@ -1524,17 +1524,16 @@ function autoReconcileRentForMonth(month) {
   // Track consumption per tx — but a SPLIT transaction is consumed per property slice,
   // so one split covering several rentals can link to each of their ledger rows.
   const txById0 = new Map((s.transactions || []).map(t => [t.id, t]));
-  const usedKey = (txId, propId) => {
+  // Keyed per applied month too, so one deposit spread over several months links to each month's row.
+  const usedKey = (txId, propId, mo) => {
     const tx = txById0.get(txId);
-    return (tx && tx.splits && tx.splits.length) ? txId + ':' + propId : txId;
+    return ((tx && tx.splits && tx.splits.length) ? txId + ':' + propId : txId) + '@' + mo;
   };
   const usedTx = new Set();
   (s.rentLedger || []).forEach(r => {
-    if (r.linkedTxId) usedTx.add(usedKey(r.linkedTxId, r.propertyId));
-    (r.linkedTxIds || []).forEach(id => usedTx.add(usedKey(id, r.propertyId)));
+    if (r.linkedTxId) usedTx.add(usedKey(r.linkedTxId, r.propertyId, r.month));
+    (r.linkedTxIds || []).forEach(id => usedTx.add(usedKey(id, r.propertyId, r.month)));
   });
-  const monthStart = month + '-01';
-  const monthEnd = addMonthsISO(monthStart, 1);
   const updates = [];
   for (const r of rows) {
     const prop = (s.properties || []).find(p => p.id === r.propertyId);
@@ -1548,16 +1547,10 @@ function autoReconcileRentForMonth(month) {
     // Income transactions tagged to this property (direct or via a split slice) in the month.
     const cand = [];
     for (const tx of (s.transactions || [])) {
-      if (usedTx.has(usedKey(tx.id, r.propertyId))) continue;
-      if (!(tx.date >= monthStart && tx.date < monthEnd)) continue;
-      // direct tag
-      let amt = 0;
-      if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
-      // split slices tagged to this property (sum ALL matching slices, not just the first)
-      if (!amt && tx.splits && tx.splits.length) {
-        amt = tx.splits.filter(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '') && sp.amount > 0)
-          .reduce((a, sp) => a + sp.amount, 0);
-      }
+      if (usedTx.has(usedKey(tx.id, r.propertyId, month))) continue;
+      if (!tx.date) continue;
+      // Amount applied to this month (bank month by default, or the assigned month(s)).
+      const amt = txRentAmtForMonth(tx, taggedToProp, month);
       if (!amt) continue;
       // If several tenants share the property, require the name to match to avoid mis-assigning.
       if (activeOnProp > 1 && firstName && !(tx.desc || '').toLowerCase().includes(firstName)) continue;
@@ -1572,7 +1565,7 @@ function autoReconcileRentForMonth(month) {
     const txIds = existing.concat(cand.map(c => c.tx.id).filter(id => !existing.includes(id)));
     if (txIds.length === existing.length && (r.paid || 0) > 0 && existing.length) continue; // nothing new for a linked row
     const primary = cand[0];
-    cand.forEach(c => usedTx.add(usedKey(c.tx.id, r.propertyId)));
+    cand.forEach(c => usedTx.add(usedKey(c.tx.id, r.propertyId, month)));
     updates.push({ id: r.id, txId: existing[0] || primary.tx.id, txIds, paidOn: primary.tx.date });
   }
   if (updates.length === 0) return;
@@ -1594,7 +1587,7 @@ function autoReconcileRentForMonth(month) {
 function validateRentLinks() {
   const s = Store.state;
   const txById = new Map((s.transactions || []).map(t => [t.id, t]));
-  const okTx = (id, month) => { const tx = txById.get(id); return !!tx && (tx.date || '').slice(0, 7) === month; };
+  const okTx = (id, month) => { const tx = txById.get(id); return !!tx && txAppliedMonths(tx).has(month); };
   const changes = [];
   for (const r of (s.rentLedger || [])) {
     const ids = (r.linkedTxIds && r.linkedTxIds.length) ? r.linkedTxIds : (r.linkedTxId ? [r.linkedTxId] : []);
@@ -1640,13 +1633,7 @@ function syncLinkedRentAmounts() {
     for (const id of ids) {
       const tx = txById.get(id);
       if (!tx) continue;                                  // deletion handled by validateRentLinks
-      if ((tx.date || '').slice(0, 7) !== r.month) continue; // month move handled by validateRentLinks
-      let amt = 0;
-      if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) amt = tx.amount;
-      if (!amt && tx.splits) {
-        amt = tx.splits.filter(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '') && sp.amount > 0)
-          .reduce((a, sp) => a + sp.amount, 0);
-      }
+      const amt = txRentAmtForMonth(tx, taggedToProp, r.month); // month move handled by validateRentLinks
       if (!amt) continue;
       anyTx = true;
       sum += amt;
@@ -1677,7 +1664,7 @@ function reconcileRentAcrossMonths() {
     if (!tx.date) return;
     const isRentDirect = tx.amount > 0 && tx.project && /rent/i.test(tx.category || '');
     const isRentSplit = tx.splits && tx.splits.some(sp => /rent/i.test(sp.category || tx.category || ''));
-    if ((isRentDirect || isRentSplit) && tx.date) months.add(tx.date.slice(0, 7));
+    if ((isRentDirect || isRentSplit) && tx.date) { months.add(tx.date.slice(0, 7)); txAppliedMonths(tx).forEach(m => m && months.add(m)); }
   });
   months.forEach(m => ensureLedgerForMonth(m));
   months.forEach(m => autoReconcileRentForMonth(m));
@@ -1834,6 +1821,53 @@ function tagTransaction(txId, fields) {
     s.transactions[i] = { ...s.transactions[i], ...fields };
     s.transactions = s.transactions.slice();
   });
+}
+
+// ─── Applies-to month (income booked to a different month than the bank date) ───
+// tx.applyMonths / split.applyMonths = [{ ym:'YYYY-MM', amount }]. Absent = bank month.
+function txMonthAlloc(amount, date, applyMonths) {
+  const list = (applyMonths || []).filter(a => a && /^\d{4}-\d{2}$/.test(a.ym || ''));
+  if (!list.length) return [{ ym: (date || '').slice(0, 7), amount: amount || 0 }];
+  return list.map(a => ({ ym: a.ym, amount: Number(a.amount) || 0 }));
+}
+// Every month a transaction (or any of its slices) applies to.
+function txAppliedMonths(tx) {
+  const out = new Set();
+  if (tx.splits && tx.splits.length) tx.splits.forEach(sp => txMonthAlloc(sp.amount, tx.date, sp.applyMonths).forEach(a => out.add(a.ym)));
+  else txMonthAlloc(tx.amount, tx.date, tx.applyMonths).forEach(a => out.add(a.ym));
+  return out;
+}
+// Rent amount from tx that lands on one property in one applied month.
+function txRentAmtForMonth(tx, taggedToProp, month) {
+  const inMo = (amt, ap) => txMonthAlloc(amt, tx.date, ap).filter(a => a.ym === month).reduce((s, a) => s + a.amount, 0);
+  if (tx.splits && tx.splits.length) {
+    return tx.splits.filter(sp => taggedToProp(sp.project) && /rent/i.test(sp.category || tx.category || '') && sp.amount > 0)
+      .reduce((a, sp) => a + Math.max(0, inMo(sp.amount, sp.applyMonths)), 0);
+  }
+  if (tx.amount > 0 && taggedToProp(tx.project) && /rent/i.test(tx.category || '')) return Math.max(0, inMo(tx.amount, tx.applyMonths));
+  return 0;
+}
+// items: [{ txId, slice (index|null), months: [{ym, amount}] | null }] — one batched update.
+function setTxApplyMonths(items) {
+  if (!items || !items.length) return;
+  Store.update(s => {
+    s.transactions = s.transactions.map(t => {
+      const mine = items.filter(it => it.txId === t.id);
+      if (!mine.length) return t;
+      const n = { ...t };
+      mine.forEach(it => {
+        const bankYm = (t.date || '').slice(0, 7);
+        const total = it.slice != null && n.splits ? (n.splits[it.slice] || {}).amount : n.amount;
+        let ms = (it.months || []).filter(a => a.ym && (Number(a.amount) || 0) !== 0).map(a => ({ ym: a.ym, amount: Math.round(Number(a.amount) * 100) / 100 }));
+        if (ms.length === 1 && ms[0].ym === bankYm && Math.abs(ms[0].amount - (total || 0)) < 0.005) ms = [];
+        const val = ms.length ? ms : null;
+        if (it.slice != null && n.splits) { n.splits = n.splits.map((sp, i) => i === it.slice ? { ...sp, applyMonths: val } : sp); }
+        else n.applyMonths = val;
+      });
+      return n;
+    });
+  });
+  try { reconcileRentAcrossMonths(); } catch (e) { console.warn('rent reconcile after month assign', e); }
 }
 
 // Bulk variant: one Store.update (one re-render, one save, one sync) for many rows.
@@ -4087,7 +4121,7 @@ Object.assign(window, {
   Store, useStore, TODAY,
   getProperty, getPropertyByAddr, getTenant, getTenantsForProperty, getActiveTenants,
   getLedgerForMonth, ensureLedgerForMonth, getLedgerForTenant, dedupeRentLedger, getTxForProperty, untaggedTransactions, getCurrentMonth,
-  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, tagTransactions, setUI,
+  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, tagTransactions, txMonthAlloc, txAppliedMonths, setTxApplyMonths, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,

@@ -41,18 +41,28 @@ function pnlEscrowed(p, key) {
 }
 function pnlCarryTotal(c) { return PNL_CARRY_TYPES.reduce((a, t) => a + (Number(c[t.key]) || 0), 0); }
 
-// All rental-tagged transactions for a property (direct + split slices).
+// All rental-tagged transactions for a property (direct + split slices), expanded
+// into one row per applied month (applyMonths) — bank date kept for display.
 function pnlRentalTx(p) {
   const addr = (p.address || '').toLowerCase().trim();
   const out = [];
+  const push = (t, slice, category, amount, applyMonths) => {
+    const bankYm = (t.date || '').slice(0, 7);
+    const alloc = txMonthAlloc(amount, t.date, applyMonths);
+    alloc.forEach(a => out.push({
+      id: t.id + (slice != null ? '-s' + slice : '') + '@' + a.ym, txId: t.id, slice, date: t.date, ym: a.ym, bankYm,
+      moved: a.ym !== bankYm, spread: alloc.length > 1, total: amount || 0,
+      desc: t.desc, payee: t.payee, category, amount: a.amount,
+    }));
+  };
   (Store.state.transactions || []).forEach(t => {
     if (t.splits && t.splits.length) {
       t.splits.forEach((sp, i) => {
         if ((sp.project || '').toLowerCase().trim() === addr && isRentalCategory(sp.category || t.category))
-          out.push({ id: t.id + '-s' + i, date: t.date, desc: t.desc, payee: t.payee, category: sp.category || t.category, amount: sp.amount || 0 });
+          push(t, i, sp.category || t.category, sp.amount || 0, sp.applyMonths);
       });
     } else if ((t.project || '').toLowerCase().trim() === addr && isRentalCategory(t.category)) {
-      out.push(t);
+      push(t, null, t.category, t.amount || 0, t.applyMonths);
     }
   });
   return out;
@@ -66,15 +76,15 @@ function pnlPropertyYear(p, year) {
   // Carrying start: closing date, else signing date, else the first rental
   // transaction ever logged, else (for a live rental) the start of the year —
   // imported rentals often lack a purchase date and still carry costs.
-  const firstTxMo = allTx.reduce((a, t) => { const m = (t.date || '').slice(0, 7); return m && (!a || m < a) ? m : a; }, null);
+  const firstTxMo = allTx.reduce((a, t) => { const m = t.ym; return m && (!a || m < a) ? m : a; }, null);
   let ownFrom = (p.purchaseDate || p.signingDate || '').slice(0, 7) || firstTxMo;
   if (!ownFrom && !['I', 'J'].includes(p.statusCode)) ownFrom = year + '-01';
   const ownTo = p.salesDate ? p.salesDate.slice(0, 7) : TODAY().slice(0, 7);
-  const tx = allTx.filter(t => (t.date || '').slice(0, 4) === String(year));
+  const tx = allTx.filter(t => (t.ym || '').slice(0, 4) === String(year));
   const months = [];
   for (let m = 1; m <= 12; m++) {
     const ym = year + '-' + String(m).padStart(2, '0');
-    const mtx = tx.filter(t => (t.date || '').slice(0, 7) === ym);
+    const mtx = tx.filter(t => t.ym === ym);
     const inn = mtx.reduce((a, t) => a + (t.amount > 0 ? t.amount : 0), 0);
     const exp = mtx.reduce((a, t) => a + (t.amount < 0 ? -t.amount : 0), 0);
     const owned = ownFrom && ym >= ownFrom && ym <= ownTo;
@@ -135,18 +145,75 @@ function CarryingEditor({ p, onClose }) {
   );
 }
 
+// Assign one transaction (or split slice) to the month(s) it actually covers.
+function ApplyMonthModal({ row, onClose }) {
+  const real = (Store.state.transactions || []).find(t => t.id === row.txId);
+  const src = real ? (row.slice != null && real.splits ? real.splits[row.slice] : real) : null;
+  const total = Math.round((row.total || 0) * 100) / 100;
+  const [lines, setLines] = useState(() => txMonthAlloc(total, row.date, src && src.applyMonths).map(a => ({ ym: a.ym, amount: String(a.amount) })));
+  const sum = lines.reduce((a, l) => a + (parseFloat(l.amount) || 0), 0);
+  const left = Math.round((total - sum) * 100) / 100;
+  const ok = Math.abs(left) < 0.005 && lines.every(l => /^\d{4}-\d{2}$/.test(l.ym));
+  const set = (i, k, v) => setLines(ls => ls.map((l, j) => j === i ? { ...l, [k]: v } : l));
+  const nextYm = ym => { const [y, m] = ym.split('-').map(Number); return m === 12 ? (y + 1) + '-01' : y + '-' + String(m + 1).padStart(2, '0'); };
+  const prevYm = ym => { const [y, m] = ym.split('-').map(Number); return m === 1 ? (y - 1) + '-12' : y + '-' + String(m - 1).padStart(2, '0'); };
+  function evenly() {
+    const n = lines.length, cents = Math.round(total * 100), each = Math.trunc(cents / n);
+    setLines(ls => ls.map((l, i) => ({ ...l, amount: String((i === n - 1 ? cents - each * (n - 1) : each) / 100) })));
+  }
+  function save() { setTxApplyMonths([{ txId: row.txId, slice: row.slice, months: lines.map(l => ({ ym: l.ym, amount: parseFloat(l.amount) || 0 })) }]); onClose(); }
+  return (
+    <Modal title="Applies to month" onClose={onClose}
+      right={<div className="row gap-8"><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn disabled={!ok} onClick={save}>Save</Btn></div>}>
+      <div className="col gap-12">
+        <div className="small" style={{textWrap: 'pretty'}}><b>{fmtMoney(total)}</b> received <b>{fmtDate(row.date, {full: true})}</b> · <span className="dim">{row.desc}</span></div>
+        <div className="tiny dim" style={{textWrap: 'pretty'}}>The bank date stays as-is for Transactions and Reports. Rental P&L and the Rent Roll count it in the month(s) below.</div>
+        <div className="col gap-6">
+          {lines.map((l, i) => (
+            <div key={i} className="row gap-8 items-center">
+              <input className="input mono" type="month" value={l.ym} onChange={e => set(i, 'ym', e.target.value)} style={{width: 170}}/>
+              <span style={{color: 'var(--ink-3)', fontFamily: 'IBM Plex Mono'}}>$</span>
+              <input className="input mono" type="number" step="0.01" value={l.amount} onChange={e => set(i, 'amount', e.target.value)} style={{flex: 1, minWidth: 0}}/>
+              <Btn sz="sm" kind="ghost" disabled={lines.length < 2} onClick={() => setLines(ls => ls.filter((_, j) => j !== i))}>Remove</Btn>
+            </div>
+          ))}
+        </div>
+        <div className="row gap-8 items-center wrap">
+          <Btn sz="sm" kind="ghost" onClick={() => setLines(ls => [{ ym: prevYm(ls[0].ym), amount: '0' }, ...ls])}>+ Earlier month</Btn>
+          <Btn sz="sm" kind="ghost" onClick={() => setLines(ls => [...ls, { ym: nextYm(ls[ls.length - 1].ym), amount: '0' }])}>+ Later month</Btn>
+          <Btn sz="sm" kind="ghost" disabled={lines.length < 2} onClick={evenly}>Split evenly</Btn>
+          <Btn sz="sm" kind="ghost" onClick={() => setLines([{ ym: (row.date || '').slice(0, 7), amount: String(total) }])}>Reset to bank month</Btn>
+          <div className="grow"></div>
+          <span className="mono small" style={{color: ok ? 'var(--sage)' : 'var(--brick)'}}>{Math.abs(left) < 0.005 ? 'Balanced' : (left > 0 ? fmtMoney(left) + ' left to assign' : fmtMoney(-left) + ' over')}</span>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // Drill-down: every transaction (and carrying line) behind one month's numbers.
 function PnlMonthTxModal({ p, m, onClose }) {
   useStore();
-  const [edit, setEdit] = useState(null);        // { tx, split } or { carrying: true }
-  const tx = pnlRentalTx(p).filter(t => (t.date || '').slice(0, 7) === m.ym)
+  const [edit, setEdit] = useState(null);        // { tx, split } | { carrying: true } | { month: row }
+  const [sel, setSel] = useState(() => new Set());
+  const [bulkYm, setBulkYm] = useState(m.ym);
+  const all = pnlRentalTx(p);
+  const tx = all.filter(t => t.ym === m.ym)
     .sort((a, b) => Math.abs(b.amount || 0) - Math.abs(a.amount || 0));
+  // Received this month but booked to another month — shown for reference, not counted.
+  const away = all.filter(t => t.bankYm === m.ym && t.ym !== m.ym);
+  const keyOf = t => t.txId + '|' + (t.slice != null ? t.slice : '');
+  const toggle = k => setSel(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const MON = ym => PNL_MON[parseInt(ym.slice(5, 7)) - 1] + (ym.slice(0, 4) !== m.ym.slice(0, 4) ? ' ' + ym.slice(0, 4) : '');
+  function bulkMove() {
+    const seen = new Map();
+    [...tx, ...away].forEach(t => { const k = keyOf(t); if (sel.has(k) && !seen.has(k)) seen.set(k, t); });
+    setTxApplyMonths([...seen.values()].map(t => ({ txId: t.txId, slice: t.slice, months: [{ ym: bulkYm, amount: t.total }] })));
+    setSel(new Set());
+  }
   const carry = pnlCarrying(p);
-  // A row may be one slice of a split — its id is "<txId>-s<n>". Edit the real
-  // transaction behind it: the split editor for split rows, the plain editor otherwise.
   function openEdit(row) {
-    const baseId = String(row.id).split('-s')[0];
-    const real = (Store.state.transactions || []).find(t => t.id === baseId);
+    const real = (Store.state.transactions || []).find(t => t.id === row.txId);
     if (!real) return;
     setEdit({ tx: real, split: !!(real.splits && real.splits.length) });
   }
@@ -156,11 +223,27 @@ function PnlMonthTxModal({ p, m, onClose }) {
       <div className="col">
         {tx.length === 0 && m.carryDetail.length === 0 && <div className="small dim" style={{padding: '8px 0'}}>No rental transactions this month.</div>}
         {tx.map(t => (
-          <div key={t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)'}}>
+          <div key={t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)', background: sel.has(keyOf(t)) ? 'var(--paper-2)' : undefined}}>
+            <input type="checkbox" checked={sel.has(keyOf(t))} onChange={() => toggle(keyOf(t))} title="Select to assign a month" style={{margin: 0, flexShrink: 0}}/>
             <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
-            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}{String(t.id).includes('-s') && <span className="dim tiny">{' · split slice'}</span>}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}{t.slice != null && <span className="dim tiny">{' · split slice'}</span>}</span>
+            {t.moved && <Tag tone="ochre" title={'Received ' + fmtDate(t.date, {full: true})}>{'from ' + fmtDate(t.date)}</Tag>}
+            {t.spread && <Tag tone="ghost" title={'Part of ' + fmtMoney(t.total)}>{'of ' + fmtMoney(t.total)}</Tag>}
             {t.category && <Tag tone="ghost">{t.category}</Tag>}
             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" title="Assign to the month(s) this covers" onClick={() => setEdit({ month: t })}>Month</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => openEdit(t)}>Edit</Btn>
+          </div>
+        ))}
+        {away.length > 0 && <div className="up dim" style={{paddingTop: 12, paddingBottom: 2}}>Received this month · counted in another month</div>}
+        {away.map(t => (
+          <div key={'away' + t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)', color: 'var(--ink-3)', background: sel.has(keyOf(t)) ? 'var(--paper-2)' : undefined}}>
+            <input type="checkbox" checked={sel.has(keyOf(t))} onChange={() => toggle(keyOf(t))} style={{margin: 0, flexShrink: 0}}/>
+            <span className="mono small" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}</span>
+            <Tag tone="ochre">{'→ ' + MON(t.ym)}</Tag>
+            <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" onClick={() => setEdit({ month: t })}>Month</Btn>
             <Btn sz="sm" kind="ghost" onClick={() => openEdit(t)}>Edit</Btn>
           </div>
         ))}
@@ -182,8 +265,19 @@ function PnlMonthTxModal({ p, m, onClose }) {
           <span className="dim">In {fmtMoney(m.in)} · charges {fmtMoney(-m.exp)} · carrying {fmtMoney(-m.carry)}</span>
           <span className="mono" style={{fontWeight: 600, color: m.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>Net {fmtMoney(m.net)}</span>
         </div>
+        {sel.size > 0 && (
+          <div className="row gap-10 items-center wrap" style={{marginTop: 10, padding: '10px 12px', background: 'var(--paper-2)', border: '1px solid var(--rule)'}}>
+            <span className="small" style={{fontWeight: 600}}>{sel.size} selected</span>
+            <span className="small dim">Count in</span>
+            <input className="input mono" type="month" value={bulkYm} onChange={e => setBulkYm(e.target.value)} style={{width: 170}}/>
+            <div className="grow"></div>
+            <Btn sz="sm" kind="ghost" onClick={() => setSel(new Set())}>Clear</Btn>
+            <Btn sz="sm" disabled={!/^\d{4}-\d{2}$/.test(bulkYm)} onClick={bulkMove}>Assign {sel.size}</Btn>
+          </div>
+        )}
       </div>
     </Modal>
+    {edit && edit.month && <ApplyMonthModal row={edit.month} onClose={() => setEdit(null)}/>}
     {edit && edit.carrying && <CarryingEditor p={p} onClose={() => setEdit(null)}/>}
     {edit && edit.split && <SplitTransactionModal tx={edit.tx} onClose={() => setEdit(null)}/>}
     {edit && edit.tx && !edit.split && <TransactionEditor tx={edit.tx} onClose={() => setEdit(null)}/>}
