@@ -284,7 +284,8 @@ function RefinanceModal({ p, onClose, onDone }) {
     const newLoan = { ...(p.loanDetail || {}), lender: f.lender, loanNumber: f.loanNumber, monthlyPayment: num(f.monthlyPayment), currentBalance: num(f.currentBalance),
       interestRate: num(f.interestRate), maturityDate: f.maturityDate || null, lenderContact: f.lenderContact, escrowedTaxes: f.escrowedTaxes, escrowedInsurance: f.escrowedInsurance, escrowStart: month };
     updateProperty(p.id, {
-      loanHistory: [...(p.loanHistory || []), { ...(p.loanDetail || {}), endedOn: month }],
+      loanHistory: (() => { const old = p.loanDetail || {}; const had = old.lender || old.loanNumber || old.monthlyPayment || old.currentBalance;
+        return had ? [...(p.loanHistory || []), { ...old, endedOn: month }] : (p.loanHistory || []); })(),
       loanDetail: newLoan,
       rentalCarrying: { mortgage: base.mortgage || 0, hoa: base.hoa || 0, tax: base.tax || 0, insurance: base.insurance || 0,
         escrowTaxes: base.escrowTaxes != null ? base.escrowTaxes : pnlEscrowedFor(p, 'tax', prev),
