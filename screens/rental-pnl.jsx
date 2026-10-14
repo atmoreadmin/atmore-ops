@@ -39,6 +39,23 @@ function pnlEscrowed(p, key) {
   if (key === 'insurance') return !!(ld.escrowedInsurance || (p.insurance && p.insurance.escrowed));
   return false;
 }
+// Date-effective carrying: p.carryingPeriods = [{ from:'YYYY-MM', mortgage, hoa, tax, insurance, escrowTaxes, escrowInsurance, note }].
+// Months before the first period use the base (rentalCarrying / derived from the property).
+function pnlPeriodFor(p, ym) {
+  const per = (p.carryingPeriods || []).filter(x => x && x.from && x.from <= ym).sort((a, b) => a.from.localeCompare(b.from));
+  return per.length ? per[per.length - 1] : null;
+}
+function pnlCarryingFor(p, ym) { return pnlPeriodFor(p, ym) || pnlCarrying(p); }
+function pnlEscrowedFor(p, key, ym) {
+  if (key !== 'tax' && key !== 'insurance') return false;
+  const fk = key === 'tax' ? 'escrowTaxes' : 'escrowInsurance';
+  const per = pnlPeriodFor(p, ym);
+  if (per && per[fk] != null) return !!per[fk];
+  if (!per && (p.carryingPeriods || []).length && p.rentalCarrying && p.rentalCarrying[fk] != null) return !!p.rentalCarrying[fk];
+  const start = (p.loanDetail || {}).escrowStart;
+  if (start && ym < start) return false;
+  return pnlEscrowed(p, key);
+}
 function pnlCarryTotal(c) { return PNL_CARRY_TYPES.reduce((a, t) => a + (Number(c[t.key]) || 0), 0); }
 
 // All rental-tagged transactions for a property (direct + split slices), expanded
@@ -71,7 +88,6 @@ function pnlRentalTx(p) {
 // Per-month P&L for one property in one year. Months run Jan..Dec; carrying is
 // applied only to owned months (closing → sale, capped at today).
 function pnlPropertyYear(p, year) {
-  const carry = pnlCarrying(p);
   const allTx = pnlRentalTx(p);
   // Carrying start: closing date, else signing date, else the first rental
   // transaction ever logged, else (for a live rental) the start of the year —
@@ -88,6 +104,7 @@ function pnlPropertyYear(p, year) {
     const inn = mtx.reduce((a, t) => a + (t.amount > 0 ? t.amount : 0), 0);
     const exp = mtx.reduce((a, t) => a + (t.amount < 0 ? -t.amount : 0), 0);
     const owned = ownFrom && ym >= ownFrom && ym <= ownTo;
+    const carry = pnlCarryingFor(p, ym);
     let carryMo = 0; const carryDetail = [], escrowSkipped = [];
     if (owned) {
       const actual = ct => mtx.some(t => t.amount < 0 && ct.re.test(t.category || ''));
@@ -100,7 +117,7 @@ function pnlPropertyYear(p, year) {
         // An actual Rental-tagged charge of this type this month replaces the recurring one (it's already in `exp`).
         if (actual(ct)) return;
         // Escrowed taxes/insurance ride inside the mortgage payment — don't count them again.
-        if (mortgageCounted && pnlEscrowed(p, ct.key)) { escrowSkipped.push(ct.label); return; }
+        if (mortgageCounted && pnlEscrowedFor(p, ct.key, ym)) { escrowSkipped.push(ct.label); return; }
         carryMo += amt; carryDetail.push(ct.label);
       });
     }
@@ -117,29 +134,57 @@ function pnlMoney(v, { zero = '—', signed = false } = {}) {
 }
 
 function CarryingEditor({ p, onClose }) {
-  const init = pnlCarrying(p);
-  const [vals, setVals] = useState(() => Object.fromEntries(PNL_CARRY_TYPES.map(t => [t.key, init[t.key] ? String(init[t.key]) : ''])));
+  const toRow = (c, ym, from) => ({
+    from: from || '', note: c.note || '',
+    ...Object.fromEntries(PNL_CARRY_TYPES.map(t => [t.key, c[t.key] ? String(c[t.key]) : ''])),
+    escrowTaxes: pnlEscrowedFor(p, 'tax', ym), escrowInsurance: pnlEscrowedFor(p, 'insurance', ym),
+  });
+  const baseYm = ((p.purchaseDate || '').slice(0, 7)) || '1900-01';
+  const [rows, setRows] = useState(() => [toRow(pnlCarrying(p), baseYm, null),
+    ...(p.carryingPeriods || []).slice().sort((a, b) => a.from.localeCompare(b.from)).map(x => toRow(x, x.from, x.from))]);
+  const set = (i, k, v) => setRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: v } : r));
+  const addPeriod = () => setRows(rs => [...rs, { ...rs[rs.length - 1], from: TODAY().slice(0, 7), note: '' }]);
+  const ok = rows.slice(1).every(r => /^\d{4}-\d{2}$/.test(r.from)) && new Set(rows.slice(1).map(r => r.from)).size === rows.length - 1;
+  const amounts = r => Object.fromEntries(PNL_CARRY_TYPES.map(t => [t.key, parseFloat(r[t.key]) || 0]));
   function save() {
-    updateProperty(p.id, { rentalCarrying: Object.fromEntries(PNL_CARRY_TYPES.map(t => [t.key, parseFloat(vals[t.key]) || 0])) });
+    const [base, ...per] = rows;
+    updateProperty(p.id, {
+      rentalCarrying: { ...amounts(base), escrowTaxes: !!base.escrowTaxes, escrowInsurance: !!base.escrowInsurance },
+      carryingPeriods: per.map(r => ({ from: r.from, ...amounts(r), escrowTaxes: !!r.escrowTaxes, escrowInsurance: !!r.escrowInsurance, note: r.note || '' })).sort((a, b) => a.from.localeCompare(b.from)),
+    });
     onClose();
   }
   return (
-    <Modal title={'Monthly carrying costs — ' + p.address} onClose={onClose}
-      right={<div className="row gap-8"><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>Save</Btn></div>}>
+    <Modal title={'Monthly carrying costs — ' + p.address} onClose={onClose} wide
+      right={<div className="row gap-8"><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn disabled={!ok} onClick={save}>Save</Btn></div>}>
       <div className="col gap-12">
-        <div className="small dim" style={{textWrap: 'pretty'}}>Counted against the Rental P&L every month from closing{p.purchaseDate ? ' (' + fmtDate(p.purchaseDate, {full: true}) + ')' : ''}. In months where you tag an actual <b>Rental</b> mortgage / HOA / tax / insurance transaction, the actual amount is used instead — no double counting.</div>
-        <div className="grid g-2">
-          {PNL_CARRY_TYPES.map(t => (
-            <div key={t.key}>
-              <div className="up dim mb-4">{t.label} / month</div>
-              <div className="row gap-6 items-baseline">
-                <span style={{color: 'var(--ink-3)', fontFamily: 'IBM Plex Mono', fontSize: 16}}>$</span>
-                <input className="input mono" type="number" step="0.01" value={vals[t.key]}
-                  onChange={e => setVals(v => ({ ...v, [t.key]: e.target.value }))} style={{flex: 1}}/>
-              </div>
+        <div className="small dim" style={{textWrap: 'pretty'}}>Counted every month from closing{p.purchaseDate ? ' (' + fmtDate(p.purchaseDate, {full: true}) + ')' : ''}. Add a change when the payment or escrow changes (e.g. a refinance) — earlier months keep the old amounts. Actual <b>Rental</b> mortgage / HOA / tax / insurance charges always replace the recurring amount for that month.</div>
+        {rows.map((r, i) => (
+          <div key={i} className="col gap-8" style={{padding: '12px 14px', border: '1px solid var(--rule)', background: i ? 'var(--paper)' : 'var(--paper-2)'}}>
+            <div className="row gap-10 items-center wrap">
+              {i === 0 ? <span className="small" style={{fontWeight: 600}}>From closing{rows.length > 1 ? ' until ' + fmtDate(rows[1].from + '-01') : ''}</span> : <>
+                <span className="small" style={{fontWeight: 600}}>Starting</span>
+                <input className="input mono" type="month" value={r.from} onChange={e => set(i, 'from', e.target.value)} style={{width: 160}}/>
+                <input className="input" placeholder="Note (e.g. Refinance · Shellpoint)" value={r.note} onChange={e => set(i, 'note', e.target.value)} style={{flex: 1, minWidth: 160}}/>
+                <Btn sz="sm" kind="ghost" onClick={() => setRows(rs => rs.filter((_, j) => j !== i))}>Remove</Btn>
+              </>}
             </div>
-          ))}
-        </div>
+            <div className="grid g-4">
+              {PNL_CARRY_TYPES.map(t => (
+                <div key={t.key}>
+                  <div className="up dim mb-4">{t.label} / mo</div>
+                  <input className="input mono" type="number" step="0.01" value={r[t.key]} onChange={e => set(i, t.key, e.target.value)} style={{width: '100%'}}/>
+                </div>
+              ))}
+            </div>
+            <div className="row gap-16 wrap">
+              <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}><input type="checkbox" checked={!!r.escrowTaxes} onChange={e => set(i, 'escrowTaxes', e.target.checked)}/> Taxes escrowed in mortgage</label>
+              <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}><input type="checkbox" checked={!!r.escrowInsurance} onChange={e => set(i, 'escrowInsurance', e.target.checked)}/> Insurance escrowed in mortgage</label>
+            </div>
+          </div>
+        ))}
+        <div className="row"><Btn sz="sm" kind="ghost" onClick={addPeriod}>+ Add change (refinance, new payment…)</Btn></div>
+        {!ok && <div className="tiny" style={{color: 'var(--brick)'}}>Each change needs its own start month.</div>}
       </div>
     </Modal>
   );
@@ -211,7 +256,7 @@ function PnlMonthTxModal({ p, m, onClose }) {
     setTxApplyMonths([...seen.values()].map(t => ({ txId: t.txId, slice: t.slice, months: [{ ym: bulkYm, amount: t.total }] })));
     setSel(new Set());
   }
-  const carry = pnlCarrying(p);
+  const carry = pnlCarryingFor(p, m.ym);
   function openEdit(row) {
     const real = (Store.state.transactions || []).find(t => t.id === row.txId);
     if (!real) return;

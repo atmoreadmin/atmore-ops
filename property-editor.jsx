@@ -42,6 +42,13 @@ function PropertyEditor({ property, onClose }) {
   const [lEscrowT, setLEscrowT] = useState(!!ld.escrowedTaxes || !!(p.taxes || {}).escrowed);
   const [lEscrowI, setLEscrowI] = useState(!!ld.escrowedInsurance);
   const [lContact, setLContact] = useState(ld.lenderContact || '');
+  const [lEscrowStart, setLEscrowStart] = useState(ld.escrowStart || '');
+  const [refiOpen, setRefiOpen] = useState(false);
+  function onRefi(n) {
+    setLLender(n.lender || ''); setLNumber(n.loanNumber || ''); setLMonthly(n.monthlyPayment || ''); setLBalance(n.currentBalance || '');
+    setLRate(n.interestRate || ''); setLMaturity(n.maturityDate || ''); setLContact(n.lenderContact || '');
+    setLEscrowI(!!n.escrowedInsurance); setTaxEscrowed(!!n.escrowedTaxes); setLEscrowStart(n.escrowStart || '');
+  }
 
   // Utilities
   const [utilities, setUtilities] = useState(p.utilities || {});
@@ -77,6 +84,7 @@ function PropertyEditor({ property, onClose }) {
         interestRate: lRate ? parseFloat(lRate) : null,
         escrowedTaxes: lEscrowT,
         escrowedInsurance: lEscrowI,
+        escrowStart: lEscrowStart || null,
         lenderContact: lContact,
       } : null,
       taxes: (tAnnual || tDue || tParcel || tEscrowed) ? {
@@ -179,8 +187,23 @@ function PropertyEditor({ property, onClose }) {
                 <div className="col gap-6">
                   <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowT} onChange={e => setTaxEscrowed(e.target.checked)}/> Taxes escrowed by lender</label>
                   <label className="row gap-6 items-center small" style={{cursor:'pointer'}}><input type="checkbox" checked={lEscrowI} onChange={e => setLEscrowI(e.target.checked)}/> Insurance escrowed by lender</label>
+                  {(lEscrowT || lEscrowI) && <div className="row gap-8 items-center" style={{marginTop: 4}}>
+                    <span className="small dim">Escrow starts</span>
+                    <input className="input mono" type="month" value={lEscrowStart} onChange={e => setLEscrowStart(e.target.value)} style={{width: 160}}/>
+                    <span className="tiny dim">Blank = since closing. Earlier months still count taxes/insurance separately.</span>
+                  </div>}
                 </div>
               </Field>
+              <div className="row gap-10 items-center" style={{paddingTop: 8, borderTop: '1px solid var(--rule-soft)'}}>
+                <Btn sz="sm" kind="ghost" onClick={() => setRefiOpen(true)}>Record refinance…</Btn>
+                <span className="tiny dim">Keeps the old loan on file and starts new carrying amounts from the refi month.</span>
+              </div>
+              {(p.loanHistory || []).length > 0 && <Field label="Prior loans">
+                <div className="col gap-4">{p.loanHistory.slice().reverse().map((h, i) => (
+                  <div key={i} className="small dim">{(h.lender || 'Lender')}{h.loanNumber ? ' #' + h.loanNumber : ''}{h.monthlyPayment ? ' · ' + fmtMoney(h.monthlyPayment) + '/mo' : ''}{h.endedOn ? ' · until ' + fmtDate(h.endedOn + '-01') : ''}</div>
+                ))}</div>
+              </Field>}
+              {refiOpen && <RefinanceModal p={p} onClose={() => setRefiOpen(false)} onDone={onRefi}/>}
             </div>
           )}
 
@@ -239,6 +262,59 @@ function PropertyEditor({ property, onClose }) {
               <UtilityFields value={utilities} onChange={setUtilities}/>
             </div>
           )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Refinance: archive the current loan, set the new one, and start a new carrying
+// period from the refi month so earlier P&L months keep the old payment/escrow.
+function RefinanceModal({ p, onClose, onDone }) {
+  const [month, setMonth] = useState(TODAY().slice(0, 7));
+  const [f, setF] = useState({ lender: '', loanNumber: '', monthlyPayment: '', currentBalance: '', interestRate: '', maturityDate: '', lenderContact: '', escrowedTaxes: true, escrowedInsurance: true });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const ok = /^\d{4}-\d{2}$/.test(month) && parseFloat(f.monthlyPayment) > 0;
+  function save() {
+    const [y, m] = month.split('-').map(Number);
+    const prev = m === 1 ? (y - 1) + '-12' : y + '-' + String(m - 1).padStart(2, '0');
+    const prevCarry = pnlCarryingFor(p, prev);
+    const base = p.rentalCarrying || pnlCarrying(p);
+    const num = v => v === '' || v == null ? null : parseFloat(v);
+    const newLoan = { ...(p.loanDetail || {}), lender: f.lender, loanNumber: f.loanNumber, monthlyPayment: num(f.monthlyPayment), currentBalance: num(f.currentBalance),
+      interestRate: num(f.interestRate), maturityDate: f.maturityDate || null, lenderContact: f.lenderContact, escrowedTaxes: f.escrowedTaxes, escrowedInsurance: f.escrowedInsurance, escrowStart: month };
+    updateProperty(p.id, {
+      loanHistory: [...(p.loanHistory || []), { ...(p.loanDetail || {}), endedOn: month }],
+      loanDetail: newLoan,
+      rentalCarrying: { mortgage: base.mortgage || 0, hoa: base.hoa || 0, tax: base.tax || 0, insurance: base.insurance || 0,
+        escrowTaxes: base.escrowTaxes != null ? base.escrowTaxes : pnlEscrowedFor(p, 'tax', prev),
+        escrowInsurance: base.escrowInsurance != null ? base.escrowInsurance : pnlEscrowedFor(p, 'insurance', prev) },
+      carryingPeriods: [...(p.carryingPeriods || []).filter(x => x.from !== month), {
+        from: month, mortgage: num(f.monthlyPayment) || 0, hoa: prevCarry.hoa || 0, tax: prevCarry.tax || 0, insurance: prevCarry.insurance || 0,
+        escrowTaxes: f.escrowedTaxes, escrowInsurance: f.escrowedInsurance, note: 'Refinance' + (f.lender ? ' · ' + f.lender : '') }].sort((a, b) => a.from.localeCompare(b.from)),
+      taxes: { ...(p.taxes || {}), escrowed: f.escrowedTaxes },
+    });
+    onDone && onDone(newLoan);
+    onClose();
+  }
+  return (
+    <Modal title={'Record refinance · ' + p.address} onClose={onClose}
+      right={<div className="row gap-8"><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn disabled={!ok} onClick={save}>Save refinance</Btn></div>}>
+      <div className="col gap-12">
+        <div className="small dim" style={{textWrap: 'pretty'}}>The current loan{(p.loanDetail || {}).lender ? ' (' + p.loanDetail.lender + ')' : ''} moves to Prior loans. Rental P&L uses the new payment and escrow from the first-payment month; earlier months are unchanged.</div>
+        <div className="grid g-2">
+          <Field label="First new payment (month)"><input className="input mono" type="month" value={month} onChange={e => setMonth(e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="New monthly payment"><input className="input mono" type="number" step="0.01" value={f.monthlyPayment} onChange={e => set('monthlyPayment', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Lender"><input className="input" value={f.lender} onChange={e => set('lender', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Loan #"><input className="input mono" value={f.loanNumber} onChange={e => set('loanNumber', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Balance"><input className="input mono" type="number" value={f.currentBalance} onChange={e => set('currentBalance', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Interest rate %"><input className="input mono" type="number" step="0.01" value={f.interestRate} onChange={e => set('interestRate', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Maturity date"><input className="input" type="date" value={f.maturityDate} onChange={e => set('maturityDate', e.target.value)} style={{width: '100%'}}/></Field>
+          <Field label="Lender contact"><input className="input" value={f.lenderContact} onChange={e => set('lenderContact', e.target.value)} style={{width: '100%'}}/></Field>
+        </div>
+        <div className="col gap-6">
+          <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}><input type="checkbox" checked={f.escrowedTaxes} onChange={e => set('escrowedTaxes', e.target.checked)}/> Taxes escrowed in new payment</label>
+          <label className="row gap-6 items-center small" style={{cursor: 'pointer'}}><input type="checkbox" checked={f.escrowedInsurance} onChange={e => set('escrowedInsurance', e.target.checked)}/> Insurance escrowed in new payment</label>
         </div>
       </div>
     </Modal>
