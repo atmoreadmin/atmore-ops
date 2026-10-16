@@ -136,12 +136,18 @@ function serializeForSheet(state) {
 // never copies it; (2) a hard-coded whitelist in deserializeFromSheet that doesn't
 // name it, so a pull strips it. Column auto-create can't help with either — nothing
 // is ever sent, so SharePoint never returns the 400 that triggers the repair.
+// JSON-text columns (applyMonths, carryingPeriods, loanHistory) and tri-state yes/no flags.
+function _jsonList(v) { if (Array.isArray(v)) return v; if (v == null || v === '') return null; try { const a = JSON.parse(String(v)); return Array.isArray(a) && a.length ? a : null; } catch (e) { return null; } }
+function _yesNo(v) { if (v === true || v === false) return v; const s = String(v == null ? '' : v).trim().toLowerCase(); return s === 'yes' || s === 'true' ? true : s === 'no' || s === 'false' ? false : null; }
+// Column not on the server yet (older list) → key absent from the row: keep this device's value.
+function _keepOr(row, key, parsed, localVal) { return Object.prototype.hasOwnProperty.call(row, key) ? parsed : (localVal ?? null); }
+
 const DRIFT_IGNORE = new Set([
   'netToSeller', 'concClosingCost', 'concRepairCredit', 'concHomeWarranty', 'concRateBuydown', 'concOther',
   'ytd', 'jobs', 'ten99History', 'draws', 'concessions', 'hoas', 'insurance', 'loan', 'tax', 'rentalCarrying',
   'splits', 'feeItems', 'utilities', 'stageHistory', 'updatedAt',
   // Carried by child tabs or folded into flat columns — no own column by design.
-  'purchaseFeeItems', 'saleFeeItems', 'loanDetail', 'taxes', 'rentHistory',
+  'purchaseFeeItems', 'saleFeeItems', 'loanDetail', 'taxes', 'rentHistory', 'carryingPeriods', 'loanHistory', 'applyMonths', 'pnlExclude',
 ]);
 function auditSyncFields() {
   const src = Store.state;
@@ -451,11 +457,19 @@ function deserializeFromSheet(pulledData, opts) {
     const ins = { carrier: p.insCarrier || '', policyNumber: p.insPolicy || '', premium: num(p.insPremium), renewalDate: p.insRenewal || '', agentName: p.insAgent || '', agentPhone: p.insAgentPhone || '' };
     out.insurance = nonEmpty(ins) ? ins : null;
     // Loan detail
-    const loan = { lender: p.loanLender || '', loanNumber: p.loanNumber || '', monthlyPayment: num(p.loanPayment), currentBalance: num(p.loanBalance), interestRate: num(p.loanRate), maturityDate: p.loanMaturity || '', escrowedTaxes: truthy(p.loanEscrowTaxes), escrowedInsurance: truthy(p.loanEscrowIns), lenderContact: p.loanContact || '' };
+    const loan = { lender: p.loanLender || '', loanNumber: p.loanNumber || '', monthlyPayment: num(p.loanPayment), currentBalance: num(p.loanBalance), interestRate: num(p.loanRate), maturityDate: p.loanMaturity || '', escrowedTaxes: truthy(p.loanEscrowTaxes), escrowedInsurance: truthy(p.loanEscrowIns), lenderContact: p.loanContact || '', escrowStart: p.loanEscrowStart || null };
     out.loanDetail = (loan.lender || loan.loanNumber || loan.currentBalance != null || loan.monthlyPayment != null) ? loan : null;
     // Rental P&L carrying costs
     const carry = { mortgage: num(p.carryMortgage), hoa: num(p.carryHOA), tax: num(p.carryTax), insurance: num(p.carryInsurance) };
     out.rentalCarrying = Object.values(carry).some(v => v != null) ? carry : null;
+    { const lp = (Store.state.properties || []).find(x => x.id === p.id) || {};
+      const eT = _keepOr(p, 'carryEscrowTaxes', p.carryEscrowTaxes == null || p.carryEscrowTaxes === '' ? null : truthy(p.carryEscrowTaxes), (lp.rentalCarrying || {}).escrowTaxes);
+      const eI = _keepOr(p, 'carryEscrowIns', p.carryEscrowIns == null || p.carryEscrowIns === '' ? null : truthy(p.carryEscrowIns), (lp.rentalCarrying || {}).escrowInsurance);
+      if (eT != null || eI != null) out.rentalCarrying = { ...(out.rentalCarrying || {}), escrowTaxes: eT, escrowInsurance: eI };
+      out.carryingPeriods = _keepOr(p, 'carryingPeriods', _jsonList(p.carryingPeriods), lp.carryingPeriods) || [];
+      out.loanHistory = _keepOr(p, 'loanHistory', _jsonList(p.loanHistory), lp.loanHistory) || [];
+      if (!Object.prototype.hasOwnProperty.call(p, 'loanEscrowStart') && lp.loanDetail && lp.loanDetail.escrowStart && out.loanDetail) out.loanDetail.escrowStart = lp.loanDetail.escrowStart;
+      delete out.carryEscrowTaxes; delete out.carryEscrowIns; delete out.loanEscrowStart; }
     // Taxes
     const tax = { annualAmount: num(p.taxAnnual), dueDate: p.taxDueDate || '', escrowed: truthy(p.taxEscrowed), taxId: p.taxParcel || '' };
     out.taxes = (tax.annualAmount != null || tax.taxId || tax.dueDate) ? tax : null;
@@ -535,9 +549,17 @@ function deserializeFromSheet(pulledData, opts) {
   } else {
   state.transactions = !tabPresent('Transactions') ? (Store.state.transactions || []) : (tabs.Transactions).map(tx => {
     const out = { ...tx };
+    const lt = localTx[tx.id] || {};
+    out.applyMonths = _keepOr(tx, 'applyMonths', _jsonList(tx.applyMonths), lt.applyMonths);
+    out.pnlExclude = _keepOr(tx, 'pnlExclude', _yesNo(tx.pnlExclude), lt.pnlExclude);
+    if (out.pnlExclude == null) delete out.pnlExclude;
     if (splitsByTx) {
       const sp = (splitsByTx[tx.id] || []).slice().sort(byOrd);
-      if (sp.length) out.splits = sp.map(x => ({ rowId: x.rowId, project: x.project || '', amount: x.amount ?? 0, category: x.category || '', bucket: x.bucket || '' }));
+      const lsp = lt.splits || [];
+      if (sp.length) out.splits = sp.map((x, i) => { const l = lsp.find(y => y.rowId && y.rowId === x.rowId) || lsp[i] || {};
+        const o = { rowId: x.rowId, project: x.project || '', amount: x.amount ?? 0, category: x.category || '', bucket: x.bucket || '',
+          applyMonths: _keepOr(x, 'applyMonths', _jsonList(x.applyMonths), l.applyMonths), pnlExclude: _keepOr(x, 'pnlExclude', _yesNo(x.pnlExclude), l.pnlExclude) };
+        if (o.pnlExclude == null) delete o.pnlExclude; return o; });
     } else if (localTx[tx.id] && localTx[tx.id].splits) {
       out.splits = localTx[tx.id].splits;
     }

@@ -557,7 +557,7 @@ const SP_DETAIL_MERGE = {
   ExchangeDraws:     { key: r => r.drawId ? String(r.drawId) : '', fields: ['exchangeId', 'propId', 'amount', 'date', 'note'], ordBy: r => String(r.exchangeId || '') },
   StageHistory:      { key: r => r.rowId ? String(r.rowId) : '', fields: ['propertyId', 'from', 'to', 'at', 'note', 'by'], ordBy: r => String(r.propertyId || '') },
   FeeItems:          { key: r => r.rowId ? String(r.rowId) : '', fields: ['propertyId', 'kind', 'label', 'amount'], ordBy: r => String(r.propertyId || '') + '|' + String(r.kind || '') },
-  TransactionSplits: { key: r => r.rowId ? String(r.rowId) : '', fields: ['txId', 'project', 'category', 'amount', 'bucket'], ordBy: r => String(r.txId || '') },
+  TransactionSplits: { key: r => r.rowId ? String(r.rowId) : '', fields: ['txId', 'project', 'category', 'amount', 'bucket', 'applyMonths', 'pnlExclude'], ordBy: r => String(r.txId || '') },
   TenantRentHistory: { key: r => r.rowId ? String(r.rowId) : '', fields: ['tenantId', 'effectiveDate', 'amount', 'note'], ordBy: r => String(r.tenantId || '') },
   Utilities:         { key: r => (r.propertyId && r.type) ? r.propertyId + '|' + r.type : '', fields: ['provider', 'account', 'status'] },
   HOAs:              { key: r => r.id ? String(r.id) : '', fields: ['propertyId', 'name', 'website', 'username', 'password', 'monthly', 'lastVerified'] },
@@ -2628,7 +2628,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261016c</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261016d</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');

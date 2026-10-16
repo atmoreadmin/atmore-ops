@@ -20,6 +20,10 @@ const SHEET_SCHEMA = {
         taxAnnual: tax.annualAmount ?? null, taxDueDate: tax.dueDate || null, taxEscrowed: tax.escrowed ?? null, taxParcel: tax.taxId || null,
         carryMortgage: (p.rentalCarrying || {}).mortgage ?? null, carryHOA: (p.rentalCarrying || {}).hoa ?? null,
         carryTax: (p.rentalCarrying || {}).tax ?? null, carryInsurance: (p.rentalCarrying || {}).insurance ?? null,
+        carryEscrowTaxes: (p.rentalCarrying || {}).escrowTaxes ?? null, carryEscrowIns: (p.rentalCarrying || {}).escrowInsurance ?? null,
+        carryingPeriods: (p.carryingPeriods && p.carryingPeriods.length) ? JSON.stringify(p.carryingPeriods) : null,
+        loanHistory: (p.loanHistory && p.loanHistory.length) ? JSON.stringify(p.loanHistory) : null,
+        loanEscrowStart: loan.escrowStart || null,
         hoa1Name: h1.name || null, hoa1Url: h1.website || null, hoa1User: h1.username || null, hoa1Pass: h1.password || null, hoa1Monthly: h1.monthly ?? null,
         hoa2Name: h2.name || null, hoa2Url: h2.website || null, hoa2User: h2.username || null, hoa2Pass: h2.password || null, hoa2Monthly: h2.monthly ?? null,
       };
@@ -91,6 +95,11 @@ const SHEET_SCHEMA = {
       { key: 'carryHOA',     label: 'Carry — HOA/mo',      type: 'money' },
       { key: 'carryTax',     label: 'Carry — Taxes/mo',    type: 'money' },
       { key: 'carryInsurance',label: 'Carry — Insurance/mo',type: 'money' },
+      { key: 'carryEscrowTaxes',label: 'Carry — Taxes escrowed', type: 'bool' },
+      { key: 'carryEscrowIns',  label: 'Carry — Insurance escrowed', type: 'bool' },
+      { key: 'carryingPeriods', label: 'Carry — Dated changes', type: 'string', notes: 'JSON list of { from, mortgage, hoa, tax, insurance, escrowTaxes, escrowInsurance, note }' },
+      { key: 'loanHistory',     label: 'Prior Loans',          type: 'string', notes: 'JSON list of archived loans (Record refinance)' },
+      { key: 'loanEscrowStart', label: 'Loan Escrow Starts',   type: 'string', notes: 'YYYY-MM' },
       // ── Insurance (folded in) ──
       { key: 'insCarrier',   label: 'Insurance Carrier',   type: 'string' },
       { key: 'insPolicy',    label: 'Insurance Policy #',  type: 'string' },
@@ -177,7 +186,9 @@ const SHEET_SCHEMA = {
   Transactions: {
     description: 'Unified ledger of all money in/out across accounts.',
     pk: 'id',
-    rowSource: (s) => s.transactions,
+    rowSource: (s) => (s.transactions || []).map(t => ({ ...t,
+      applyMonths: (t.applyMonths && t.applyMonths.length) ? JSON.stringify(t.applyMonths) : null,
+      pnlExclude: t.pnlExclude == null ? null : (t.pnlExclude ? 'yes' : 'no') })),
     columns: [
       { key: 'id',          label: 'ID',          type: 'string', required: true },
       { key: 'date',        label: 'Date',        type: 'date',   required: true },
@@ -190,6 +201,8 @@ const SHEET_SCHEMA = {
       { key: 'bucket',      label: 'Bucket',      type: 'enum',   notes: 'Properties / Rentals / Office' },
       { key: 'notes',       label: 'Notes',       type: 'string' },
       { key: 'importBatch', label: 'Import Batch',type: 'string' },
+      { key: 'applyMonths', label: 'Applies To Months', type: 'string', notes: 'JSON [{ym, amount}] — Rental P&L month assignment; blank = bank month' },
+      { key: 'pnlExclude',  label: 'P&L Exclude', type: 'string', notes: 'yes / no / blank (default)' },
     ],
   },
   Contractors: {
@@ -486,6 +499,7 @@ const SHEET_SCHEMA = {
       const rows = [];
       (s.transactions || []).forEach(t => (t.splits || []).forEach((sp, i) => rows.push({
         rowId: sp.rowId || (t.id + '#sp' + i), txId: t.id, ord: i, project: sp.project || '', category: sp.category || '', amount: sp.amount ?? null, bucket: sp.bucket || '',
+        applyMonths: (sp.applyMonths && sp.applyMonths.length) ? JSON.stringify(sp.applyMonths) : '', pnlExclude: sp.pnlExclude == null ? '' : (sp.pnlExclude ? 'yes' : 'no'),
       })));
       return rows;
     },
@@ -497,6 +511,8 @@ const SHEET_SCHEMA = {
       { key: 'category', label: 'Category',       type: 'string' },
       { key: 'amount',   label: 'Amount',         type: 'number' },
       { key: 'bucket',   label: 'Bucket',         type: 'string', notes: 'P&L bucket override for this slice; blank = inherit from the parent transaction' },
+      { key: 'applyMonths', label: 'Applies To Months', type: 'string' },
+      { key: 'pnlExclude',  label: 'P&L Exclude', type: 'string' },
     ],
   },
   TenantRentHistory: {
