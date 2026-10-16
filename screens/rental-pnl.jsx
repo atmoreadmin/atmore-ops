@@ -19,6 +19,10 @@ function isRentalPnlProperty(p) {
   return ty === 'rental' || ty === '1031' || ty === '1031 replacement' || p.statusCode === 'K';
 }
 function isRentalCategory(cat) { return /^rental/i.test((cat || '').trim()); }
+// Per-transaction (or split slice) P&L exclusion: pnlExclude true = left out, false = forced in.
+// Unset: security deposits are left out by default (held for the tenant), everything else counts.
+function isSecurityDepositCat(cat) { return /security\s*deposit/i.test(cat || ''); }
+function pnlIsExcluded(flag, category) { return flag === true || (flag !== false && isSecurityDepositCat(category)); }
 
 // Manual carrying amounts (monthly) — user-entered, prefilled from the property
 // record where we have it (loan payment, tax/12, insurance/12).
@@ -63,23 +67,24 @@ function pnlCarryTotal(c) { return PNL_CARRY_TYPES.reduce((a, t) => a + (Number(
 function pnlRentalTx(p) {
   const addr = (p.address || '').toLowerCase().trim();
   const out = [];
-  const push = (t, slice, category, amount, applyMonths) => {
+  const push = (t, slice, category, amount, applyMonths, exFlag) => {
     const bankYm = (t.date || '').slice(0, 7);
     const alloc = txMonthAlloc(amount, t.date, applyMonths);
     alloc.forEach(a => out.push({
       id: t.id + (slice != null ? '-s' + slice : '') + '@' + a.ym, txId: t.id, slice, date: t.date, ym: a.ym, bankYm,
       moved: a.ym !== bankYm, spread: alloc.length > 1, total: amount || 0,
       desc: t.desc, payee: t.payee, category, amount: a.amount,
+      excluded: pnlIsExcluded(exFlag, category),
     }));
   };
   (Store.state.transactions || []).forEach(t => {
     if (t.splits && t.splits.length) {
       t.splits.forEach((sp, i) => {
         if ((sp.project || '').toLowerCase().trim() === addr && isRentalCategory(sp.category || t.category))
-          push(t, i, sp.category || t.category, sp.amount || 0, sp.applyMonths);
+          push(t, i, sp.category || t.category, sp.amount || 0, sp.applyMonths, sp.pnlExclude);
       });
     } else if ((t.project || '').toLowerCase().trim() === addr && isRentalCategory(t.category)) {
-      push(t, null, t.category, t.amount || 0, t.applyMonths);
+      push(t, null, t.category, t.amount || 0, t.applyMonths, t.pnlExclude);
     }
   });
   return out;
@@ -88,7 +93,7 @@ function pnlRentalTx(p) {
 // Per-month P&L for one property in one year. Months run Jan..Dec; carrying is
 // applied only to owned months (closing → sale, capped at today).
 function pnlPropertyYear(p, year) {
-  const allTx = pnlRentalTx(p);
+  const allTx = pnlRentalTx(p).filter(t => !t.excluded);
   // Carrying start: closing date, else signing date, else the first rental
   // transaction ever logged, else (for a live rental) the start of the year —
   // imported rentals often lack a purchase date and still carry costs.
@@ -243,10 +248,11 @@ function PnlMonthTxModal({ p, m, onClose }) {
   const [sel, setSel] = useState(() => new Set());
   const [bulkYm, setBulkYm] = useState(m.ym);
   const all = pnlRentalTx(p);
-  const tx = all.filter(t => t.ym === m.ym)
+  const tx = all.filter(t => t.ym === m.ym && !t.excluded)
     .sort((a, b) => Math.abs(b.amount || 0) - Math.abs(a.amount || 0));
   // Received this month but booked to another month — shown for reference, not counted.
-  const away = all.filter(t => t.bankYm === m.ym && t.ym !== m.ym);
+  const away = all.filter(t => t.bankYm === m.ym && t.ym !== m.ym && !t.excluded);
+  const deps = all.filter(t => t.ym === m.ym && t.excluded);
   const keyOf = t => t.txId + '|' + (t.slice != null ? t.slice : '');
   const toggle = k => setSel(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const MON = ym => PNL_MON[parseInt(ym.slice(5, 7)) - 1] + (ym.slice(0, 4) !== m.ym.slice(0, 4) ? ' ' + ym.slice(0, 4) : '');
@@ -276,7 +282,21 @@ function PnlMonthTxModal({ p, m, onClose }) {
             {t.spread && <Tag tone="ghost" title={'Part of ' + fmtMoney(t.total)}>{'of ' + fmtMoney(t.total)}</Tag>}
             {t.category && <Tag tone="ghost">{t.category}</Tag>}
             <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" title="Leave this out of the P&L" onClick={() => setTxPnlExclude([{ txId: t.txId, slice: t.slice, value: true }])}>Exclude</Btn>
             <Btn sz="sm" kind="ghost" title="Assign to the month(s) this covers" onClick={() => setEdit({ month: t })}>Month</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => openEdit(t)}>Edit</Btn>
+          </div>
+        ))}
+        {deps.length > 0 && <div className="up dim" style={{paddingTop: 12, paddingBottom: 2}}>Excluded from P&L</div>}
+        {deps.map(t => (
+          <div key={'dep' + t.id} className="row gap-10 items-center" title="Excluded from the P&L" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)', color: 'var(--ink-3)'}}>
+            <span style={{width: 13, flexShrink: 0}}></span>
+            <span className="mono small" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through'}}>{t.desc}{t.payee && ' · ' + t.payee}</span>
+            <Tag tone="ghost">not counted</Tag>
+            {t.category && <Tag tone="ghost">{t.category}</Tag>}
+            <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, textDecoration: 'line-through'}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" title="Count this in the P&L" onClick={() => setTxPnlExclude([{ txId: t.txId, slice: t.slice, value: false }])}>Include</Btn>
             <Btn sz="sm" kind="ghost" onClick={() => openEdit(t)}>Edit</Btn>
           </div>
         ))}
@@ -317,6 +337,7 @@ function PnlMonthTxModal({ p, m, onClose }) {
             <input className="input mono" type="month" value={bulkYm} onChange={e => setBulkYm(e.target.value)} style={{width: 170}}/>
             <div className="grow"></div>
             <Btn sz="sm" kind="ghost" onClick={() => setSel(new Set())}>Clear</Btn>
+            <Btn sz="sm" kind="ghost" onClick={() => { const seen = new Map(); [...tx, ...away].forEach(t => { const k = keyOf(t); if (sel.has(k)) seen.set(k, t); }); setTxPnlExclude([...seen.values()].map(t => ({ txId: t.txId, slice: t.slice, value: true }))); setSel(new Set()); }}>Exclude {sel.size}</Btn>
             <Btn sz="sm" disabled={!/^\d{4}-\d{2}$/.test(bulkYm)} onClick={bulkMove}>Assign {sel.size}</Btn>
           </div>
         )}

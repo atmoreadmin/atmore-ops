@@ -1870,6 +1870,23 @@ function setTxApplyMonths(items) {
   try { reconcileRentAcrossMonths(); } catch (e) { console.warn('rent reconcile after month assign', e); }
 }
 
+// items: [{ txId, slice (index|null), value: true|false }] — include/exclude rows from the Rental P&L.
+function setTxPnlExclude(items) {
+  if (!items || !items.length) return;
+  Store.update(s => {
+    s.transactions = s.transactions.map(t => {
+      const mine = items.filter(it => it.txId === t.id);
+      if (!mine.length) return t;
+      const n = { ...t };
+      mine.forEach(it => {
+        if (it.slice != null && n.splits) n.splits = n.splits.map((sp, i) => i === it.slice ? { ...sp, pnlExclude: !!it.value } : sp);
+        else n.pnlExclude = !!it.value;
+      });
+      return n;
+    });
+  });
+}
+
 // Bulk variant: one Store.update (one re-render, one save, one sync) for many rows.
 function tagTransactions(txIds, fields) {
   const ids = new Set(txIds);
@@ -4121,7 +4138,7 @@ Object.assign(window, {
   Store, useStore, TODAY,
   getProperty, getPropertyByAddr, getTenant, getTenantsForProperty, getActiveTenants,
   getLedgerForMonth, ensureLedgerForMonth, getLedgerForTenant, dedupeRentLedger, getTxForProperty, untaggedTransactions, getCurrentMonth,
-  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, tagTransactions, txMonthAlloc, txAppliedMonths, setTxApplyMonths, setUI,
+  markPaid, markUnpaid, unmarkPayment, settleReducedRent, autoReconcileRentForMonth, reconcileRentAcrossMonths, advanceStage, changeStage, tagTransaction, tagTransactions, txMonthAlloc, txAppliedMonths, setTxApplyMonths, setTxPnlExclude, setUI,
   daysInCurrentStage, stageBackwardCount,
   addContractor, updateContractor, deleteContractor,
   REFI_STAGES, REFI_STAGE_LABEL, updateRefi, addRefi, deleteRefi,
