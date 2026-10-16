@@ -361,6 +361,7 @@ function RentalPnlScreen() {
   const [year, setYear] = useState(parseInt(TODAY().slice(0, 4)));
   const [open, setOpen] = useState(null);
   const [editCarry, setEditCarry] = useState(null);
+  const [cell, setCell] = useState(null);
   const [genOpen, setGenOpen] = useState(false);
   const [genMon, setGenMon] = useState({});
 
@@ -525,7 +526,8 @@ function RentalPnlScreen() {
         </Card>
       ) : (
         <Card>
-          <CardHead title={'Net by month · ' + year} meta="rent in − rental charges − carrying"/>
+          <CardHead title={'Net by month · ' + year} meta="rent in − rental charges − carrying · click a month for its transactions"/>
+          {cell && (() => { const fresh = pnlPropertyYear(cell.p, year).months.find(x => x.ym === cell.m.ym) || cell.m; return <PnlMonthTxModal p={cell.p} m={fresh} onClose={() => setCell(null)}/>; })()}
           <div style={{overflowX: 'auto'}}>
             <table className="tbl" style={{minWidth: 900}}>
               <thead><tr><th>Property</th>{PNL_MON.map((m, i) => <th key={m} className="num" style={{opacity: i + 1 > curMonth ? 0.4 : 1}}>{m}</th>)}<th className="num" style={{borderLeft: '2px solid var(--rule)'}}>Total</th></tr></thead>
@@ -534,7 +536,7 @@ function RentalPnlScreen() {
                   <tr key={r.p.id}>
                     <td style={{whiteSpace: 'nowrap'}}><a onClick={() => nav('/property/' + r.p.id)} style={{fontWeight: 500}}>{r.p.address}</a></td>
                     {r.data.months.map(m => (
-                      <td key={m.ym} className="num" title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)}` : undefined}>
+                      <td key={m.ym} className="num" onClick={m.future || (!m.owned && !m.txCount) ? undefined : () => setCell({ p: r.p, m })} style={m.future || (!m.owned && !m.txCount) ? undefined : {cursor: 'pointer'}} title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)} — click for transactions` : undefined}>
                         {m.future || (!m.owned && !m.txCount) ? <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>
                           : <span className="mono" style={{fontSize: 11.5, color: m.net > 0 ? 'var(--sage)' : m.net < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{fmtMoney(m.net)}</span>}
                       </td>
@@ -551,7 +553,7 @@ function RentalPnlScreen() {
                   <tr key={r.p.id} style={{opacity: 0.85}}>
                     <td style={{whiteSpace: 'nowrap'}}><a onClick={() => nav('/property/' + r.p.id)} style={{fontWeight: 500}}>{r.p.address}</a><Tag tone="ghost" style={{marginLeft: 8}}>Sold {fmtDate(r.p.salesDate)}</Tag></td>
                     {r.data.months.map(m => (
-                      <td key={m.ym} className="num" title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)}` : undefined}>
+                      <td key={m.ym} className="num" onClick={m.future || (!m.owned && !m.txCount) ? undefined : () => setCell({ p: r.p, m })} style={m.future || (!m.owned && !m.txCount) ? undefined : {cursor: 'pointer'}} title={m.owned || m.txCount ? `${PNL_MON[m.m-1]}: in ${fmtMoney(m.in)} · charges ${fmtMoney(-m.exp)} · carrying ${fmtMoney(-m.carry)} — click for transactions` : undefined}>
                         {m.future || (!m.owned && !m.txCount) ? <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>
                           : <span className="mono" style={{fontSize: 11.5, color: m.net > 0 ? 'var(--sage)' : m.net < 0 ? 'var(--brick)' : 'var(--ink-3)'}}>{fmtMoney(m.net)}</span>}
                       </td>
