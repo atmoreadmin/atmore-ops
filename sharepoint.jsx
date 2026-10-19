@@ -1840,10 +1840,20 @@ const SPSync = {
           const created = [];
           let failed = false;
           for (const r of (rowsBy.get(k) || [])) {
+            let body = SP._fieldsFor(t, r);
             try {
-              const c = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: SP._fieldsFor(t, r) }) });
+              const c = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: body }) });
               created.push(c.id);
-            } catch (e) { failed = true; break; }
+            } catch (e) {
+              // Usually a column the list doesn't have yet (added in a newer build):
+              // create it, then retry once with only the columns that exist.
+              try {
+                const have = await this._ensureChildColumns(t, sid, lid, body);
+                if (have) body = Object.fromEntries(Object.entries(body).filter(([f]) => f === 'Title' || have.has(f)));
+                const c2 = await SP.graph('/sites/' + sid + '/lists/' + lid + '/items', { method: 'POST', body: JSON.stringify({ fields: body }) });
+                created.push(c2.id);
+              } catch (e2) { failed = true; break; }
+            }
           }
           if (failed) {
             // The old rows are still live and correctly tracked; the partial new
@@ -2156,6 +2166,28 @@ const SPSync = {
     this._queueFlush(800);
   },
   _resigAll() { this.forceRepush(); },
+
+  // Detail lists (splits etc.): add any column the app writes that the list lacks.
+  // Returns the list's column names afterwards (null if they couldn't be read).
+  async _ensureChildColumns(tab, sid, lid, body) {
+    this._childCols = this._childCols || {};
+    const base = '/sites/' + sid + '/lists/' + lid;
+    let have = this._childCols[tab];
+    if (!have) {
+      try { const c = await SP.graph(base + '/columns?$select=name&$top=250'); have = new Set((c.value || []).map(x => x.name)); }
+      catch (e) { return null; }
+      this._childCols[tab] = have;
+    }
+    const types = SP._typeMap(tab);
+    for (const name of Object.keys(body)) {
+      if (name === 'Title' || have.has(name)) continue;
+      const key = Object.keys(types).find(k => spField(k) === name);
+      const def = key ? SP._columnDef(key, types[key]) : { name, text: { allowMultipleLines: true } };
+      try { await SP.graph(base + '/columns', { method: 'POST', body: JSON.stringify(def) }); have.add(name); this.logLine('Added missing column ' + tab + '.' + name + ' to SharePoint \u2713'); }
+      catch (e) { if (!this._childColWarned) { this._childColWarned = 1; this.logLine('\u26a0 ' + tab + '.' + name + ' could not be added \u2014 saving the other columns'); } }
+    }
+    return have;
+  },
 
   async _repairFields(list) {
     const out = [];
@@ -2628,7 +2660,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261016d</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261016e</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');
