@@ -351,6 +351,41 @@ function PnlMonthTxModal({ p, m, onClose }) {
   );
 }
 
+// Drill-down for one month of the "Rentals (general)" bucket.
+function PnlGeneralMonthModal({ year, m, onClose }) {
+  useStore();
+  const [edit, setEdit] = useState(null);
+  const ym = year + '-' + String(m).padStart(2, '0');
+  const tx = (Store.state.transactions || []).filter(t => (t.project || '').toLowerCase().trim() === 'rentals (general)' && (t.date || '').slice(0, 7) === ym)
+    .sort((a, b) => Math.abs(b.amount || 0) - Math.abs(a.amount || 0));
+  const tIn = tx.reduce((a, t) => a + (t.amount > 0 ? t.amount : 0), 0);
+  const tOut = tx.reduce((a, t) => a + (t.amount < 0 ? -t.amount : 0), 0);
+  return (
+    <>
+    <Modal title={'Rentals (general) — ' + PNL_MON[m - 1] + ' ' + year} onClose={onClose} wide>
+      <div className="col">
+        {tx.length === 0 && <div className="small dim" style={{padding: '8px 0'}}>No transactions this month.</div>}
+        {tx.map(t => (
+          <div key={t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)'}}>
+            <span className="mono small dim" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && <span className="dim">{' · ' + t.payee}</span>}</span>
+            {t.category && <Tag tone="ghost">{t.category}</Tag>}
+            <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0, color: t.amount < 0 ? 'var(--brick)' : 'var(--sage)'}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" onClick={() => setEdit({ tx: t, split: !!(t.splits && t.splits.length) })}>Edit</Btn>
+          </div>
+        ))}
+        <div className="row between small items-center" style={{paddingTop: 10}}>
+          <span className="dim">In {fmtMoney(tIn)} · charges {fmtMoney(-tOut)}</span>
+          <span className="mono" style={{fontWeight: 600, color: tIn - tOut >= 0 ? 'var(--sage)' : 'var(--brick)'}}>Net {fmtMoney(tIn - tOut)}</span>
+        </div>
+      </div>
+    </Modal>
+    {edit && edit.split && <SplitTransactionModal tx={edit.tx} onClose={() => setEdit(null)}/>}
+    {edit && edit.tx && !edit.split && <TransactionEditor tx={edit.tx} onClose={() => setEdit(null)}/>}
+    </>
+  );
+}
+
 // Month-by-month breakdown shown when a property row is expanded.
 function PnlMonthDetail({ r }) {
   const [detail, setDetail] = useState(null);
@@ -385,6 +420,7 @@ function RentalPnlScreen() {
   const [cell, setCell] = useState(null);
   const [genOpen, setGenOpen] = useState(false);
   const [genMon, setGenMon] = useState({});
+  const [genCell, setGenCell] = useState(null);
 
   const props = useMemo(() => (Store.state.properties || []).filter(isRentalPnlProperty)
     .sort((a, b) => (a.address || '').localeCompare(b.address || '')), [Store.state.properties]);
@@ -548,6 +584,7 @@ function RentalPnlScreen() {
       ) : (
         <Card>
           <CardHead title={'Net by month · ' + year} meta="rent in − rental charges − carrying · click a month for its transactions"/>
+          {genCell && <PnlGeneralMonthModal year={year} m={genCell} onClose={() => setGenCell(null)}/>}
           {cell && (() => { const fresh = pnlPropertyYear(cell.p, year).months.find(x => x.ym === cell.m.ym) || cell.m; return <PnlMonthTxModal p={cell.p} m={fresh} onClose={() => setCell(null)}/>; })()}
           <div style={{overflowX: 'auto'}}>
             <table className="tbl" style={{minWidth: 900}}>
@@ -585,7 +622,7 @@ function RentalPnlScreen() {
                 {genTx.length > 0 && (
                   <tr style={{background: 'var(--paper-3)'}}>
                     <td style={{fontStyle: 'italic', whiteSpace: 'nowrap'}}>Rentals (general)</td>
-                    {PNL_MON.map((_, i) => { const v = genByMonth(i + 1); return <td key={i} className="num">{v ? <span className="mono" style={{fontSize: 11.5, color: v > 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(v)}</span> : <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>}</td>; })}
+                    {PNL_MON.map((_, i) => { const v = genByMonth(i + 1); const has = genTx.some(t => parseInt((t.date || '').slice(5, 7)) === i + 1); return <td key={i} className="num" onClick={has ? () => setGenCell(i + 1) : undefined} style={has ? {cursor: 'pointer'} : undefined} title={has ? PNL_MON[i] + ' — click for transactions' : undefined}>{v ? <span className="mono" style={{fontSize: 11.5, color: v > 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(v)}</span> : <span className="mono small" style={{color: 'var(--ink-3)'}}>·</span>}</td>; })}
                     <td className="num" style={{borderLeft: '2px solid var(--rule)'}}><span className="mono small" style={{fontWeight: 600, color: (genIn - genExp) >= 0 ? 'var(--sage)' : 'var(--brick)'}}>{fmtMoney(genIn - genExp)}</span></td>
                   </tr>
                 )}

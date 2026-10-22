@@ -1907,6 +1907,22 @@ const SPSync = {
         }
         const serverBy = new Map();
         existing.forEach(it => { const k = this._cfgKey(it.fields || {}); if (k) serverBy.set(k, it); });
+        // Mass-delete guard. A device holding the built-in defaults (new computer,
+        // cleared browser, a pull that missed rows) used to "diff" its few seed rows
+        // against the real settings and delete the rest — the lost-categories bug.
+        // Deleting more than a handful of settings at once is never a normal edit,
+        // so adopt SharePoint's copy instead and say so.
+        {
+          const localKeys = new Set(rows.map(r => this._cfgKey(r)).filter(Boolean));
+          const wouldDrop = existing.filter(it => { const k = this._cfgKey(it.fields || {}); return k && !localKeys.has(k); }).length;
+          if (wouldDrop > 3 && wouldDrop > existing.length * 0.2 && !(this._cfgBulkOk && this._cfgBulkOk[t])) {
+            this.logLine('\u26a0 ' + t + ': this device would remove ' + wouldDrop + ' of SharePoint\u2019s ' + existing.length + ' settings rows — refused. Reloading SharePoint\u2019s copy instead.');
+            this._cfgSigs[t] = sig;
+            this._cfgReload = true;
+            continue;
+          }
+          if (this._cfgBulkOk) delete this._cfgBulkOk[t];
+        }
         // A keyed diff is only safe when every row HAS a key. If any row on
         // either side is keyless, matching would fail silently and each push
         // would re-POST the whole tab, growing duplicates forever — fall back to
@@ -1992,6 +2008,7 @@ const SPSync = {
       // A settings change we deliberately held back has no other trigger — flush
       // clears the dirty flag, so without this it would wait for an unrelated edit.
       if (cfgHeld) this._queueFlush(3000);
+      if (this._cfgReload) { this._cfgReload = false; setTimeout(() => { try { this.pull(); } catch (e) {} }, 1500); }
       // Only stamp a completed sync when everything actually landed — otherwise
       // "Saved · 2m ago" would advance on a flush that partly failed.
       if (!unsent) SyncEngine.lastSyncedAt = new Date().toISOString();
@@ -2660,7 +2677,7 @@ function SharePointView() {
           </div>
           <div className="row gap-8" style={{flexWrap: 'wrap'}}>
             <Btn kind={drift ? 'ghost' : 'primary'} disabled={!!busy} onClick={() => { const r = auditSyncFields(); setDrift(r); addLog(r.error ? '✗ Field check: ' + r.error : (r.findings.length ? 'Field check: ' + r.findings.reduce((a, f) => a + f.fields.length, 0) + ' field(s) not syncing' : 'Field check: every field round-trips ✓')); }}>{drift ? 'Re-check' : 'Check for unsynced fields'}</Btn>
-            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261016e</span>
+            <span className="tiny" style={{color: 'var(--ink-3)', alignSelf: 'center'}}>build 20261022a</span>
             <Btn kind="ghost" disabled={!!busy} onClick={() => nav('/reconcile')}>Compare with SharePoint…</Btn>
             {drift && <Btn kind="primary" disabled={!!busy} onClick={() => run('backfill', async () => {
               addLog('Creating any missing columns…');

@@ -680,11 +680,14 @@ function deserializeFromSheet(pulledData, opts) {
     .map(r => ({ id: r.id, label: r.label, ...(r.kind ? { kind: r.kind } : {}), archived: truthy(r.archived), isDefault: truthy(r.isDefault) }));
   if (Array.isArray(tabs.Lists) && listRows.length > 0) {
     const pt = pickList('propertyType');
+    // A server tab with rows but none of a given list type is a partial copy, not
+    // a deliberate "delete them all" — keep this device's list rather than blank it.
+    const keepL = (type, key) => { const v = pickList(type); return v.length ? v : ((Store.state.lists && Store.state.lists[key]) || []); };
     state.lists = {
-      categories:     pickList('category'),
-      paymentSources: pickList('paymentSource'),
-      loanTypes:      pickList('loanType'),
-      vestingLLCs:    pickList('vestingLLC'),
+      categories:     keepL('category', 'categories'),
+      paymentSources: keepL('paymentSource', 'paymentSources'),
+      loanTypes:      keepL('loanType', 'loanTypes'),
+      vestingLLCs:    keepL('vestingLLC', 'vestingLLCs'),
       propertyTypes:  pt.length ? pt : ((Store.state.lists && Store.state.lists.propertyTypes) || []),
     };
     const accts = listRows.filter(r => r.list === 'account').map(r => ({ id: r.id, label: r.label || '', kind: r.kind || 'checking' }));
