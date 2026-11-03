@@ -16,7 +16,8 @@ const PNL_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','No
 
 function isRentalPnlProperty(p) {
   const ty = String(p.type || '').toLowerCase();
-  return ty === 'rental' || ty === '1031' || ty === '1031 replacement' || p.statusCode === 'K';
+  if (ty === 'rental' || ty === '1031' || ty === '1031 replacement') return true;
+  return !ty && p.statusCode === 'K';
 }
 function isRentalCategory(cat) { return /^rental/i.test((cat || '').trim()); }
 // Per-transaction (or split slice) P&L exclusion: pnlExclude true = left out, false = forced in.
@@ -88,6 +89,25 @@ function pnlRentalTx(p) {
     }
   });
   return out;
+}
+// Same property + bank month, but a non-Rental category — not counted. Shown so a
+// miscategorized charge can be spotted and recategorized.
+function pnlOtherTx(p, ym) {
+  const addr = (p.address || '').toLowerCase().trim();
+  const out = [];
+  (Store.state.transactions || []).forEach(t => {
+    if ((t.date || '').slice(0, 7) !== ym) return;
+    if (t.splits && t.splits.length) {
+      t.splits.forEach((sp, i) => {
+        const c = sp.category || t.category;
+        if ((sp.project || '').toLowerCase().trim() === addr && !isRentalCategory(c))
+          out.push({ id: t.id + '-s' + i, txId: t.id, date: t.date, desc: t.desc, payee: t.payee, category: c, amount: sp.amount || 0, slice: i });
+      });
+    } else if ((t.project || '').toLowerCase().trim() === addr && !isRentalCategory(t.category)) {
+      out.push({ id: t.id, txId: t.id, date: t.date, desc: t.desc, payee: t.payee, category: t.category, amount: t.amount || 0 });
+    }
+  });
+  return out.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 }
 
 // Per-month P&L for one property in one year. Months run Jan..Dec; carrying is
@@ -253,6 +273,7 @@ function PnlMonthTxModal({ p, m, onClose }) {
   // Received this month but booked to another month — shown for reference, not counted.
   const away = all.filter(t => t.bankYm === m.ym && t.ym !== m.ym && !t.excluded);
   const deps = all.filter(t => t.ym === m.ym && t.excluded);
+  const other = pnlOtherTx(p, m.ym);
   const keyOf = t => t.txId + '|' + (t.slice != null ? t.slice : '');
   const toggle = k => setSel(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const MON = ym => PNL_MON[parseInt(ym.slice(5, 7)) - 1] + (ym.slice(0, 4) !== m.ym.slice(0, 4) ? ' ' + ym.slice(0, 4) : '');
@@ -330,6 +351,17 @@ function PnlMonthTxModal({ p, m, onClose }) {
           <span className="dim">In {fmtMoney(m.in)} · charges {fmtMoney(-m.exp)} · carrying {fmtMoney(-m.carry)}</span>
           <span className="mono" style={{fontWeight: 600, color: m.net >= 0 ? 'var(--sage)' : 'var(--brick)'}}>Net {fmtMoney(m.net)}</span>
         </div>
+        {other.length > 0 && <div className="up dim" style={{paddingTop: 16, paddingBottom: 2}}>Other charges on this property · not counted (non-Rental category)</div>}
+        {other.map(t => (
+          <div key={'oth' + t.id} className="row gap-10 items-center" style={{padding: '6px 0', borderBottom: '1px solid var(--rule-soft)', color: 'var(--ink-3)'}}>
+            <span style={{width: 13, flexShrink: 0}}></span>
+            <span className="mono small" style={{width: 70, flexShrink: 0}}>{fmtDate(t.date)}</span>
+            <span className="small grow" style={{minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{t.desc}{t.payee && ' · ' + t.payee}{t.slice != null && <span className="tiny">{' · split slice'}</span>}</span>
+            <Tag tone="ghost">{t.category || 'Uncategorized'}</Tag>
+            <span className="mono small" style={{width: 92, textAlign: 'right', flexShrink: 0}}>{fmtMoney(t.amount)}</span>
+            <Btn sz="sm" kind="ghost" title="Change the category to a Rental one to count it" onClick={() => openEdit(t)}>Edit</Btn>
+          </div>
+        ))}
         {sel.size > 0 && (
           <div className="row gap-10 items-center wrap" style={{marginTop: 10, padding: '10px 12px', background: 'var(--paper-2)', border: '1px solid var(--rule)'}}>
             <span className="small" style={{fontWeight: 600}}>{sel.size} selected</span>
