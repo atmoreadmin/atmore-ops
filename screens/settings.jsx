@@ -715,28 +715,29 @@ function WebAccountsEditor() {
         <div className="small dim mb-12">Vendor &amp; portal credentials (Adobe, Amazon, bank &amp; HOA portals…). Imported from your Web Accounts sheet; syncs with the workbook.</div>
         {adding && !editId && form}
         {rows.length === 0 ? <Empty icon="🔑" title="No web logins" sub={q ? 'None match your search.' : 'Add one or import from your Web Accounts sheet.'}/> : (
-          <table className="tbl">
-            <thead><tr><th>Organization</th><th>Website</th><th>Username</th><th>Password</th><th>Email</th><th></th></tr></thead>
+          <div style={{overflowX: 'auto', width: '100%', maxWidth: '100%', minWidth: 0}}><table className="tbl" style={{tableLayout: 'fixed', width: '100%', minWidth: 760, boxSizing: 'border-box'}}>
+            <colgroup><col style={{width: '20%'}}/><col style={{width: '14%'}}/><col style={{width: '24%'}}/><col style={{width: '13%'}}/><col style={{width: '19%'}}/><col style={{width: '10%'}}/></colgroup>
+            <thead><tr><th style={{width: '20%'}}>Organization</th><th style={{width: '14%'}}>Website</th><th style={{width: '24%'}}>Username</th><th style={{width: '13%'}}>Password</th><th style={{width: '19%'}}>Email</th><th style={{width: '10%'}}></th></tr></thead>
             <tbody>
               {rows.map(w => editId === w.id ? (
                 <tr key={w.id}><td colSpan={6} style={{padding: 0}}>{form}</td></tr>
               ) : (
                 <tr key={w.id}>
-                  <td style={{fontWeight: 500}}>{w.org}</td>
-                  <td className="small">{w.url ? <a href={/^https?:\/\//i.test(w.url) ? w.url : 'https://' + w.url} target="_blank" rel="noreferrer">{w.url.replace(/^https?:\/\//i, '').replace(/\/$/, '')}</a> : <span className="dim">—</span>}</td>
-                  <td className="mono small">{w.username || <span className="dim">—</span>}</td>
-                  <td className="mono small">
+                  <td style={{fontWeight: 500, overflowWrap:'anywhere',wordBreak:'break-word'}}>{w.org}</td>
+                  <td className="small" style={{overflowWrap:'anywhere',wordBreak:'break-word'}}>{w.url ? <a href={/^https?:\/\//i.test(w.url) ? w.url : 'https://' + w.url} target="_blank" rel="noreferrer">{w.url.replace(/^https?:\/\//i, '').replace(/\/$/, '')}</a> : <span className="dim">—</span>}</td>
+                  <td className="mono small" style={{overflowWrap:'anywhere',wordBreak:'break-word'}}>{w.username || <span className="dim">—</span>}</td>
+                  <td className="mono small" style={{overflowWrap:'anywhere',wordBreak:'break-word'}}>
                     {w.password ? (reveal[w.id]
                       ? <span className="row gap-6 items-center">{w.password} <button onClick={() => setReveal({...reveal, [w.id]: false})} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:11}}>hide</button></span>
-                      : <button onClick={() => setReveal({...reveal, [w.id]: true})} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:12}}>•••••• reveal</button>)
+                      : <button onClick={() => setReveal({...reveal, [w.id]: true})} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:12,whiteSpace:'nowrap'}}>•••••• reveal</button>)
                       : <span className="dim">—</span>}
                   </td>
-                  <td className="small dim">{w.email || '—'}</td>
-                  <td><div className="row gap-8"><button onClick={() => startEdit(w)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:11}}>Edit</button><button onClick={() => remove(w.id)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--brick)',font:'inherit',fontSize:11}}>Delete</button></div></td>
+                  <td className="small dim" style={{overflowWrap:'anywhere',wordBreak:'break-word'}}>{w.email || '—'}</td>
+                  <td style={{whiteSpace: 'nowrap'}}><div className="row gap-8" style={{justifyContent: 'flex-end'}}><button onClick={() => startEdit(w)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--blue)',font:'inherit',fontSize:11}}>Edit</button><button onClick={() => remove(w.id)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--brick)',font:'inherit',fontSize:11}}>Delete</button></div></td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </Card>
