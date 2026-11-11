@@ -15,6 +15,8 @@ const PNL_CARRY_TYPES = [
 const PNL_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function isRentalPnlProperty(p) {
+  // Failed deals (J) never belong on the Rental P&L, whatever their type.
+  if (p.statusCode === 'J') return false;
   const ty = String(p.type || '').toLowerCase();
   if (ty === 'rental' || ty === '1031' || ty === '1031 replacement') return true;
   return !ty && p.statusCode === 'K';
